@@ -531,6 +531,8 @@ type ServerConfig struct {
 //   - NORNICDB_EMBEDDING_PROPERTIES_EXCLUDE: Comma-separated property keys to exclude from embedding text
 //   - NORNICDB_EMBEDDING_INCLUDE_LABELS: Whether to prepend node labels to embedding text (default: true)
 type EmbeddingWorkerConfig struct {
+	// AutoChunking lets voyage-context split whole documents on the provider.
+	AutoChunking bool
 	// NumWorkers is the number of concurrent workers processing embeddings
 	// Use more workers for network-based embedders (OpenAI, etc.) or multiple GPUs
 	NumWorkers int
@@ -915,6 +917,9 @@ type FeatureFlagsConfig struct {
 	// SearchRerankAPIKey for authenticated providers (e.g. OpenAI, Cohere).
 	// Environment: NORNICDB_SEARCH_RERANK_API_KEY
 	SearchRerankAPIKey string
+	// Voyage truncation is opt-in; failure policy is error or explicit original.
+	SearchRerankTruncation    bool
+	SearchRerankFailurePolicy string
 	// RerankCtxType sets the llama.cpp context type for rerank model.
 	// 0=default, 1=MTP.
 	// Env: NORNICDB_RERANK_CTX_TYPE
@@ -1558,7 +1563,8 @@ type YAMLConfig struct {
 		TriggerDebounce   string   `yaml:"trigger_debounce"`
 		MaxRetries        int      `yaml:"max_retries"`
 		ChunkSize         int      `yaml:"chunk_size"`
-		ChunkOverlap      int      `yaml:"chunk_overlap"`
+		ChunkOverlap      *int     `yaml:"chunk_overlap"`
+		AutoChunking      *bool    `yaml:"auto_chunking"`
 		PropertiesInclude []string `yaml:"properties_include"`
 		PropertiesExclude []string `yaml:"properties_exclude"`
 		IncludeLabels     *bool    `yaml:"include_labels"`
@@ -1605,11 +1611,13 @@ type YAMLConfig struct {
 
 	// Search rerank (Stage-2 reranking: local GGUF or external API like embeddings/Heimdall).
 	SearchRerank struct {
-		Enabled  bool   `yaml:"enabled"`
-		Provider string `yaml:"provider"` // local, ollama, openai, http
-		Model    string `yaml:"model"`
-		APIURL   string `yaml:"api_url"`
-		APIKey   string `yaml:"api_key"`
+		Truncation    bool   `yaml:"truncation"`
+		FailurePolicy string `yaml:"failure_policy"`
+		Enabled       bool   `yaml:"enabled"`
+		Provider      string `yaml:"provider"` // local, ollama, openai, http
+		Model         string `yaml:"model"`
+		APIURL        string `yaml:"api_url"`
+		APIKey        string `yaml:"api_key"`
 	} `yaml:"search_rerank"`
 
 	// Feature flags (subset supported in YAML).
@@ -1920,6 +1928,7 @@ func LoadDefaults() *Config {
 	config.EmbeddingWorker.TriggerDebounceDelay = 2 * time.Second
 	config.EmbeddingWorker.MaxRetries = 3
 	config.EmbeddingWorker.ChunkSize = 8192
+	config.EmbeddingWorker.AutoChunking = true
 	config.EmbeddingWorker.ChunkOverlap = 50
 	config.EmbeddingWorker.PropertiesInclude = nil
 	config.EmbeddingWorker.PropertiesExclude = nil
@@ -1998,6 +2007,7 @@ func LoadDefaults() *Config {
 	config.Features.SearchRerankModel = "bge-reranker-v2-m3"
 	config.Features.SearchRerankAPIURL = ""
 	config.Features.SearchRerankAPIKey = ""
+	config.Features.SearchRerankFailurePolicy = "error"
 	config.Features.HeimdallMaxContextTokens = 8192
 	config.Features.HeimdallMaxSystemTokens = 6000
 	config.Features.HeimdallMaxUserTokens = 2000
@@ -2566,8 +2576,11 @@ func applyEnvVars(config *Config) error {
 	if v := getEnvInt("NORNICDB_EMBED_CHUNK_SIZE", 0); v > 0 {
 		config.EmbeddingWorker.ChunkSize = v
 	}
-	if v := getEnvInt("NORNICDB_EMBED_CHUNK_OVERLAP", 0); v > 0 {
+	if v := getEnvInt("NORNICDB_EMBED_CHUNK_OVERLAP", -1); v >= 0 {
 		config.EmbeddingWorker.ChunkOverlap = v
+	}
+	if v := getEnv("NORNICDB_EMBED_AUTO_CHUNKING", ""); v != "" {
+		config.EmbeddingWorker.AutoChunking = v == "true" || v == "1"
 	}
 	if v := getEnvStringSlice("NORNICDB_EMBEDDING_PROPERTIES_INCLUDE", nil); len(v) > 0 {
 		config.EmbeddingWorker.PropertiesInclude = v
@@ -2846,6 +2859,12 @@ func applyEnvVars(config *Config) error {
 	}
 	if v := getEnv("NORNICDB_SEARCH_RERANK_API_KEY", ""); v != "" {
 		config.Features.SearchRerankAPIKey = v
+	}
+	if v := os.Getenv("NORNICDB_SEARCH_RERANK_TRUNCATION"); v != "" {
+		config.Features.SearchRerankTruncation, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("NORNICDB_SEARCH_RERANK_FAILURE_POLICY"); v != "" {
+		config.Features.SearchRerankFailurePolicy = v
 	}
 	// Rerank llama.cpp context features
 	if v := getEnvInt("NORNICDB_RERANK_CTX_TYPE", 0); v != 0 {
@@ -3421,8 +3440,11 @@ func LoadFromFile(configPath string) (*Config, error) {
 	if yamlCfg.EmbeddingWorker.ChunkSize > 0 {
 		config.EmbeddingWorker.ChunkSize = yamlCfg.EmbeddingWorker.ChunkSize
 	}
-	if yamlCfg.EmbeddingWorker.ChunkOverlap > 0 {
-		config.EmbeddingWorker.ChunkOverlap = yamlCfg.EmbeddingWorker.ChunkOverlap
+	if yamlCfg.EmbeddingWorker.ChunkOverlap != nil {
+		config.EmbeddingWorker.ChunkOverlap = *yamlCfg.EmbeddingWorker.ChunkOverlap
+	}
+	if yamlCfg.EmbeddingWorker.AutoChunking != nil {
+		config.EmbeddingWorker.AutoChunking = *yamlCfg.EmbeddingWorker.AutoChunking
 	}
 	if len(yamlCfg.EmbeddingWorker.PropertiesInclude) > 0 {
 		config.EmbeddingWorker.PropertiesInclude = yamlCfg.EmbeddingWorker.PropertiesInclude
@@ -3567,6 +3589,10 @@ func LoadFromFile(configPath string) (*Config, error) {
 	}
 	if yamlCfg.SearchRerank.APIKey != "" {
 		config.Features.SearchRerankAPIKey = yamlCfg.SearchRerank.APIKey
+	}
+	config.Features.SearchRerankTruncation = yamlCfg.SearchRerank.Truncation
+	if yamlCfg.SearchRerank.FailurePolicy != "" {
+		config.Features.SearchRerankFailurePolicy = yamlCfg.SearchRerank.FailurePolicy
 	}
 
 	// Qdrant gRPC settings

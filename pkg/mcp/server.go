@@ -48,6 +48,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/orneryd/nornicdb/pkg/embed"
 	"io"
 	"math"
 	"net/http"
@@ -922,8 +923,16 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 		}
 		svc, err := s.db.GetOrCreateSearchService(dbName, engine)
 		if err == nil && svc != nil {
+			var activeEmbedder Embedder = s.embed
+			configured, resolveErr := s.db.GetEmbedderForDB(dbName)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			if configured != nil {
+				activeEmbedder = configured
+			}
 			// Try vector/hybrid search if embeddings enabled
-			if s.embed != nil && s.config.EmbeddingEnabled {
+			if activeEmbedder != nil && s.config.EmbeddingEnabled {
 				// IMPORTANT: don't rely on embedding failures to detect "too long" queries.
 				// Instead, proactively chunk the query into embedding-safe segments.
 				const (
@@ -933,7 +942,7 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 					outerRRFK         = 60 // RRF constant for cross-chunk fusion
 				)
 
-				queryChunks, chunkErr := s.embed.ChunkText(query, queryChunkSize, queryChunkOverlap)
+				queryChunks, chunkErr := activeEmbedder.ChunkText(query, queryChunkSize, queryChunkOverlap)
 				if chunkErr != nil {
 					return nil, chunkErr
 				}
@@ -942,7 +951,21 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 				}
 
 				// Embed each chunk and search; then fuse results across chunks using RRF (rank-based).
-				queryEmbeddings, err := s.embed.EmbedBatch(ctx, queryChunks)
+				var queryEmbeddings [][]float32
+				var err error
+				if native, ok := embed.QueryProvider(activeEmbedder); ok {
+					queryChunks = []string{query}
+					var vector []float32
+					vector, err = native.EmbedQuery(ctx, query)
+					if err != nil {
+						return nil, err
+					}
+					if err == nil {
+						queryEmbeddings = [][]float32{vector}
+					}
+				} else {
+					queryEmbeddings, err = activeEmbedder.EmbedBatch(ctx, queryChunks)
+				}
 				if err == nil && len(queryEmbeddings) == len(queryChunks) && len(queryEmbeddings) > 0 {
 					method = "vector"
 
@@ -964,6 +987,7 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 						title    string
 						preview  string
 						props    map[string]any
+						passages []search.SupportingPassage
 						scoreRRF float64 // outer RRF, used for ordering across chunks
 						bestSim  float64 // max normalized relevance observed across chunks
 					}
@@ -995,6 +1019,7 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 									title:    r.Title,
 									preview:  r.ContentPreview,
 									props:    r.Properties,
+									passages: r.Passages,
 									scoreRRF: 0,
 									bestSim:  0,
 								}
@@ -1045,6 +1070,7 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 							Title:          f.title,
 							ContentPreview: f.preview,
 							Similarity:     f.bestSim,
+							Passages:       f.passages,
 							Properties:     sanitizePropertiesForLLM(props),
 						}
 						if depth > 1 {
@@ -1080,6 +1106,7 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 						Title:          r.Title,
 						ContentPreview: r.ContentPreview,
 						Similarity:     discoverResultSimilarity(r),
+						Passages:       r.Passages,
 						Properties:     sanitizePropertiesForLLM(props),
 					}
 					if depth > 1 {

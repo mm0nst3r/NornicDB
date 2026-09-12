@@ -2220,7 +2220,7 @@ type authAwareStorageResolver interface {
 }
 
 type databaseExecutorConfigurator interface {
-	ConfigureDatabaseExecutor(exec *cypher.StorageExecutor, dbName string, storageEngine storage.Engine)
+	ConfigureDatabaseExecutor(exec *cypher.StorageExecutor, dbName string, storageEngine storage.Engine) error
 }
 
 type baseCypherExecutorProvider interface {
@@ -2263,19 +2263,19 @@ func (s *Session) newDatabaseScopedCypherExecutor(dbName string, useAuthScopedRe
 	if s.server.config != nil {
 		executor.SetLocalizationRenderer(s.server.config.Localizer)
 	}
-	if baseAdapter, ok := s.server.executor.(*boltQueryExecutorAdapter); ok && baseAdapter != nil && baseAdapter.executor != nil {
-		if emb := baseAdapter.executor.GetEmbedder(); emb != nil {
-			executor.SetEmbedder(emb)
-		}
-	}
 	if cfg, ok := s.server.executor.(databaseExecutorConfigurator); ok && cfg != nil {
-		cfg.ConfigureDatabaseExecutor(executor, dbName, storageEngine)
-	}
-	if provider, ok := s.server.executor.(baseCypherExecutorProvider); ok && provider != nil {
+		if err := cfg.ConfigureDatabaseExecutor(executor, dbName, storageEngine); err != nil {
+			return nil, err
+		}
+	} else if provider, ok := s.server.executor.(baseCypherExecutorProvider); ok && provider != nil {
 		if baseExec := provider.BaseCypherExecutor(); baseExec != nil {
 			if emb := baseExec.GetEmbedder(); emb != nil {
 				executor.SetEmbedder(emb)
 			}
+		}
+	} else if baseAdapter, ok := s.server.executor.(*boltQueryExecutorAdapter); ok && baseAdapter != nil && baseAdapter.executor != nil {
+		if emb := baseAdapter.executor.GetEmbedder(); emb != nil {
+			executor.SetEmbedder(emb)
 		}
 	}
 	if mgr, ok := s.server.dbManager.(*multidb.DatabaseManager); ok {

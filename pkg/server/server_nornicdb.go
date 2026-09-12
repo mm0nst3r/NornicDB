@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -301,11 +302,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Database string              `json:"database,omitempty"` // Optional: defaults to default database
-		Query    string              `json:"query"`
-		Labels   []string            `json:"labels,omitempty"`
-		Limit    int                 `json:"limit,omitempty"`
-		Filters  map[string][]string `json:"filters,omitempty"`
+		RerankFailurePolicy search.RerankFailurePolicy `json:"rerank_failure_policy,omitempty"`
+		RerankTruncation    *bool                      `json:"rerank_truncation,omitempty"`
+		RerankTopK          int                        `json:"rerank_top_k,omitempty"`
+		RerankMinScore      float64                    `json:"rerank_min_score,omitempty"`
+		Database            string                     `json:"database,omitempty"` // Optional: defaults to default database
+		Query               string                     `json:"query"`
+		Labels              []string                   `json:"labels,omitempty"`
+		Limit               int                        `json:"limit,omitempty"`
+		Filters             map[string][]string        `json:"filters,omitempty"`
 	}
 
 	if err := s.readJSON(r, &req); err != nil {
@@ -449,6 +454,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		queryChunks = queryChunks[:maxQueryChunks]
 	}
 
+	nativeAfterFusion := len(queryChunks) > 1 && searchSvc.NativeRerankEnabled()
 	var searchResponse *search.SearchResponse
 	// Helper to build search options consistently.
 	buildOpts := func(q string, limit int) *search.SearchOptions {
@@ -460,7 +466,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if len(req.Filters) > 0 {
 			opts.Filters = req.Filters
 		}
-		opts.RerankEnabled = searchSvc.RerankerAvailable(ctx)
+		opts.RerankEnabled = searchSvc.RerankerAvailable(ctx) && !nativeAfterFusion
+		opts.RerankFailurePolicy = req.RerankFailurePolicy
+		opts.RerankTruncation = req.RerankTruncation
+		if req.RerankTopK > 0 {
+			opts.RerankTopK = req.RerankTopK
+		}
+		opts.RerankMinScore = req.RerankMinScore
 		return opts
 	}
 	// Bound embedding latency even if the embedder ignores context cancellation.
@@ -521,6 +533,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			perChunkLimit = 100
 		}
 
+		if nativeAfterFusion {
+			perChunkLimit = buildOpts(req.Query, req.Limit).RerankTopK
+		}
 		type fused struct {
 			node       *nornicdb.Node
 			scoreRRF   float64
@@ -601,7 +616,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				sort.Slice(fusedList, func(i, j int) bool {
 					return fusedList[i].scoreRRF > fusedList[j].scoreRRF
 				})
-				if len(fusedList) > req.Limit {
+				if !nativeAfterFusion && len(fusedList) > req.Limit {
 					fusedList = fusedList[:req.Limit]
 				}
 
@@ -656,6 +671,18 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if nativeAfterFusion {
+		opts := buildOpts(req.Query, req.Limit)
+		opts.RerankEnabled = true
+		if err := searchSvc.RerankSearchResponse(ctx, req.Query, searchResponse, opts); err != nil {
+			s.writeBoundaryError(w, r, http.StatusBadGateway, err, ErrInternalError)
+			return
+		}
+	}
+	if searchResponse.Rerank != nil {
+		report, _ := json.Marshal(searchResponse.Rerank)
+		w.Header().Set("X-NornicDB-Rerank", string(report))
+	}
 	// Canonical mapping keeps DB and server adapters consistent.
 	results := nornicdb.MapSearchResponse(searchResponse)
 	if searchDiagEnabled {

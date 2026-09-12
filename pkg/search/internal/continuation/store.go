@@ -263,12 +263,13 @@ func clonePopulation(ctx context.Context, p Population, c Config) (Population, i
 	if len(p.Hits) > c.MaxResults {
 		return Population{}, 0, ErrCapacity
 	}
-	bytes := int64(len(p.SearchMethod)) + 256
+	bytes := int64(len(p.SearchMethod)) + int64(len(p.Metadata)) + 256
 	if bytes > c.MaxBytes || bytes > c.MaxBuildBytes {
 		return Population{}, 0, ErrCapacity
 	}
 	out := p
 	out.SearchMethod = strings.Clone(p.SearchMethod)
+	out.Metadata = strings.Clone(p.Metadata)
 	out.Hits = make([]Hit, 0, len(p.Hits))
 	seenIDs := make(map[string]bool, len(p.Hits))
 	seenGroups := make(map[string]bool)
@@ -297,6 +298,7 @@ func clonePopulation(ctx context.Context, p Population, c Config) (Population, i
 		}
 		h.ID = strings.Clone(h.ID)
 		h.GroupKey = strings.Clone(h.GroupKey)
+		h.Metadata = strings.Clone(h.Metadata)
 		out.Hits = append(out.Hits, h)
 	}
 	return out, bytes, nil
@@ -391,7 +393,7 @@ func (s *Store) pageLocked(entry *session, position, pageSize int) *Page {
 	results := make([]Hit, end-position)
 	copy(results, p.Hits[position:end])
 	done := end == len(p.Hits)
-	page := &Page{Results: results, Returned: len(results), Position: position, Total: len(p.Hits),
+	page := &Page{Results: results, Returned: len(results), Position: position, Total: len(p.Hits), Metadata: p.Metadata,
 		TotalCandidates: p.TotalCandidates, FallbackTriggered: p.FallbackTriggered,
 		VectorStopReason: p.VectorStopReason, VectorCandidateLimit: p.VectorCandidateLimit,
 		BM25StopReason: p.BM25StopReason, BM25CandidateLimit: p.BM25CandidateLimit,

@@ -1,4 +1,14 @@
 - {
+    name: db.embedding.control,
+    en: "Controls managed embedding work for a source node",
+    es: "Controla el trabajo de embeddings gestionados para un nodo de origen",
+  }
+- {
+    name: db.embedding.status,
+    en: "Returns managed embedding status for a source node",
+    es: "Devuelve el estado de embeddings gestionados para un nodo de origen",
+  }
+- {
     name: db.awaitIndex,
     en: "Waits for one index to be online",
     es: "Espera a que un índice esté en línea",

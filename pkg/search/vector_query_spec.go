@@ -530,6 +530,19 @@ func (s *Service) vectorQueryNodesExact(ctx context.Context, queryEmbedding []fl
 		default:
 		}
 
+		if s.embeddingSpace.Load() != nil {
+			node, err := s.engine.GetNode(storage.NodeID(nodeID))
+			if errors.Is(err, storage.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if node == nil || !s.embeddingNodeEligible(node) {
+				continue
+			}
+		}
+
 		if spec.Label != "" {
 			has := false
 			for _, l := range labels {

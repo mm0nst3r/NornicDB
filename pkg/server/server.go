@@ -304,6 +304,24 @@ func buildEmbedConfigFromResolved(effective map[string]string, fallback *Config)
 		cfg.APIPath = "/api/embeddings"
 	case "openai":
 		cfg.APIPath = "/v1/embeddings"
+	case "voyage-context":
+		cfg.APIPath = "/v1/contextualizedembeddings"
+		size := getInt("NORNICDB_EMBED_CHUNK_SIZE", 512)
+		overlap := getInt("NORNICDB_EMBED_CHUNK_OVERLAP", 0)
+		auto := true
+		if fallback.ProcessConfig != nil {
+			auto = fallback.ProcessConfig.EmbeddingWorker.AutoChunking
+		}
+		autoText := get("NORNICDB_EMBED_AUTO_CHUNKING", strconv.FormatBool(auto))
+		auto = autoText == "true" || autoText == "1"
+		cfg.Voyage = &embed.VoyageEmbeddingOptions{AutoChunking: &auto, MaxAttempts: 1}
+		if auto {
+			cfg.Voyage.ChunkSize = &size
+			cfg.Voyage.ChunkOverlap = &overlap
+		}
+	case "voyage-multimodal":
+		cfg.APIPath = "/v1/multimodalembeddings"
+		cfg.Voyage = &embed.VoyageEmbeddingOptions{MaxAttempts: 1}
 	case "local":
 		// no APIPath
 	default:
@@ -1166,12 +1184,14 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 		defer rerankerResolverMu.RUnlock()
 		return globalRerankerResolver
 	}
-	resolveDBRerankConfig := func(dbName string) (enabled bool, provider, model, apiURL, apiKey string) {
+	resolveDBRerankConfig := func(dbName string) (enabled bool, provider, model, apiURL, apiKey string, truncation bool, failurePolicy string) {
 		enabled = featuresConfig.SearchRerankEnabled
 		provider = strings.TrimSpace(strings.ToLower(featuresConfig.SearchRerankProvider))
 		model = featuresConfig.SearchRerankModel
 		apiURL = strings.TrimSpace(featuresConfig.SearchRerankAPIURL)
 		apiKey = featuresConfig.SearchRerankAPIKey
+		truncation = featuresConfig.SearchRerankTruncation
+		failurePolicy = featuresConfig.SearchRerankFailurePolicy
 		if provider == "" {
 			provider = "local"
 		}
@@ -1179,14 +1199,16 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 			apiURL = "http://localhost:11434/rerank"
 		}
 		if s.dbConfigStore == nil {
-			return enabled, provider, model, apiURL, apiKey
+			return enabled, provider, model, apiURL, apiKey, truncation, failurePolicy
 		}
 		overrides := s.dbConfigStore.GetOverrides(dbName)
 		resolved := dbconfig.Resolve(globalConfig, overrides)
 		if resolved == nil || resolved.Effective == nil {
-			return enabled, provider, model, apiURL, apiKey
+			return enabled, provider, model, apiURL, apiKey, truncation, failurePolicy
 		}
 		eff := resolved.Effective
+		truncation, _ = strconv.ParseBool(eff["db.nornic.search.rerank.truncation"])
+		failurePolicy = eff["db.nornic.search.rerank.failure.policy"]
 		if raw := strings.TrimSpace(strings.ToLower(eff["db.nornic.search.rerank.enabled"])); raw != "" {
 			switch raw {
 			case "1", "true", "yes", "on":
@@ -1210,10 +1232,13 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 		if provider == "ollama" && apiURL == "" {
 			apiURL = "http://localhost:11434/rerank"
 		}
-		return enabled, provider, model, apiURL, apiKey
+		return enabled, provider, model, apiURL, apiKey, truncation, failurePolicy
 	}
-	getOrCreateExternalReranker := func(provider, model, apiURL, apiKey string) search.Reranker {
-		key := strings.Join([]string{provider, model, apiURL, apiKey}, "|")
+	getOrCreateExternalReranker := func(provider, model, apiURL, apiKey string, truncation bool, failurePolicy string) search.Reranker {
+		if provider == "voyage" && apiURL == "" {
+			apiURL = "https://api.voyageai.com/v1/rerank"
+		}
+		key := strings.Join([]string{provider, model, apiURL, apiKey, strconv.FormatBool(truncation), failurePolicy}, "|")
 		rerankerResolverMu.RLock()
 		if cached, ok := perDBRerankerCache[key]; ok {
 			rerankerResolverMu.RUnlock()
@@ -1224,6 +1249,7 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 			return nil
 		}
 		ceConfig := &search.CrossEncoderConfig{
+			Truncation: truncation, FailurePolicy: search.RerankFailurePolicy(failurePolicy),
 			Enabled:  true,
 			APIURL:   apiURL,
 			APIKey:   apiKey,
@@ -1235,7 +1261,7 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 		if ceConfig.Model == "" && provider == "ollama" {
 			ceConfig.Model = "reranker"
 		}
-		ce := search.NewCrossEncoder(ceConfig)
+		ce := search.NewConfiguredHTTPReranker(provider, ceConfig)
 		rerankerResolverMu.Lock()
 		perDBRerankerCache[key] = ce
 		rerankerResolverMu.Unlock()
@@ -1243,7 +1269,7 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 	}
 	// Install per-DB reranker resolver. It respects DB overrides and falls back to global resolver.
 	db.SetRerankerResolver(func(dbName string) search.Reranker {
-		enabled, provider, model, apiURL, apiKey := resolveDBRerankConfig(dbName)
+		enabled, provider, model, apiURL, apiKey, truncation, failurePolicy := resolveDBRerankConfig(dbName)
 		if !enabled {
 			return nil
 		}
@@ -1253,7 +1279,7 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 			}
 			return nil
 		}
-		if r := getOrCreateExternalReranker(provider, model, apiURL, apiKey); r != nil {
+		if r := getOrCreateExternalReranker(provider, model, apiURL, apiKey, truncation, failurePolicy); r != nil {
 			return r
 		}
 		if resolver := getGlobalRerankerResolver(); resolver != nil {
@@ -1431,6 +1457,9 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 		} else {
 			// External provider: use HTTP rerank API (Cohere, HuggingFace TEI, Ollama adapter, etc.).
 			apiURL := strings.TrimSpace(featuresConfig.SearchRerankAPIURL)
+			if provider == "voyage" && apiURL == "" {
+				apiURL = "https://api.voyageai.com/v1/rerank"
+			}
 			if apiURL == "" {
 				if provider == "ollama" {
 					apiURL = "http://localhost:11434/rerank"
@@ -1442,18 +1471,20 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 						"search_rerank", provider, "NORNICDB_SEARCH_RERANK_API_URL"))
 			} else {
 				ceConfig := &search.CrossEncoderConfig{
-					Enabled:  true,
-					APIURL:   apiURL,
-					APIKey:   featuresConfig.SearchRerankAPIKey,
-					Model:    featuresConfig.SearchRerankModel,
-					TopK:     100,
-					Timeout:  30 * time.Second,
-					MinScore: 0.0,
+					Truncation:    featuresConfig.SearchRerankTruncation,
+					FailurePolicy: search.RerankFailurePolicy(featuresConfig.SearchRerankFailurePolicy),
+					Enabled:       true,
+					APIURL:        apiURL,
+					APIKey:        featuresConfig.SearchRerankAPIKey,
+					Model:         featuresConfig.SearchRerankModel,
+					TopK:          100,
+					Timeout:       30 * time.Second,
+					MinScore:      0.0,
 				}
 				if ceConfig.Model == "" && provider == "ollama" {
 					ceConfig.Model = "reranker"
 				}
-				ce := search.NewCrossEncoder(ceConfig)
+				ce := search.NewConfiguredHTTPReranker(provider, ceConfig)
 				db.SetSearchReranker(ce)
 				setGlobalRerankerResolver(func(string) search.Reranker { return ce })
 				s.logEvent(context.Background(), slog.LevelInfo,
@@ -1467,7 +1498,7 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 
 	// Configure embeddings if enabled
 	// Local provider doesn't need API URL, others do
-	embeddingsReady := config.EmbeddingEnabled && (config.EmbeddingProvider == "local" || config.EmbeddingAPIURL != "")
+	embeddingsReady := config.EmbeddingEnabled && (config.EmbeddingProvider == "local" || config.EmbeddingProvider == "voyage-context" || config.EmbeddingProvider == "voyage-multimodal" || config.EmbeddingAPIURL != "")
 	if embeddingsReady {
 		embedConfig := &embed.Config{
 			Provider:      config.EmbeddingProvider,
@@ -1490,11 +1521,19 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 			embedConfig.APIPath = "/api/embeddings"
 		case "openai":
 			embedConfig.APIPath = "/v1/embeddings"
+		case "voyage-context":
+			embedConfig.APIPath = "/v1/contextualizedembeddings"
+		case "voyage-multimodal":
+			embedConfig.APIPath = "/v1/multimodalembeddings"
 		case "local":
 			// Local provider doesn't need API path
 		default:
 			// Default to Ollama format
 			embedConfig.APIPath = "/api/embeddings"
+		}
+
+		if strings.HasPrefix(config.EmbeddingProvider, "voyage-") {
+			embedConfig = buildEmbedConfigFromResolved(nil, config)
 		}
 
 		// Initialize embeddings asynchronously to prevent startup blocking
@@ -1523,10 +1562,11 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 
 				// Use factory function for all providers.
 				embedder, err := embed.NewEmbedder(embedConfig)
-				if err == nil {
+				_, nativeManaged := embed.ManagedProvider(embedder)
+				if err == nil && !nativeManaged {
 					// Health check: test embedding before enabling.
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					_, healthErr := embedder.Embed(ctx, "health check")
+					_, healthErr := embed.QueryVector(ctx, embedder, "health check")
 					cancel()
 					if healthErr != nil {
 						err = fmt.Errorf("health check failed: %w", healthErr)
@@ -1630,22 +1670,6 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 		return out
 	})
 
-	// Reconcile search-service startup for metadata-only or late-created databases.
-	// DB.Open() warms namespaces present in storage; this loop ensures known DB metadata
-	// also gets initialized, and keeps doing so without requiring first-search triggers.
-	s.ensureSearchBuildStartedForKnownDatabases()
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			if s.closed.Load() {
-				return
-			}
-			s.ensureSearchBuildStartedForKnownDatabases()
-			<-ticker.C
-		}
-	}()
-
 	// Wire MCP to use per-database executors when invoked from the agentic loop (so link/store/recall use the request's database)
 	if mcpServer != nil && dbManager != nil {
 		mcpServer.SetDatabaseScopedExecutor(s.mcpDatabaseScopedExecutor())
@@ -1744,6 +1768,7 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 				}
 				return search.ServiceOptions{
 					DatabaseID: dbName, SearchResultCacheEntries: resolved.SearchResultCacheMaxEntries,
+					EmbeddingSpace:         resolvedNativeEmbeddingSpace(resolved.Effective, config),
 					SearchResultCacheTTL:   resolved.SearchResultCacheTTL,
 					BM25MemoryMaxBytes:     resolved.BM25MemoryMaxBytes,
 					VectorMemoryMaxBytes:   resolved.VectorMemoryMaxBytes,
@@ -1774,6 +1799,22 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 	// final fallback, which matches today's behaviour for misconfigured
 	// systems.
 	db.MarkSearchWarmupReady()
+
+	// Reconcile search-service startup for metadata-only or late-created databases.
+	// DB.Open() warms namespaces present in storage; this loop ensures known DB metadata
+	// also gets initialized, and keeps doing so without requiring first-search triggers.
+	s.ensureSearchBuildStartedForKnownDatabases()
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			if s.closed.Load() {
+				return
+			}
+			s.ensureSearchBuildStartedForKnownDatabases()
+			<-ticker.C
+		}
+	}()
 
 	// Initialize slow query logger if file specified.
 	// D-04d collapse: threshold + log file path read from the canonical
@@ -2069,4 +2110,18 @@ type ServerStats struct {
 	Version        string        `json:"version"`
 	Commit         string        `json:"commit"`
 	BuildTime      string        `json:"build_time"`
+}
+
+// resolvedNativeEmbeddingSpace builds a descriptor without making a provider call.
+// Invalid native configuration cannot admit vectors from any valid model space.
+func resolvedNativeEmbeddingSpace(effective map[string]string, fallback *Config) string {
+	cfg := buildEmbedConfigFromResolved(effective, fallback)
+	if cfg == nil || !strings.HasPrefix(cfg.Provider, "voyage-") {
+		return ""
+	}
+	provider, err := embed.NewVoyage(cfg, cfg.Voyage)
+	if err != nil {
+		return "invalid-native-embedding-configuration"
+	}
+	return provider.EmbeddingSpace().Key()
 }

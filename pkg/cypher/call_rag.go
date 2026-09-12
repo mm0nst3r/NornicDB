@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/orneryd/nornicdb/pkg/embed"
 	"math"
 	"strings"
 	"time"
@@ -47,11 +48,19 @@ func (e *StorageExecutor) callDbRerank(ctx context.Context, cypher string) (*Exe
 	}
 
 	opts := search.DefaultSearchOptions()
+	// Standalone reranking defaults to all submitted candidates.
+	opts.Limit = 0
+	if limit, ok := toInt(req["limit"]); ok && limit > 0 {
+		opts.Limit = limit
+	}
 	if v, ok := toInt(firstPresent(req, "rerankTopK", "rerank_top_k")); ok && v > 0 {
 		opts.RerankTopK = v
 	}
 	if v, ok := ragToFloat64(firstPresent(req, "rerankMinScore", "rerank_min_score")); ok {
 		opts.RerankMinScore = v
+	}
+	if err := applyNativeRerankOptions(opts, req); err != nil {
+		return nil, err
 	}
 
 	svc := e.searchService
@@ -59,7 +68,7 @@ func (e *StorageExecutor) callDbRerank(ctx context.Context, cypher string) (*Exe
 		svc = search.NewService(e.storage)
 		e.searchService = svc
 	}
-	reranked, err := svc.RerankCandidates(ctx, query, candidates, opts)
+	reranked, report, err := svc.RerankCandidatesWithReport(ctx, query, candidates, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -79,6 +88,7 @@ func (e *StorageExecutor) callDbRerank(ctx context.Context, cypher string) (*Exe
 			r.FinalScore,
 		})
 	}
+	appendRerankReport(result, report)
 	return result, nil
 }
 
@@ -237,6 +247,13 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 		})
 	}
 
+	if hasSupportingPassages(response.Results) {
+		result.Columns = append(result.Columns, "passages")
+		for i, r := range response.Results {
+			result.Rows[i] = append(result.Rows[i], search.PassageMaps(r.Passages))
+		}
+	}
+	appendRerankReport(result, response.Rerank)
 	return result, nil
 }
 
@@ -267,6 +284,10 @@ func retrievalOptions(query string, req map[string]interface{}, forceRerank bool
 	}
 	if v, ok := ragToFloat64(firstPresent(req, "rerankMinScore", "rerank_min_score")); ok {
 		opts.RerankMinScore = v
+	}
+
+	if err := applyNativeRerankOptions(opts, req); err != nil {
+		return nil, false, err
 	}
 
 	return opts, failClosed, nil
@@ -344,6 +365,9 @@ func (e *StorageExecutor) resolveRetrieveEmbedding(ctx context.Context, req map[
 	if e.embedder != nil {
 		embedded, embedErr := embedQueryChunked(ctx, e.embedder, query)
 		if embedErr != nil {
+			if _, native := embed.QueryProvider(e.embedder); native {
+				return nil, embedErr
+			}
 			if failClosed {
 				return nil, failClosedEmbeddingUnavailable(embedErr)
 			}
@@ -609,4 +633,47 @@ func parseRerankCandidates(raw interface{}) ([]search.RerankCandidate, error) {
 		})
 	}
 	return out, nil
+}
+
+func applyNativeRerankOptions(opts *search.SearchOptions, req map[string]interface{}) error {
+	if raw, ok := policyPresent(req, "rerankTruncation", "rerank_truncation"); ok {
+		value, valid := raw.(bool)
+		if !valid {
+			return fmt.Errorf("rerankTruncation must be a boolean")
+		}
+		opts.RerankTruncation = &value
+	}
+	if raw, ok := policyPresent(req, "rerankFailurePolicy", "rerank_failure_policy"); ok {
+		value, valid := raw.(string)
+		if !valid || (value != "error" && value != "original") {
+			return fmt.Errorf("rerankFailurePolicy must be error or original")
+		}
+		opts.RerankFailurePolicy = search.RerankFailurePolicy(value)
+	}
+	return nil
+}
+
+// appendRerankReport preserves existing provider rows while carrying native
+// outcomes both in rows and metadata (including successful zero-hit responses).
+func appendRerankReport(result *ExecuteResult, report *search.RerankReport) {
+	if report == nil {
+		return
+	}
+	result.Columns = append(result.Columns, "rerank")
+	for i := range result.Rows {
+		result.Rows[i] = append(result.Rows[i], report.Map())
+	}
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]interface{})
+	}
+	result.Metadata["rerank"] = report.Map()
+}
+
+func hasSupportingPassages(rows []search.SearchResult) bool {
+	for _, r := range rows {
+		if len(r.Passages) > 0 {
+			return true
+		}
+	}
+	return false
 }

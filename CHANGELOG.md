@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native Voyage reranking with explicit truncation/failure policies, stable candidate identity and provider outcome reports.
+- Managed contextualized and multimodal Voyage embeddings with complete provider-returned passages, per-database model spaces, durable job controls/retries and source-conditional publication. See [Native Voyage retrieval](docs/user-guides/voyage.md).
 - Native Go and Cypher search continuation with scope-bound, replayable cursors, explicit
   ranked-pool versus collection exhaustion, optional parent grouping, and a
   deterministic ID-ordered catalogue tail. Built-in storage and index mutations invalidate sessions;
@@ -22,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve async node update classification across flush cleanup, retain pending-create counts after failed first writes, and report persistence-lookup failures.
 - Restore persisted vector-store reloads on Windows while preserving committed-tail recovery and append semantics.
 - Repair persisted HNSW warmup, localized model-path, and vector-store error fixtures for Windows and Linux.
+- Delete persisted nodes correctly after queued updates and keep warmed Cypher results current after node mutations.
+- Honor explicit embedding CLI configuration and synchronize localized test-log capture.
+- Preserve sanitized provider diagnostics when native Voyage reranking returns a failure through public APIs.
 
 ## [v1.3.2] - 9/11/2026
 

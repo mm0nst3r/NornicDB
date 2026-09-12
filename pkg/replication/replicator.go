@@ -149,6 +149,9 @@ const (
 
 	// CmdBulkDeleteEdges deletes multiple edges.
 	CmdBulkDeleteEdges
+
+	// CmdUpdateEmbeddingIfCurrent atomically publishes source-bound derived state.
+	CmdUpdateEmbeddingIfCurrent
 )
 
 // HealthStatus represents the health state of the replicator.
