@@ -3,6 +3,8 @@
 NornicDB exposes seam-aligned Cypher procedures for in-query RAG orchestration:
 
 - `CALL db.retrieve({query: '...', limit: 10, ...})`
+- `CALL db.retrieve.page({query: '...', embedding: [...], mode: 'ranked_then_id', pageSize: 50, ...})`
+- `CALL db.retrieve.release({...})`
 - `CALL db.rretrieve({query: '...', limit: 10, ...})`
 - `CALL db.rerank({query: '...', candidates: [...], rerankTopK: 50, rerankMinScore: 0.0})`
 - `CALL db.index.vector.embed('...') YIELD embedding`
@@ -14,6 +16,15 @@ These procedures are read-only and designed to map directly to internal contract
 - Inference uses existing Heimdall manager `Generate`/`Chat` contracts.
 
 ## Procedure behavior
+
+- `db.retrieve.page` / `db.retrieve.release`
+  - Return or release a native continuation using the canonical search service.
+  - Support a fixed ranked population, a ranked prefix followed by the filtered
+    collection in ID order, or metadata-only ID browsing.
+  - Return one page map even for empty results, with distinct candidate/collection
+    counts and exhaustion information. Embeddings are explicit and reused.
+  - See [Search continuation](search-continuation.md) for the full contract,
+    grouping, storage-change invalidation, resource limits and client examples.
 
 - `db.retrieve`
   - Uses existing hybrid search behavior.

@@ -9,6 +9,7 @@ type NodeDecayFilterFunc func(nodeID string) bool
 // Candidates that the filter reports as suppressed are removed from vector
 // and BM25 candidate pools before RRF fusion.
 func (s *Service) SetNodeDecayFilter(fn NodeDecayFilterFunc) {
+	defer s.BeginSearchContinuationMutation()()
 	s.mu.Lock()
 	s.nodeDecayFilter = fn
 	s.mu.Unlock()

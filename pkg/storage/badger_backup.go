@@ -112,6 +112,9 @@ func (b *BadgerEngine) DeleteByPrefix(prefix string) (nodesDeleted int64, edgesD
 		if err := b.db.DropPrefix(p); err != nil {
 			return 0, 0, localizedError(localization.StorageClientDropPrefixFailed(p[0], err), err)
 		}
+		if p[0] == prefixNode && nodesDeleted > 0 {
+			b.nodeMutationVersions.changedPrefix(prefix)
+		}
 	}
 
 	deleteIndexEntriesBySuffixPrefix := func(indexPrefix byte) error {

@@ -273,13 +273,14 @@ type BadgerEngine struct {
 
 	// Event callbacks for external coordination (search indexes, caches, etc.)
 	// These are fired AFTER storage operations succeed
-	onNodeCreated NodeEventCallback
-	onNodeUpdated NodeEventCallback
-	onNodeDeleted NodeDeleteCallback
-	onEdgeCreated EdgeEventCallback
-	onEdgeUpdated EdgeEventCallback
-	onEdgeDeleted EdgeDeleteCallback
-	callbackMu    sync.RWMutex
+	onNodeCreated        NodeEventCallback
+	onNodeUpdated        NodeEventCallback
+	onNodeDeleted        NodeDeleteCallback
+	onEdgeCreated        EdgeEventCallback
+	onEdgeUpdated        EdgeEventCallback
+	onEdgeDeleted        EdgeDeleteCallback
+	callbackMu           sync.RWMutex
+	nodeMutationVersions nodeMutationVersions
 
 	// Knowledge-layer decay scoring (Phase 4).
 	decayEnabled  bool
@@ -382,6 +383,7 @@ func (b *BadgerEngine) OnEdgeDeleted(callback EdgeDeleteCallback) {
 
 // notifyNodeCreated calls the registered callback if set.
 func (b *BadgerEngine) notifyNodeCreated(node *Node) {
+	b.nodeMutationVersions.changed(node.ID)
 	b.callbackMu.RLock()
 	callback := b.onNodeCreated
 	b.callbackMu.RUnlock()
@@ -393,6 +395,7 @@ func (b *BadgerEngine) notifyNodeCreated(node *Node) {
 
 // notifyNodeUpdated calls the registered callback if set.
 func (b *BadgerEngine) notifyNodeUpdated(node *Node) {
+	b.nodeMutationVersions.changed(node.ID)
 	b.callbackMu.RLock()
 	callback := b.onNodeUpdated
 	b.callbackMu.RUnlock()
@@ -404,6 +407,11 @@ func (b *BadgerEngine) notifyNodeUpdated(node *Node) {
 
 // notifyNodeDeleted calls the registered callback if set.
 func (b *BadgerEngine) notifyNodeDeleted(nodeID NodeID) {
+	b.nodeMutationVersions.changed(nodeID)
+	b.dispatchNodeDeleted(nodeID)
+}
+
+func (b *BadgerEngine) dispatchNodeDeleted(nodeID NodeID) {
 	b.callbackMu.RLock()
 	callback := b.onNodeDeleted
 	b.callbackMu.RUnlock()

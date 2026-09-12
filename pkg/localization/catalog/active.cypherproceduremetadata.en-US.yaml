@@ -56,6 +56,10 @@
   other: "Resamples index statistics"
 - id: cypherproceduremetadata.db_retrieve
   other: "Hybrid retrieval procedure"
+- id: cypherproceduremetadata.db_retrieve_page
+  other: "Returns a stable page from a filtered search population"
+- id: cypherproceduremetadata.db_retrieve_release
+  other: "Releases a retained search continuation"
 - id: cypherproceduremetadata.db_rretrieve
   other: "Hybrid retrieval + rerank procedure"
 - id: cypherproceduremetadata.db_schema_nodeproperties

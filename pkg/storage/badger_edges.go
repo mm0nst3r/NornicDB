@@ -684,9 +684,13 @@ func (b *BadgerEngine) BulkDeleteNodes(ids []NodeID) error {
 		// Use async notifications to avoid blocking bulk deletes (e.g., collection deletion)
 		// The search service can handle these notifications in the background
 		if len(deletedNodeIDs) > 0 {
+			// Revision publication is synchronous even though listeners run later.
+			for _, id := range deletedNodeIDs {
+				b.nodeMutationVersions.changed(id)
+			}
 			go func(ids []NodeID) {
 				for _, id := range ids {
-					b.notifyNodeDeleted(id)
+					b.dispatchNodeDeleted(id)
 				}
 			}(deletedNodeIDs)
 		}
