@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -357,7 +358,7 @@ func testServerLogAcrossLocales(t *testing.T, eventID, english, spanish string, 
 				t.Setenv("NORNICDB_ENCRYPTION_PASSWORD", "test-database-encryption-password")
 			}
 
-			var output bytes.Buffer
+			var output synchronizedLogBuffer
 			logger := slog.New(slog.NewJSONHandler(&output, nil))
 			manager, err := localization.NewManager([]language.Tag{test.tag}, logger)
 			require.NoError(t, err)
@@ -382,6 +383,24 @@ func testServerLogAcrossLocales(t *testing.T, eventID, english, spanish string, 
 			}
 		})
 	}
+}
+
+// synchronizedLogBuffer snapshots log output while server startup goroutines may write.
+type synchronizedLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *synchronizedLogBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return bytes.Clone(b.buffer.Bytes())
 }
 
 func findJSONLogRecord(t *testing.T, output []byte, eventID, englishMessage string) map[string]any {
