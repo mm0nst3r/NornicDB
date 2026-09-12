@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Honor explicitly supplied embedding CLI flags in the loaded configuration; omitted flags preserve environment/YAML values.
 - Restore persisted vector-store reloads on Windows while preserving committed-tail recovery and append semantics.
 - Repair persisted HNSW warmup, localized model-path, and vector-store error fixtures for Windows and Linux.
 
