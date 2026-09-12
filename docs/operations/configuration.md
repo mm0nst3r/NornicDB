@@ -592,8 +592,15 @@ The cache size limits prevent unbounded memory growth during bulk operations:
 
 ### Embedding Settings
 
+Global embedding settings resolve in this order: explicit CLI flags > environment
+variables > YAML > built-in defaults. Omitted flags preserve the loaded values,
+including YAML API credentials. An explicit flag still wins when its value equals
+the default, is empty, or is zero (for example, `--embedding-cache=0`).
+A config file containing only unrelated or per-database settings does not replace
+explicit global embedding flags.
+
 ```yaml
-embeddings:
+embedding:
   provider: local # or ollama, openai
   model: bge-m3
   dimensions: 1024

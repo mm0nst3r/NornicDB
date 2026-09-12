@@ -311,27 +311,45 @@ func applyLowMemoryMode(cfg *config.Config) {
 	cfg.Database.BadgerEdgeTypeCacheMaxTypes = 10
 }
 
+// applyServeEmbeddingOverrides overlays only explicitly supplied CLI flags.
+// The loaded config already resolves environment variables, YAML and defaults;
+// keeping it canonical also preserves YAML credentials when --embedding-key is omitted.
+func applyServeEmbeddingOverrides(cmd *cobra.Command, cfg *config.Config) {
+	if cmd.Flags().Changed("embedding-provider") {
+		cfg.Memory.EmbeddingProvider, _ = cmd.Flags().GetString("embedding-provider")
+	}
+	if cmd.Flags().Changed("embedding-model") {
+		cfg.Memory.EmbeddingModel, _ = cmd.Flags().GetString("embedding-model")
+	}
+	if cmd.Flags().Changed("embedding-url") {
+		cfg.Memory.EmbeddingAPIURL, _ = cmd.Flags().GetString("embedding-url")
+	}
+	if cmd.Flags().Changed("embedding-key") {
+		cfg.Memory.EmbeddingAPIKey, _ = cmd.Flags().GetString("embedding-key")
+	}
+	if cmd.Flags().Changed("embedding-dim") {
+		cfg.Memory.EmbeddingDimensions, _ = cmd.Flags().GetInt("embedding-dim")
+	}
+	if cmd.Flags().Changed("embedding-cache") {
+		cfg.Memory.EmbeddingCacheSize, _ = cmd.Flags().GetInt("embedding-cache")
+	}
+	if cmd.Flags().Changed("embedding-gpu-layers") {
+		cfg.Memory.EmbeddingGPULayers, _ = cmd.Flags().GetInt("embedding-gpu-layers")
+	}
+	if cmd.Flags().Changed("embedding-enabled") {
+		cfg.Memory.EmbeddingEnabled, _ = cmd.Flags().GetBool("embedding-enabled")
+	}
+}
+
 func runServe(cmd *cobra.Command, args []string) error {
 	boltPort, _ := cmd.Flags().GetInt("bolt-port")
 	httpPort, _ := cmd.Flags().GetInt("http-port")
 	address, _ := cmd.Flags().GetString("address")
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 	upgradeStorage, _ := cmd.Flags().GetBool("upgrade-storage")
-	embeddingProvider, _ := cmd.Flags().GetString("embedding-provider")
-	embeddingURL, _ := cmd.Flags().GetString("embedding-url")
-	embeddingKey, _ := cmd.Flags().GetString("embedding-key")
-	embeddingModel, _ := cmd.Flags().GetString("embedding-model")
-	embeddingDim, _ := cmd.Flags().GetInt("embedding-dim")
-	embeddingCache, _ := cmd.Flags().GetInt("embedding-cache")
-	embeddingGPULayers, _ := cmd.Flags().GetInt("embedding-gpu-layers")
-	embeddingEnabledFlag, _ := cmd.Flags().GetBool("embedding-enabled")
 	gpuBackend, _ := cmd.Flags().GetString("gpu-backend")
 	noAuth, _ := cmd.Flags().GetBool("no-auth")
 
-	// Set environment variable for local embedder GPU configuration
-	if embeddingProvider == "local" {
-		os.Setenv("NORNICDB_EMBEDDING_GPU_LAYERS", fmt.Sprintf("%d", embeddingGPULayers))
-	}
 	adminPasswordFlag, _ := cmd.Flags().GetString("admin-password")
 	adminPasswordFlagChanged := cmd.Flags().Changed("admin-password")
 	mcpEnabled, _ := cmd.Flags().GetBool("mcp-enabled")
@@ -438,27 +456,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// YAML config file is the source of truth for embedding settings
-	// Always use config file values if they are set (non-zero/non-empty)
-	if cfg.Memory.EmbeddingDimensions > 0 {
-		embeddingDim = cfg.Memory.EmbeddingDimensions
-	}
-	if cfg.Memory.EmbeddingProvider != "" {
-		embeddingProvider = cfg.Memory.EmbeddingProvider
-	}
-	if cfg.Memory.EmbeddingModel != "" {
-		embeddingModel = cfg.Memory.EmbeddingModel
-	}
-	if cfg.Memory.EmbeddingAPIURL != "" {
-		embeddingURL = cfg.Memory.EmbeddingAPIURL
-	}
-	// Allow explicit CLI override for embedding enablement.
-	if cmd.Flags().Changed("embedding-enabled") {
-		cfg.Memory.EmbeddingEnabled = embeddingEnabledFlag
-	}
-	// Allow explicit CLI override for embedding cache.
-	if cmd.Flags().Changed("embedding-cache") {
-		cfg.Memory.EmbeddingCacheSize = embeddingCache
+	// Explicit CLI flags override the loaded env/YAML/default configuration.
+	applyServeEmbeddingOverrides(cmd, cfg)
+	embeddingProvider := cfg.Memory.EmbeddingProvider
+	embeddingModel := cfg.Memory.EmbeddingModel
+	embeddingURL := cfg.Memory.EmbeddingAPIURL
+	embeddingDim := cfg.Memory.EmbeddingDimensions
+	embeddingGPULayers := cfg.Memory.EmbeddingGPULayers
+	if embeddingProvider == "local" {
+		os.Setenv("NORNICDB_EMBEDDING_GPU_LAYERS", strconv.Itoa(embeddingGPULayers))
 	}
 	// Per-DB search index master switches.
 	//
@@ -594,13 +600,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	dbConfig.Database.DataDir = dataDir
 	dbConfig.Server.BoltPort = boltPort
 	dbConfig.Server.HTTPPort = httpPort
-	// Embedding endpoint/credentials are still computed locally from a
-	// mix of CLI flags + env, then assigned here so the resolved values
-	// land on the same struct.
-	dbConfig.Memory.EmbeddingAPIURL = embeddingURL
-	dbConfig.Memory.EmbeddingAPIKey = embeddingKey
-	dbConfig.Memory.EmbeddingModel = embeddingModel
-	dbConfig.Memory.EmbeddingDimensions = embeddingDim
 	dbConfig.Database.AllowStorageUpgrade = upgradeStorage
 
 	// Memory mode flag is CLI-only (no Config field today). Apply it
@@ -787,12 +786,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	serverConfig.MCPEnabled = mcpEnabled
 	// Pass embedding settings to server (from loaded config)
 	serverConfig.EmbeddingEnabled = cfg.Memory.EmbeddingEnabled
-	serverConfig.EmbeddingProvider = embeddingProvider
-	serverConfig.EmbeddingAPIURL = embeddingURL
-	serverConfig.EmbeddingAPIKey = embeddingKey
-	serverConfig.EmbeddingModel = embeddingModel
-	serverConfig.EmbeddingDimensions = embeddingDim
-	serverConfig.EmbeddingCacheSize = embeddingCache
+	serverConfig.EmbeddingProvider = cfg.Memory.EmbeddingProvider
+	serverConfig.EmbeddingAPIURL = cfg.Memory.EmbeddingAPIURL
+	serverConfig.EmbeddingAPIKey = cfg.Memory.EmbeddingAPIKey
+	serverConfig.EmbeddingModel = cfg.Memory.EmbeddingModel
+	serverConfig.EmbeddingDimensions = cfg.Memory.EmbeddingDimensions
+	serverConfig.EmbeddingCacheSize = cfg.Memory.EmbeddingCacheSize
 	serverConfig.ModelsDir = cfg.Memory.ModelsDir
 	serverConfig.EmbeddingCtxType = cfg.Memory.EmbeddingCtxType
 	serverConfig.EmbeddingPoolingType = cfg.Memory.EmbeddingPoolingType
