@@ -690,6 +690,10 @@ func (ae *AsyncEngine) FlushWithResult() FlushResult {
 			// every label-scoped read pay an O(flushed_history) cost
 			// dereferencing stale IDs back through nodeCache to find nils.
 			ae.removeNodeIDFromLabelIndexLocked(id)
+		} else if successfulNodeWrites[id] && ae.nodeCache[id] != nil {
+			// A newer queued object survived this successful write. Even if
+			// the snapshot was a create, its successor now updates storage.
+			ae.updateNodes[id] = true
 		}
 		// Always clear in-flight marker for this batch (success or fail)
 		delete(ae.inFlightNodes, id)
@@ -916,30 +920,26 @@ func (ae *AsyncEngine) UpdateNode(node *Node) error {
 		return err
 	}
 
-	var baseline *Node
-	ae.mu.RLock()
-	_, alreadyQueued := ae.nodeCache[node.ID]
-	_, hasBaseline := ae.nodeUpdateBaseline[node.ID]
-	ae.mu.RUnlock()
-	if !alreadyQueued && !hasBaseline {
-		if existing, err := ae.engine.GetNode(node.ID); err == nil {
-			baseline = CopyNode(existing)
-		}
-	}
-
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
 
-	if _, exists := ae.nodeUpdateBaseline[node.ID]; !exists {
-		if _, existsInCache := ae.nodeCache[node.ID]; !existsInCache {
-			ae.nodeUpdateBaseline[node.ID] = baseline
+	// Resolve persistence against the current cache state atomically with
+	// queuing the update: flush cleanup must not invalidate this decision.
+	if _, alreadyQueued := ae.nodeCache[node.ID]; !alreadyQueued {
+		existing, err := ae.engine.GetNode(node.ID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
 		}
+		var baseline *Node
+		delete(ae.updateNodes, node.ID)
+		if err == nil {
+			baseline = CopyNode(existing)
+			ae.updateNodes[node.ID] = true
+		}
+		ae.nodeUpdateBaseline[node.ID] = baseline
 	}
-	// A persisted node (or a write already being flushed) remains an update.
-	// Preserve the classification of cached creates when they are edited.
-	if baseline != nil || ae.inFlightNodes[node.ID] {
-		ae.updateNodes[node.ID] = true
-	}
+	// Cached creates remain creates while in flight. Flush promotes a newer
+	// queued object only once the outstanding write succeeds.
 
 	ae.nodeCache[node.ID] = node
 	ae.syncNodeLabelIndexLocked(node)
