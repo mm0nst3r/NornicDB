@@ -3844,6 +3844,10 @@ func (e *StorageExecutor) executeCall(ctx context.Context, cypher string) (*Exec
 	case strings.Contains(upper, "NORNICDB.KNOWLEDGEPOLICY.INFO"):
 		result, err = e.callNornicDbKnowledgePolicyInfo()
 	// Seam-aligned RAG procedures
+	case strings.Contains(upper, "DB.RETRIEVE.PAGE"):
+		result, err = e.callDbRetrievePage(ctx, callCypher, false)
+	case strings.Contains(upper, "DB.RETRIEVE.RELEASE"):
+		result, err = e.callDbRetrievePage(ctx, callCypher, true)
 	case strings.Contains(upper, "DB.RETRIEVE"):
 		result, err = e.callDbRetrieve(ctx, callCypher)
 	case strings.Contains(upper, "DB.RRETRIEVE"):

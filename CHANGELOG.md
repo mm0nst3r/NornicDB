@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Native Go and Cypher search continuation with scope-bound, replayable cursors, explicit
+  ranked-pool versus collection exhaustion, optional parent grouping, and a
+  deterministic ID-ordered catalogue tail. Built-in storage and index mutations invalidate sessions;
+  materialisation and cursor resources have explicit limits. See
+  [search continuation](docs/user-guides/search-continuation.md). (#346)
+
 ### Fixed
 
 - Honor explicitly supplied embedding CLI flags in the loaded configuration; omitted flags preserve environment/YAML values.

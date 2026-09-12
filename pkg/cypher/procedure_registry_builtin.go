@@ -224,6 +224,14 @@ func ensureBuiltInProceduresRegistered() {
 				return e.callNornicDbKnowledgePolicyDeindexStatus()
 			})
 
+		registerBuiltInProcedure("db.retrieve.page", "db.retrieve.page(request :: MAP) :: (page :: MAP)", localization.CypherProcedureMetadata("db.retrieve.page"), ProcedureModeRead, 1, 1, false,
+			func(ctx context.Context, e *StorageExecutor, cypher string, args []interface{}) (*ExecuteResult, error) {
+				return e.callDbRetrievePage(ctx, cypher, false)
+			})
+		registerBuiltInProcedure("db.retrieve.release", "db.retrieve.release(request :: MAP) :: (released :: BOOLEAN)", localization.CypherProcedureMetadata("db.retrieve.release"), ProcedureModeRead, 1, 1, false,
+			func(ctx context.Context, e *StorageExecutor, cypher string, args []interface{}) (*ExecuteResult, error) {
+				return e.callDbRetrievePage(ctx, cypher, true)
+			})
 		registerBuiltInProcedure("db.retrieve", "db.retrieve(request :: MAP) :: (node :: NODE, score :: FLOAT, rrf_score :: FLOAT, vector_rank :: INTEGER, bm25_rank :: INTEGER, search_method :: STRING, fallback_triggered :: BOOLEAN)", localization.CypherProcedureMetadata("db.retrieve"), ProcedureModeRead, 1, 1, false,
 			func(ctx context.Context, e *StorageExecutor, cypher string, args []interface{}) (*ExecuteResult, error) {
 				return e.callDbRetrieve(ctx, cypher)
