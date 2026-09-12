@@ -47,12 +47,12 @@ func TestStorageExecutorCachesResultsWithDatabaseTTL(t *testing.T) {
 	_, err := exec.Execute(context.Background(), query, nil)
 	require.NoError(t, err)
 
-	key := cacheKeyFNV(query, nil)
 	exec.cache.mu.RLock()
-	entry := exec.cache.cache[key]
-	exec.cache.mu.RUnlock()
-	require.NotNil(t, entry)
-	require.Equal(t, 37*time.Second, entry.ttl)
+	defer exec.cache.mu.RUnlock()
+	require.Len(t, exec.cache.cache, 1)
+	for _, entry := range exec.cache.cache {
+		require.Equal(t, 37*time.Second, entry.ttl)
+	}
 }
 
 func TestInvalidateCommittedWriteCaches(t *testing.T) {

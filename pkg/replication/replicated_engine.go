@@ -35,6 +35,24 @@ func NewReplicatedEngine(inner storage.Engine, replicator Replicator, timeout ti
 	}
 }
 
+// NodeMutationVersion exposes local replicated publications to query caches and
+// retained search populations. StorageAdapter applies them to the inner engine.
+func (e *ReplicatedEngine) NodeMutationVersion() (uint64, bool) {
+	if provider, ok := e.Engine.(storage.NodeMutationVersionProvider); ok {
+		return provider.NodeMutationVersion()
+	}
+	return 0, false
+}
+
+// NodeMutationVersionInNamespace preserves database-scoped invalidation through
+// the replication wrapper without introducing another revision owner.
+func (e *ReplicatedEngine) NodeMutationVersionInNamespace(namespace string) (uint64, bool) {
+	if provider, ok := e.Engine.(storage.NamespaceNodeMutationVersionProvider); ok {
+		return provider.NodeMutationVersionInNamespace(namespace)
+	}
+	return 0, false
+}
+
 // IsLeader reports whether this node can accept writes in the current replication mode.
 // This is a convenience for higher-level components (e.g. multidb startup) that need
 // to avoid performing metadata migrations on standby/followers.

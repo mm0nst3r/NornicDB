@@ -558,8 +558,11 @@ func (sc *SmartQueryCache) observeEviction(reason string) {
 
 // Get retrieves a cached result (same as QueryCache).
 func (sc *SmartQueryCache) Get(cypher string, params map[string]interface{}) (*ExecuteResult, bool) {
-	key := cacheKeyFNV(cypher, params)
+	return sc.get(cacheKeyFNV(cypher, params))
+}
 
+// get uses the caller's complete cache identity, including any storage revision.
+func (sc *SmartQueryCache) get(key string) (*ExecuteResult, bool) {
 	sc.mu.RLock()
 	cached, exists := sc.cache[key]
 	sc.mu.RUnlock()
@@ -602,8 +605,12 @@ func (sc *SmartQueryCache) Get(cypher string, params map[string]interface{}) (*E
 
 // PutWithLabels stores a result with associated labels for smart invalidation.
 func (sc *SmartQueryCache) PutWithLabels(cypher string, params map[string]interface{}, result *ExecuteResult, ttl time.Duration, labels []string) {
-	key := cacheKeyFNV(cypher, params)
+	sc.putWithLabels(cacheKeyFNV(cypher, params), result, ttl, labels)
+}
 
+// putWithLabels retains the identity captured before the query ran, so a read
+// overlapping a mutation cannot populate the newer revision's cache entry.
+func (sc *SmartQueryCache) putWithLabels(key string, result *ExecuteResult, ttl time.Duration, labels []string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 

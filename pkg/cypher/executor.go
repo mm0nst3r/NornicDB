@@ -114,6 +114,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1491,9 +1492,17 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 	// TODO: Migrate handlers to use QueryInfo directly
 	upperQuery := e.cachedUpperQuery(cypher)
 
-	// Try cache for read-only queries only when cache policy allows it.
+	// Capture the storage revision before execution. Public DB/storage mutations
+	// do not pass through this executor's Cypher write invalidation path.
+	resultCacheKey := ""
 	if info.IsReadOnly && e.cache != nil && isCacheableReadQuery(cypher) {
-		if cached, found := e.cache.Get(cypher, params); found {
+		resultCacheKey = cacheKeyFNV(cypher, params)
+		if provider, ok := e.storage.(storage.NodeMutationVersionProvider); ok {
+			if version, supported := provider.NodeMutationVersion(); supported {
+				resultCacheKey += ":nodes:" + strconv.FormatUint(version, 10)
+			}
+		}
+		if cached, found := e.cache.get(resultCacheKey); found {
 			return cached, nil
 		}
 	}
@@ -1556,13 +1565,9 @@ func (e *StorageExecutor) Execute(ctx context.Context, cypher string, params map
 		}
 	}
 
-	// Cache successful read-only queries.
-	//
-	// NOTE: Aggregation queries (COUNT/SUM/AVG/COLLECT/...) used to be excluded, but in practice they can still
-	// be expensive (edge scans, label scans, COLLECT materialization). Caching them is correctness-preserving as
-	// long as we invalidate on writes (which we do), so we cache them with a shorter TTL by default.
-	if err == nil && info.IsReadOnly && e.cache != nil && isCacheableReadQuery(cypher) {
-		e.cache.Put(cypher, params, result, e.queryCacheTTL)
+	// Retain the pre-execution cache identity, including its node revision.
+	if err == nil && resultCacheKey != "" {
+		e.cache.putWithLabels(resultCacheKey, result, e.queryCacheTTL, extractLabelsFromQuery(cypher))
 	}
 
 	// Invalidate caches on write operations (using cached analysis)

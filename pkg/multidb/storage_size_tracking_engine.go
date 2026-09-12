@@ -542,3 +542,11 @@ func (t *sizeTrackingEngine) checkWrite(operation string, node *storage.Node, ed
 	}
 	return t.checker.CheckStorageLimits(operation, node, edge)
 }
+
+// NodeMutationVersion preserves the database-scoped revision used by query caches.
+func (t *sizeTrackingEngine) NodeMutationVersion() (uint64, bool) {
+	if provider, ok := t.Engine.(storage.NodeMutationVersionProvider); ok {
+		return provider.NodeMutationVersion()
+	}
+	return 0, false
+}
