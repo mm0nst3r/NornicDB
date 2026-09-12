@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional Snowball stemming for Russian and English BM25 analysis through
+  `NORNICDB_BM25_STEMMER`, with consistent indexing, updates, deletions, and
+  queries in both BM25 engines. The default remains language neutral.
+  Original text and literal phrase matching are unchanged.
+- Analyzer identities in BM25 snapshots and build-settings fingerprints.
+  BM25 snapshot formats advance to V1 `1.2.0` and V2 `2.2.0` so old binaries
+  cannot silently read stemmed postings. Incompatible indexes are rebuilt.
+
 ## [v1.3.2] - 9/11/2026
 
 ### Security
