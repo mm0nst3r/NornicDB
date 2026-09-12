@@ -284,7 +284,7 @@ func buildEmbedConfigFromResolved(effective map[string]string, fallback *Config)
 	if dimensions <= 0 {
 		dimensions = 1024
 	}
-	gpuLayers := getInt("NORNICDB_EMBEDDING_GPU_LAYERS", 0)
+	gpuLayers := getInt("NORNICDB_EMBEDDING_GPU_LAYERS", fallback.EmbeddingGPULayers)
 	cfg := &embed.Config{
 		Provider:      provider,
 		APIURL:        apiURL,
@@ -425,6 +425,8 @@ type Config struct {
 	// EmbeddingCacheSize is max embeddings to cache (0 = disabled, default: 10000)
 	// Each cached embedding uses ~4KB (1024 dims × 4 bytes)
 	EmbeddingCacheSize int
+	// EmbeddingGPULayers controls local model offload: -1=auto, 0=CPU only.
+	EmbeddingGPULayers int
 	// EmbeddingAPIKey is the API key for authenticated embedding providers (OpenAI, Cloudflare Workers AI, etc.)
 	// Env: NORNICDB_EMBEDDING_API_KEY
 	EmbeddingAPIKey string
@@ -561,6 +563,7 @@ func DefaultConfig() *Config {
 		EmbeddingModel:      "bge-m3",
 		EmbeddingDimensions: 1024,
 		EmbeddingCacheSize:  10000, // ~40MB cache for 1024-dim vectors
+		EmbeddingGPULayers:  -1,
 
 		// Slow query logging enabled by default
 		// Override via:
@@ -1473,6 +1476,7 @@ func New(db *nornicdb.DB, authenticator *auth.Authenticator, config *Config) (*S
 			Model:         config.EmbeddingModel,
 			Dimensions:    config.EmbeddingDimensions,
 			ModelsDir:     config.ModelsDir,
+			GPULayers:     config.EmbeddingGPULayers,
 			Timeout:       30 * time.Second,
 			CtxType:       config.EmbeddingCtxType,
 			PoolingType:   config.EmbeddingPoolingType,

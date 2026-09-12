@@ -322,7 +322,7 @@ func TestDB_EmbedQueryForDB_ResolverUnsetDimsOrNoVector(t *testing.T) {
 	})
 }
 
-func TestEmbedConfigKey_LocalZeroAndAutoLayers_AreEquivalent(t *testing.T) {
+func TestEmbedConfigKey_LocalZeroAndAutoLayers_AreDistinct(t *testing.T) {
 	cfgZero := &embed.Config{
 		Provider:   "local",
 		Model:      "bge-m3",
@@ -337,7 +337,7 @@ func TestEmbedConfigKey_LocalZeroAndAutoLayers_AreEquivalent(t *testing.T) {
 		ModelsDir:  "models",
 		GPULayers:  -1,
 	}
-	require.Equal(t, embedConfigKey(cfgZero), embedConfigKey(cfgAuto))
+	require.NotEqual(t, embedConfigKey(cfgZero), embedConfigKey(cfgAuto))
 }
 
 func TestDB_GetOrCreateEmbedderForDB_LocalEquivalentConfig_AliasesDefaultEmbedder(t *testing.T) {
@@ -362,8 +362,7 @@ func TestDB_GetOrCreateEmbedderForDB_LocalEquivalentConfig_AliasesDefaultEmbedde
 			Model:      "bge-m3",
 			Dimensions: 1024,
 			ModelsDir:  "models",
-			// Equivalent local default expressed as -1 instead of 0.
-			GPULayers: -1,
+			GPULayers:  0,
 		}, nil
 	}
 
@@ -376,7 +375,7 @@ func TestDB_GetOrCreateEmbedderForDB_LocalEquivalentConfig_AliasesDefaultEmbedde
 		Model:      "bge-m3",
 		Dimensions: 1024,
 		ModelsDir:  "models",
-		GPULayers:  -1,
+		GPULayers:  0,
 	})
 
 	db.embedderRegistryMu.RLock()
@@ -531,7 +530,7 @@ func TestDB_GetOrCreateEmbedderForDB_FallbackBranches(t *testing.T) {
 			embedQueue: &EmbedQueue{embedder: fallback},
 			embedConfigForDB: func(dbName string) (*embed.Config, error) {
 				// Equivalent config that resolves to the same key.
-				return &embed.Config{Provider: "local", Model: "bge-m3", Dimensions: 5, GPULayers: 0}, nil
+				return &embed.Config{Provider: "local", Model: "bge-m3", Dimensions: 5, GPULayers: -1}, nil
 			},
 			defaultEmbedKey: defaultKey,
 			embedderRegistry: map[string]embed.Embedder{

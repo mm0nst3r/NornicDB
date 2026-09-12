@@ -282,14 +282,8 @@ func embedConfigKey(cfg *embed.Config) string {
 	if cfg == nil {
 		return ""
 	}
-	gpuLayers := cfg.GPULayers
-	// For local GGUF, GPULayers=0 means "use library default" which is currently
-	// equivalent to auto/all offload (-1). Normalize to keep registry keys stable.
-	if strings.EqualFold(strings.TrimSpace(cfg.Provider), "local") && gpuLayers == 0 {
-		gpuLayers = -1
-	}
 	return cfg.Provider + "|" + cfg.Model + "|" + strconv.Itoa(cfg.Dimensions) + "|" +
-		cfg.APIURL + "|" + cfg.APIKey + "|" + cfg.ModelsDir + "|" + strconv.Itoa(gpuLayers)
+		cfg.APIURL + "|" + cfg.APIKey + "|" + cfg.ModelsDir + "|" + strconv.Itoa(cfg.GPULayers)
 }
 
 // DatabaseAndStorage pairs a database name with its storage engine.
@@ -1694,16 +1688,8 @@ func (db *DB) getOrCreateEmbedderForDB(dbName string) (embed.Embedder, error) {
 		db.embedderRegistryMu.Unlock()
 		return e, nil
 	}
-	// Reuse the active default local embedder when resolved config is equivalent.
-	// This avoids expensive re-initialization on the query path due key drift
-	// from equivalent local defaults (e.g. GPULayers 0 vs -1).
-	if strings.EqualFold(strings.TrimSpace(cfg.Provider), "local") &&
-		embedQueue.embedder.Dimensions() == cfg.Dimensions &&
-		strings.EqualFold(strings.TrimSpace(embedQueue.embedder.Model()), strings.TrimSpace(cfg.Model)) {
-		db.embedderRegistry[key] = embedQueue.embedder
-		db.embedderRegistryMu.Unlock()
-		return embedQueue.embedder, nil
-	}
+	// Only an exact registry key can reuse an embedder: the same model can
+	// require different GPU-layer choices (including CPU-only zero).
 	db.embedderRegistryMu.Unlock()
 
 	create := db.embedderFactory

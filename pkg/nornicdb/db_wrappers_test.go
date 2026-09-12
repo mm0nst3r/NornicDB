@@ -48,7 +48,7 @@ func TestDBWrapperHelpers_EmbedConfigRegistration(t *testing.T) {
 		Provider:   "local",
 		Model:      "test-model",
 		Dimensions: mock.Dimensions(),
-		GPULayers:  0, // Normalized to -1 in key generation for local models
+		GPULayers:  0, // Explicit CPU-only selection is part of the registry key.
 	}
 
 	db.SetDefaultEmbedConfig(cfg)

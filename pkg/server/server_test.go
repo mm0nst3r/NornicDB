@@ -3620,7 +3620,7 @@ func TestBuildEmbedConfigFromResolved_Branches(t *testing.T) {
 	require.Equal(t, "local", cfg.Provider)
 	require.Equal(t, "", cfg.APIPath)
 	require.Equal(t, 1024, cfg.Dimensions)
-	require.Equal(t, 0, cfg.GPULayers)
+	require.Equal(t, -1, cfg.GPULayers)
 
 	cfg = buildEmbedConfigFromResolved(map[string]string{
 		"db.nornic.embedding.provider": "custom-provider",

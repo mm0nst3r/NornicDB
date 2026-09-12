@@ -94,8 +94,9 @@ func (e *LocalGGUFEmbedder) AttachMetrics(m *observability.EmbedMetrics) {
 //
 // Environment variables:
 //   - NORNICDB_MODELS_DIR: Directory for .gguf files (default: /data/models)
-//   - NORNICDB_EMBEDDING_GPU_LAYERS: GPU layer offload (-1=auto, 0=CPU, N=N layers)
 //   - NORNICDB_EMBEDDING_WARMUP_INTERVAL: Warmup interval (default: 5m, 0=disabled)
+//
+// GPU offload comes from config.GPULayers: -1=auto, 0=CPU only, N=N layers.
 //
 // Example:
 //
@@ -137,10 +138,8 @@ func NewLocalGGUF(config *Config) (*LocalGGUFEmbedder, error) {
 
 	opts := localllm.DefaultOptions(modelPath)
 
-	// Configure GPU layers from config (default: -1 = auto)
-	if config.GPULayers != 0 {
-		opts.GPULayers = config.GPULayers
-	}
+	// Zero is an explicit CPU-only choice; automatic offload is represented by -1.
+	opts.GPULayers = config.GPULayers
 
 	// Apply llama context features from config (env-driven overrides).
 	// Only override defaults when the config value is explicitly set.
