@@ -697,7 +697,7 @@ func (tx *BadgerTransaction) UpdateNode(node *Node) error {
 	// Track for read-your-writes
 	nodeCopy := copyNode(node)
 	tx.pendingNodes[node.ID] = nodeCopy
-	if len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0 {
+	if ManagedEmbeddingCurrent(node) {
 		tx.bufferDelete(pendingEmbedKey(node.ID))
 	} else if tx.engine.shouldIndexPendingEmbed(node) {
 		tx.bufferSet(pendingEmbedKey(node.ID), []byte{})

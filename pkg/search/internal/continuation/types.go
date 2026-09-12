@@ -45,6 +45,9 @@ var (
 // Score is meaningful only in RankedPhase. Catalogue hits are unscored, not
 // low-relevance matches. GroupKey is the distinct parent key when grouping.
 type Hit struct {
+	// Metadata is immutable, opaque result detail owned by the retrieval adapter.
+	// Its bytes count toward the same descriptor budget as identifiers.
+	Metadata   string  `json:"-"`
 	ID         string  `json:"id"`
 	GroupKey   string  `json:"group_key,omitempty"`
 	Phase      Phase   `json:"phase"`
@@ -57,6 +60,7 @@ type Hit struct {
 
 // Population is the fixed order selected by one initial request.
 type Population struct {
+	Metadata             string
 	TotalCandidates      int
 	FallbackTriggered    bool
 	VectorStopReason     string
@@ -75,6 +79,7 @@ type Population struct {
 // EligibleCount is unknown (nil) for RankedOnly, even for an empty ANN result.
 // Position is the zero-based starting position in this population.
 type Page struct {
+	Metadata             string    `json:"-"`
 	TotalCandidates      int       `json:"total_candidates"`
 	FallbackTriggered    bool      `json:"fallback_triggered"`
 	VectorStopReason     string    `json:"vector_stop_reason,omitempty"`
@@ -168,4 +173,6 @@ func validMode(m Mode) bool { return m == RankedOnly || m == RankedThenID || m =
 // Descriptor accounting includes space for map/slice overhead during builds.
 const descriptorBytes int64 = 256
 
-func hitBytes(h Hit) int64 { return descriptorBytes + int64(len(h.ID)) + int64(len(h.GroupKey)) }
+func hitBytes(h Hit) int64 {
+	return descriptorBytes + int64(len(h.ID)) + int64(len(h.GroupKey)) + int64(len(h.Metadata))
+}

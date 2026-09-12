@@ -291,3 +291,7 @@ inside the initial ranked retrieval where that search path supports it. The
 unscored tail is never reranked. Later pages do not rerun ANN, BM25, fusion,
 reranking, or storage scans, although repeated request canonicalization still
 costs work proportional to the request size.
+
+## Voyage result details
+
+Paginated retrieval preserves each ranked hit's complete `passages` and the initial retrieval's `rerank` report. The same report accompanies later pages without another provider request; the catalogue tail remains unscored. These fields use the same models as ordinary retrieval. Cursor memory limits include retained passage/report data and fail explicitly when the configured budget is exceeded. Request-level rerank truncation and failure-policy settings participate in the cursor fingerprint.

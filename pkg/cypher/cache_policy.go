@@ -18,8 +18,8 @@ var (
 // Those queries should not be cached.
 func isCacheableReadQuery(cypher string) bool {
 	upper := strings.ToUpper(cypher)
-	// Cursor expiry, release and storage publication must be checked on each call.
-	if strings.Contains(upper, "DB.RETRIEVE.PAGE") || strings.Contains(upper, "DB.RETRIEVE.RELEASE") {
+	// Dynamic work/cursor state must be checked on every call.
+	if strings.Contains(upper, "DB.EMBEDDING.") || strings.Contains(upper, "DB.RETRIEVE.PAGE") || strings.Contains(upper, "DB.RETRIEVE.RELEASE") {
 		return false
 	}
 	if strings.HasPrefix(strings.TrimSpace(upper), "SHOW PROCEDURES") {

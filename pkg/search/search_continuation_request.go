@@ -107,6 +107,10 @@ func (s *Service) resolveSearchPageRequest(query string, embedding []float32, op
 		v := *o.FallbackEnabled
 		o.FallbackEnabled = &v
 	}
+	if o.RerankTruncation != nil {
+		v := *o.RerankTruncation
+		o.RerankTruncation = &v
+	}
 	o.Types = make([]string, len(opts.Types))
 	for i, kind := range opts.Types {
 		o.Types[i] = strings.ToLower(kind)

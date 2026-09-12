@@ -10,6 +10,10 @@
   other: "[!! Sets vector property on a node !!]"
 - id: cypherproceduremetadata.db_create_setrelationshipvectorproperty
   other: "[!! Sets vector property on a relationship !!]"
+- id: cypherproceduremetadata.db_embedding_control
+  other: "[!! Controls managed embedding work for a source node !!]"
+- id: cypherproceduremetadata.db_embedding_status
+  other: "[!! Returns managed embedding status for a source node !!]"
 - id: cypherproceduremetadata.db_index_fulltext_createnodeindex
   other: "[!! Creates fulltext index on nodes !!]"
 - id: cypherproceduremetadata.db_index_fulltext_createrelationshipindex

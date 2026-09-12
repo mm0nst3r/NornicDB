@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,12 +29,19 @@ const (
 // SearchPageHit contains an ID and ranking metadata, never a full node or vector.
 // Phase="catalog" means unscored, NOT a zero-relevance search match. GroupKey is
 // the distinct parent value when SearchPageOptions.GroupBy is set.
-type SearchPageHit = continuation.Hit
+type SearchPageHit struct {
+	continuation.Hit
+	Passages []SupportingPassage `json:"passages,omitempty"`
+}
 
 // SearchPageResponse distinguishes exhausted selected candidates from exhausted
 // eligible collection. EligibleCount is unknown for SearchPageRanked; Total is
 // always the declared population size, not an ANN estimate of corpus size.
-type SearchPageResponse = continuation.Page
+type SearchPageResponse struct {
+	continuation.Page
+	Results []SearchPageHit `json:"results"`
+	Rerank  *RerankReport   `json:"rerank,omitempty"`
+}
 
 // SearchContinuationConfig bounds cursor lifetime, retained descriptors, initial
 // scans, and simultaneous materialisations. Zero fields use documented defaults.
@@ -165,7 +173,7 @@ func (s *Service) SearchPage(ctx context.Context, query string, embedding []floa
 		if s.refreshSearchContinuationStorage() {
 			return nil, ErrSearchCursorInvalidated
 		}
-		return page, err
+		return decodeSearchPage(page, err)
 	}
 	// A lazy index build is itself a mutation. Finish it BEFORE reserving a
 	// population epoch, otherwise the first request would invalidate itself.
@@ -214,9 +222,17 @@ func (s *Service) SearchPage(ctx context.Context, query string, embedding []floa
 		candidateLimit = resolveAdaptiveOverfetch(&r.options).maxLimit
 		ranked = make([]continuation.Hit, 0, len(response.Results))
 		for _, hit := range response.Results {
+			var metadata string
+			if len(hit.Passages) > 0 {
+				encoded, err := json.Marshal(hit.Passages)
+				if err != nil {
+					return nil, err
+				}
+				metadata = string(encoded)
+			}
 			ranked = append(ranked, continuation.Hit{ID: hit.ID, Score: hit.Score,
 				Similarity: hit.Similarity, RRFScore: hit.RRFScore,
-				VectorRank: hit.VectorRank, BM25Rank: hit.BM25Rank})
+				VectorRank: hit.VectorRank, BM25Rank: hit.BM25Rank, Metadata: metadata})
 		}
 	}
 	if err := ticket.Check(ctx); err != nil {
@@ -280,6 +296,13 @@ func (s *Service) SearchPage(ctx context.Context, query string, embedding []floa
 	population.SearchMethod = method
 	population.CandidateLimit = candidateLimit
 	if retrieval != nil {
+		if retrieval.Rerank != nil {
+			encoded, err := json.Marshal(retrieval.Rerank)
+			if err != nil {
+				return nil, err
+			}
+			population.Metadata = string(encoded)
+		}
 		population.TotalCandidates, population.FallbackTriggered = retrieval.TotalCandidates, retrieval.FallbackTriggered
 		if metrics := retrieval.Metrics; metrics != nil {
 			population.VectorStopReason, population.VectorCandidateLimit = metrics.VectorStopReason, metrics.VectorCandidateLimit
@@ -294,7 +317,31 @@ func (s *Service) SearchPage(ctx context.Context, query string, embedding []floa
 	if s.refreshSearchContinuationStorage() {
 		return nil, ErrSearchCursorInvalidated
 	}
-	return page, err
+	return decodeSearchPage(page, err)
+}
+
+// decodeSearchPage restores the existing search result types from immutable
+// cursor metadata. The cursor owns its bounded state without depending on a
+// provider; returned slices and reports cannot mutate subsequent/replayed pages.
+func decodeSearchPage(page *continuation.Page, err error) (*SearchPageResponse, error) {
+	if err != nil || page == nil {
+		return nil, err
+	}
+	result := &SearchPageResponse{Page: *page, Results: make([]SearchPageHit, len(page.Results))}
+	if page.Metadata != "" {
+		if err := json.Unmarshal([]byte(page.Metadata), &result.Rerank); err != nil {
+			return nil, err
+		}
+	}
+	for i, hit := range page.Results {
+		result.Results[i].Hit = hit
+		if hit.Metadata != "" {
+			if err := json.Unmarshal([]byte(hit.Metadata), &result.Results[i].Passages); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return result, nil
 }
 
 // ReleaseSearchPage frees a session before expiry. Pass the same request and
