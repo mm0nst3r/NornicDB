@@ -20,6 +20,7 @@ func (b *BadgerEngine) EnqueueDeindexIfSuppressed(entityID string, isEdge bool) 
 	}
 
 	becameSuppressed := false
+	nodeChanged := false
 	err := b.withUpdate(func(txn *badger.Txn) error {
 		if isEdge {
 			changed, err := b.evaluateEdgeSuppressionInTxn(txn, EdgeID(entityID))
@@ -28,19 +29,23 @@ func (b *BadgerEngine) EnqueueDeindexIfSuppressed(entityID string, isEdge bool) 
 			}
 			return err
 		}
-		changed, err := b.evaluateNodeSuppressionInTxn(txn, NodeID(entityID))
+		changed, mutation, err := b.evaluateNodeSuppressionInTxn(txn, NodeID(entityID))
+		nodeChanged = mutation
 		if changed {
 			becameSuppressed = true
 		}
 		return err
 	})
+	if err == nil && nodeChanged {
+		b.nodeMutationVersions.changed(NodeID(entityID))
+	}
 	return becameSuppressed, err
 }
 
-func (b *BadgerEngine) evaluateNodeSuppressionInTxn(txn *badger.Txn, nodeID NodeID) (bool, error) {
+func (b *BadgerEngine) evaluateNodeSuppressionInTxn(txn *badger.Txn, nodeID NodeID) (bool, bool, error) {
 	item, err := txn.Get(nodeKey(nodeID))
 	if err != nil {
-		return false, nil
+		return false, false, nil
 	}
 
 	var node *Node
@@ -49,7 +54,7 @@ func (b *BadgerEngine) evaluateNodeSuppressionInTxn(txn *badger.Txn, nodeID Node
 		node, decodeErr = b.decodeNodeWithEmbeddings(txn, val, nodeID)
 		return decodeErr
 	}); err != nil {
-		return false, nil
+		return false, false, nil
 	}
 
 	nowNanos := DecayScoringTime()
@@ -61,29 +66,29 @@ func (b *BadgerEngine) evaluateNodeSuppressionInTxn(txn *badger.Txn, nodeID Node
 		node.VisibilitySuppressed = true
 		data, _, err := b.encodeNodeInTxn(txn, namespaceForNodeID(nodeID), node)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if err := txn.Set(nodeKey(nodeID), data); err != nil {
-			return false, err
+			return false, false, err
 		}
 		if err := enqueueWorkItemInTxn(txn, string(nodeID), "NODE"); err != nil {
-			return false, err
+			return false, false, err
 		}
-		return true, nil
+		return true, true, nil
 	}
 
 	if !suppress && wasSuppressed {
 		data, _, err := b.encodeNodeInTxn(txn, namespaceForNodeID(nodeID), node)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if err := txn.Set(nodeKey(nodeID), data); err != nil {
-			return false, err
+			return false, false, err
 		}
-		return false, clearTombstonesForEntityInTxn(txn, string(nodeID))
+		return false, true, clearTombstonesForEntityInTxn(txn, string(nodeID))
 	}
 
-	return false, nil
+	return false, false, nil
 }
 
 // rescoreSuppressionAfterLabelChangeInTxn re-evaluates a node's decay

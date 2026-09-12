@@ -15,7 +15,7 @@ func TestBadgerDeindexEnqueue_NodeEdgeBranchCoverage(t *testing.T) {
 
 	t.Run("evaluate node suppression handles missing and corrupt node payload", func(t *testing.T) {
 		require.NoError(t, engine.withUpdate(func(txn *badger.Txn) error {
-			changed, err := engine.evaluateNodeSuppressionInTxn(txn, NodeID("test:missing"))
+			changed, _, err := engine.evaluateNodeSuppressionInTxn(txn, NodeID("test:missing"))
 			require.NoError(t, err)
 			require.False(t, changed)
 			return nil
@@ -24,7 +24,7 @@ func TestBadgerDeindexEnqueue_NodeEdgeBranchCoverage(t *testing.T) {
 		require.NoError(t, engine.withUpdate(func(txn *badger.Txn) error {
 			const badNodeID = NodeID("test:bad-node")
 			require.NoError(t, txn.Set(nodeKey(badNodeID), []byte("not-a-node")))
-			changed, err := engine.evaluateNodeSuppressionInTxn(txn, badNodeID)
+			changed, _, err := engine.evaluateNodeSuppressionInTxn(txn, badNodeID)
 			require.NoError(t, err)
 			require.False(t, changed)
 			return nil
@@ -37,7 +37,7 @@ func TestBadgerDeindexEnqueue_NodeEdgeBranchCoverage(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NoError(t, engine.withUpdate(func(txn *badger.Txn) error {
-			changed, err := engine.evaluateNodeSuppressionInTxn(txn, node.ID)
+			changed, _, err := engine.evaluateNodeSuppressionInTxn(txn, node.ID)
 			require.NoError(t, err)
 			require.False(t, changed)
 			return nil

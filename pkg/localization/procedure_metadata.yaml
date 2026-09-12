@@ -349,3 +349,13 @@
     en: "Sets transaction metadata",
     es: "Establece los metadatos de la transacción",
   }
+- {
+    name: db.retrieve.page,
+    en: "Returns a stable page from a filtered search population",
+    es: "Devuelve una página estable de una población de búsqueda filtrada",
+  }
+- {
+    name: db.retrieve.release,
+    en: "Releases a retained search continuation",
+    es: "Libera una continuación de búsqueda retenida",
+  }
