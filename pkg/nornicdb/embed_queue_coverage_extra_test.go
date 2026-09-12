@@ -137,7 +137,7 @@ func TestEmbedWorker_EmbedBatchHelpers_EdgeBranches(t *testing.T) {
 		})
 		t.Cleanup(func() { w.Close() })
 
-		embs, err := w.embedChunksInBatches(nil, "node-1")
+		embs, err := w.embedChunksInBatches(w.embedder, nil, "node-1")
 		require.NoError(t, err)
 		require.Nil(t, embs)
 	})
@@ -161,7 +161,7 @@ func TestEmbedWorker_EmbedBatchHelpers_EdgeBranches(t *testing.T) {
 			w.cancel()
 		}()
 
-		embs, err := w.embedBatchWithRetry([]string{"a", "b"})
+		embs, err := w.embedBatchWithRetry(w.embedder, []string{"a", "b"})
 		require.Error(t, err)
 		require.True(t, errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 		require.Nil(t, embs)

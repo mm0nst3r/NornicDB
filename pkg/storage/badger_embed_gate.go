@@ -31,8 +31,5 @@ func (b *BadgerEngine) shouldIndexPendingEmbed(node *Node) bool {
 	if isSystemNamespaceID(string(node.ID)) {
 		return false
 	}
-	if len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0 {
-		return false
-	}
-	return NodeNeedsEmbedding(node)
+	return NodeHasPendingEmbedding(node)
 }
