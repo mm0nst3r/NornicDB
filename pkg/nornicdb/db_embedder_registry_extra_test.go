@@ -70,6 +70,7 @@ func TestDB_GetOrCreateEmbedderForDB_ExtraBranches(t *testing.T) {
 			embedderRegistry: map[string]embed.Embedder{},
 			embedConfigForDB: func(dbName string) (*embed.Config, error) { return cfg, nil },
 		}
+		db.SetDefaultEmbedConfig(cfg)
 
 		got, err := db.getOrCreateEmbedderForDB("tenant")
 		require.NoError(t, err)

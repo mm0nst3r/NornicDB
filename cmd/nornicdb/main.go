@@ -463,9 +463,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	embeddingURL := cfg.Memory.EmbeddingAPIURL
 	embeddingDim := cfg.Memory.EmbeddingDimensions
 	embeddingGPULayers := cfg.Memory.EmbeddingGPULayers
-	if embeddingProvider == "local" {
-		os.Setenv("NORNICDB_EMBEDDING_GPU_LAYERS", strconv.Itoa(embeddingGPULayers))
-	}
 	// Per-DB search index master switches.
 	//
 	// CLI flags here serve two purposes:
@@ -792,6 +789,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	serverConfig.EmbeddingModel = cfg.Memory.EmbeddingModel
 	serverConfig.EmbeddingDimensions = cfg.Memory.EmbeddingDimensions
 	serverConfig.EmbeddingCacheSize = cfg.Memory.EmbeddingCacheSize
+	serverConfig.EmbeddingGPULayers = cfg.Memory.EmbeddingGPULayers
 	serverConfig.ModelsDir = cfg.Memory.ModelsDir
 	serverConfig.EmbeddingCtxType = cfg.Memory.EmbeddingCtxType
 	serverConfig.EmbeddingPoolingType = cfg.Memory.EmbeddingPoolingType
