@@ -14,6 +14,7 @@ func TestWALEngine_UpdateNodeEmbedding_DelegatesToEmbeddingUpdater(t *testing.T)
 	require.NoError(t, err)
 
 	engine := NewWALEngine(async, wal)
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
 
 	node := &Node{
 		ID:         NodeID("nornic:test-node"),

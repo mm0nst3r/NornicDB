@@ -207,7 +207,7 @@ func TestSearchRerankerLoadingLogPreservesFieldsAcrossLocales(t *testing.T) {
 	}, func(t *testing.T, record map[string]any) {
 		require.Equal(t, "search_rerank", record["subsystem"])
 		require.Equal(t, "local", record["provider"])
-		require.Equal(t, "/test/models/test-reranker.gguf", record["model_path"])
+		require.Equal(t, filepath.Join("/test/models", "test-reranker.gguf"), record["model_path"])
 		require.Equal(t, "server starts immediately; reranking available after model loads", record["note"])
 	})
 }

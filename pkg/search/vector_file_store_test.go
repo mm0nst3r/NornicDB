@@ -109,6 +109,26 @@ func TestVectorFileStore_FixedStridePayloadAndOrdinalReload(t *testing.T) {
 	require.InDeltaSlice(t, []float32{0, 1}, second, 1e-6)
 	_, ok = reloaded.GetVector("uncommitted")
 	require.False(t, ok)
+
+	// Appending after recovery must reuse the discarded tail slot without
+	// overwriting committed vectors or leaving a gap in ordinal storage.
+	require.NoError(t, reloaded.Add("after-recovery", []float32{-1, 0}))
+	require.NoError(t, reloaded.Save())
+	require.NoError(t, reloaded.Close())
+	reopened, err := NewVectorFileStore(base, 2)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
+	require.NoError(t, reopened.Load())
+	require.Equal(t, 3, reopened.Count())
+	for id, want := range map[string][]float32{
+		"a": {1, 0}, strings.Repeat("long-id-", 100): {0, 1}, "after-recovery": {-1, 0},
+	} {
+		got, ok := reopened.GetVector(id)
+		require.True(t, ok, id)
+		require.InDeltaSlice(t, want, got, 1e-6, id)
+	}
+	_, ok = reopened.GetVector("uncommitted")
+	require.False(t, ok)
 }
 
 func TestVectorFileStore_SyncDoesNotBlockAdd(t *testing.T) {
@@ -532,6 +552,7 @@ func TestVectorFileStore_ErrorAndEdgeBranches(t *testing.T) {
 		require.Error(t, vfs.Load())
 
 		vfs.mu.Lock()
+		require.NoError(t, vfs.file.Close())
 		vfs.file = nil
 		_, err = vfs.readVectorAtLocked(0)
 		vfs.mu.Unlock()

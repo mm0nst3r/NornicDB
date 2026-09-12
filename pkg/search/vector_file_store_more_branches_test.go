@@ -26,7 +26,8 @@ func TestVectorFileStore_MoreAddAndIterateBranches(t *testing.T) {
 		// Reopen a clean store for remaining Add branches.
 		vfs2, err := NewVectorFileStore(filepath.Join(t.TempDir(), "vectors2"), 2)
 		require.NoError(t, err)
-		defer func() { _ = vfs2.Close() }()
+		// This test sets closed directly, so retain cleanup of the actual handle.
+		defer func() { _ = vfs2.file.Close() }()
 
 		vfs2.writeRecord = func(*os.File, string, []float32) error { return io.ErrUnexpectedEOF }
 		err = vfs2.Add("id-write", []float32{1, 0})
@@ -94,10 +95,9 @@ func TestVectorFileStore_MoreLoadRebuildAndCompactBranches(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { _ = vfs.Close() }()
 
-		badDir := filepath.Join(t.TempDir(), "meta-as-dir")
-		require.NoError(t, os.MkdirAll(badDir, 0o755))
-		require.NoError(t, os.Chmod(badDir, 0o000))
-		t.Cleanup(func() { _ = os.Chmod(badDir, 0o755) })
+		// A regular file cannot be traversed as a directory on any platform.
+		badDir := filepath.Join(t.TempDir(), "not-a-directory")
+		require.NoError(t, os.WriteFile(badDir, []byte("file"), 0o644))
 		vfs.metaPath = filepath.Join(badDir, "meta")
 		err = vfs.Load()
 		require.Error(t, err)

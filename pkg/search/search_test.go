@@ -1282,27 +1282,35 @@ func TestSearchService_BuildIndexes_SkipIterationWarmsHNSWWhenDiskIndexMissing(t
 	vectorPath := filepath.Join(tmp, "vectors")
 	hnswPath := filepath.Join(tmp, "missing-hnsw")
 
-	// Seed persisted BM25 snapshot with at least one document.
-	bm := NewFulltextIndex()
-	bm.Index("doc-1", "alpha beta")
-	require.NoError(t, bm.Save(bm25Path))
-
-	// Seed persisted vector file store with vectors to force the default HNSW warmup path.
-	vfs, err := NewVectorFileStore(vectorPath, 3)
-	require.NoError(t, err)
+	// Persist through the service so BM25 and vector query metadata match the loader.
 	for i := 0; i < 8; i++ {
-		id := fmt.Sprintf("seed-%d", i)
 		vec := []float32{1, 0, 0}
 		if i%2 == 1 {
 			vec = []float32{0, 1, 0}
 		}
-		require.NoError(t, vfs.Add(id, vec))
+		_, err := engine.CreateNode(&storage.Node{
+			ID:              storage.NodeID(fmt.Sprintf("seed-%d", i)),
+			Labels:          []string{"Doc"},
+			ChunkEmbeddings: [][]float32{vec},
+			Properties:      map[string]any{"content": "alpha beta"},
+		})
+		require.NoError(t, err)
 	}
-	require.NoError(t, vfs.Save())
-	require.NoError(t, vfs.Sync())
-	require.NoError(t, vfs.Close())
+	seed := NewServiceWithDimensions(engine, 3)
+	seed.SetPersistenceEnabled(true)
+	t.Cleanup(func() { require.NoError(t, seed.Close()) })
+	seed.SetFulltextIndexPath(bm25Path)
+	seed.SetVectorIndexPath(vectorPath)
+	require.NoError(t, seed.BuildIndexes(context.Background()))
+	seed.PersistIndexesToDisk()
+	require.NoError(t, seed.Close())
+	require.NoFileExists(t, hnswPath)
 
-	svc := NewServiceWithDimensions(engine, 3)
+	// A storage iteration would bypass the disk-only warmup path this test protects.
+	svc := NewServiceWithDimensions(&iteratorEngine{
+		Engine: engine, iterateErr: errors.New("should-not-iterate"),
+	}, 3)
+	t.Cleanup(func() { require.NoError(t, svc.Close()) })
 	svc.SetPersistenceEnabled(true)
 	t.Cleanup(func() { svc.SetPersistenceEnabled(false) })
 	svc.SetFulltextIndexPath(bm25Path)

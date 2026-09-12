@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Restore persisted vector-store reloads on Windows while preserving committed-tail recovery and append semantics.
+- Repair persisted HNSW warmup, localized model-path, and vector-store error fixtures for Windows and Linux.
+
 ## [v1.3.2] - 9/11/2026
 
 ### Security

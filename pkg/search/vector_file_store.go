@@ -610,7 +610,17 @@ func (v *VectorFileStore) Load() error {
 		}
 	}
 	stride, _ := v.vectorStride()
-	if err := v.file.Truncate(vecHeaderSize + meta.DataSlots*stride); err != nil {
+	// Append handles cannot truncate on Windows. Use a writable handle for
+	// recovery while retaining append semantics on the store's active handle.
+	recoveryFile, err := security.OpenRootedFile(v.vecPath, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	if err := recoveryFile.Truncate(vecHeaderSize + meta.DataSlots*stride); err != nil {
+		_ = recoveryFile.Close()
+		return err
+	}
+	if err := recoveryFile.Close(); err != nil {
 		return err
 	}
 	v.idToOrdinal = meta.IDToOrdinal
