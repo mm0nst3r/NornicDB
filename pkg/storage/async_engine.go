@@ -937,6 +937,11 @@ func (ae *AsyncEngine) UpdateNode(node *Node) error {
 			ae.nodeUpdateBaseline[node.ID] = baseline
 		}
 	}
+	// A persisted node (or a write already being flushed) remains an update.
+	// Preserve the classification of cached creates when they are edited.
+	if baseline != nil || ae.inFlightNodes[node.ID] {
+		ae.updateNodes[node.ID] = true
+	}
 
 	ae.nodeCache[node.ID] = node
 	ae.syncNodeLabelIndexLocked(node)
@@ -1024,16 +1029,18 @@ func (ae *AsyncEngine) DeleteNode(id NodeID) (err error) {
 			// Emit a best-effort delete notification so external services (search indexes,
 			// embedding counts) can drop any speculative state for this node.
 			shouldNotify := !ae.updateNodes[id]
+			deleteFromEngine := ae.updateNodes[id] || isInFlight
 
 			ae.removeNodeIDFromLabelIndexLocked(id)
 			// Remove from cache
 			delete(ae.nodeCache, id)
 			changed = true
+			delete(ae.updateNodes, id)
 			delete(ae.nodeUpdateBaseline, id)
 
-			// CRITICAL FIX: If node is in-flight, the flush will still write it
-			// to the underlying engine, so we must also mark it for deletion
-			if isInFlight {
+			// Cached updates already exist in storage; in-flight creates will
+			// exist after their write. Both need a queued storage deletion.
+			if deleteFromEngine {
 				ae.deleteNodes[id] = true
 				ae.pendingWrites++
 			}
