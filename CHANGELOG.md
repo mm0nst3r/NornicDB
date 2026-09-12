@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Honor explicitly supplied embedding CLI flags in the loaded configuration; omitted flags preserve environment/YAML values.
 - Pass embedding GPU-layer choices through local model initialization and distinguish CPU-only `0` from automatic `-1` when reusing embedders.
+- Preserve async node update classification across flush cleanup, retain pending-create counts after failed first writes, and report persistence-lookup failures.
 - Restore persisted vector-store reloads on Windows while preserving committed-tail recovery and append semantics.
 - Repair persisted HNSW warmup, localized model-path, and vector-store error fixtures for Windows and Linux.
 
