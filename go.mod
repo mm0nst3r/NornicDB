@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/kms v1.33.0
 	github.com/99designs/gqlgen v0.17.94
 	github.com/antlr4-go/antlr/v4 v4.13.1
+	github.com/blevesearch/snowballstem v0.9.0
 	github.com/dgraph-io/badger/v4 v4.9.6
 	github.com/ebitengine/purego v0.10.2
 	github.com/google/uuid v1.6.0

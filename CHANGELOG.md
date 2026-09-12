@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deterministic ID-ordered catalogue tail. Built-in storage and index mutations invalidate sessions;
   materialisation and cursor resources have explicit limits. See
   [search continuation](docs/user-guides/search-continuation.md). (#346)
+- Optional Snowball stemming for Russian and English BM25 analysis through
+  `NORNICDB_BM25_STEMMER`, with consistent indexing, updates, deletions, and
+  queries in both BM25 engines. The default remains language neutral.
+  Original text and literal phrase matching are unchanged.
+- Analyzer identities in BM25 snapshots and build-settings fingerprints.
+  BM25 snapshot formats advance to V1 `1.2.0` and V2 `2.2.0` so old binaries
+  cannot silently read stemmed postings. Incompatible indexes are rebuilt.
 
 ### Fixed
 

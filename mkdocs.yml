@@ -142,6 +142,7 @@ nav:
           - Vector Search: user-guides/vector-search.md
           - Hybrid Search: user-guides/hybrid-search.md
           - Search Continuation: user-guides/search-continuation.md
+          - BM25 Stemming: user-guides/fulltext-stemming.md
           - Vector Embeddings: features/vector-embeddings.md
           - Cross-Encoder Reranking: features/cross-encoder-reranking.md
       - Knowledge Layer:
