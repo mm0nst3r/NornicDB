@@ -4,6 +4,7 @@ package heimdall
 import (
 	"context"
 	"fmt"
+	"github.com/orneryd/nornicdb/pkg/embed"
 	"runtime"
 	"sort"
 	"sync"
@@ -424,7 +425,7 @@ func (e *QueryExecutor) Discover(ctx context.Context, query string, nodeTypes []
 		}
 
 		if len(queryChunks) <= 1 {
-			queryEmbedding, embedErr := e.embedder.Embed(ctx, query)
+			queryEmbedding, embedErr := embed.QueryVector(ctx, e.embedder, query)
 			if embedErr == nil && len(queryEmbedding) > 0 {
 				method = "vector"
 				searchResults, err = e.searcher.HybridSearch(ctx, query, queryEmbedding, nodeTypes, limit)
@@ -450,7 +451,7 @@ func (e *QueryExecutor) Discover(ctx context.Context, query string, nodeTypes []
 
 			var usedVectorChunks int
 			for _, chunkQuery := range queryChunks {
-				emb, embedErr := e.embedder.Embed(ctx, chunkQuery)
+				emb, embedErr := embed.QueryVector(ctx, e.embedder, chunkQuery)
 				if embedErr != nil || len(emb) == 0 {
 					continue
 				}

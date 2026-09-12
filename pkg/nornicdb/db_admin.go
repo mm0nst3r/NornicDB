@@ -877,8 +877,11 @@ func (db *DB) DeleteEdge(ctx context.Context, id string) error {
 
 // SearchResult holds a search result with score.
 type SearchResult struct {
-	Node  *Node   `json:"node"`
-	Score float64 `json:"score"`
+	Passages []search.SupportingPassage `json:"passages,omitempty"`
+	// Rerank is present only when a native provider reported an outcome.
+	Rerank *search.RerankReport `json:"rerank,omitempty"`
+	Node   *Node                `json:"node"`
+	Score  float64              `json:"score"`
 
 	// RRF metadata (vector_rank/bm25_rank always emitted so clients see original
 	// ranks even when Stage-2 reranking is applied; 0 = not in that result set)
@@ -896,6 +899,7 @@ func MapSearchResponse(response *search.SearchResponse) []*SearchResult {
 	out := make([]*SearchResult, len(response.Results))
 	for i := range response.Results {
 		out[i] = mapSingleSearchResult(response.Results[i])
+		out[i].Rerank = response.Rerank
 	}
 	return out
 }
@@ -908,6 +912,7 @@ func mapSingleSearchResult(r search.SearchResult) *SearchResult {
 			Properties: r.Properties,
 		},
 		Score:      r.Score,
+		Passages:   r.Passages,
 		RRFScore:   r.RRFScore,
 		VectorRank: r.VectorRank,
 		BM25Rank:   r.BM25Rank,

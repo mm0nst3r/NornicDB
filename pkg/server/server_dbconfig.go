@@ -256,6 +256,7 @@ func (s *Server) handlePutDbConfig(w http.ResponseWriter, r *http.Request, dbNam
 	}
 	if hasSearchRebuildChange && !s.dbManager.IsCompositeDatabase(dbName) {
 		s.db.ResetSearchService(dbName)
+		s.invalidateExecutor(dbName)
 		if storageEngine, err := s.dbManager.GetStorage(dbName); err != nil {
 			s.logEvent(r.Context(), slog.LevelWarn, localization.ServerDBConfigRebuildStorageResolveFailedEvent(dbName, err))
 		} else if _, err := s.db.EnsureSearchIndexesBuildStarted(dbName, storageEngine); err != nil {

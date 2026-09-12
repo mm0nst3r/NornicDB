@@ -2,6 +2,7 @@ package nornicgrpc
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	gen "github.com/orneryd/nornicdb/pkg/nornicgrpc/gen"
 	"github.com/orneryd/nornicdb/pkg/search"
 	"golang.org/x/text/language"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -36,13 +38,17 @@ type Service struct {
 	maxLimit        int
 	rerankEnabled   bool
 
-	embedQuery EmbedQueryFunc
-	chunkQuery ChunkQueryFunc
-	searcher   Searcher
-	localizer  *localization.Manager
+	embedQuery      EmbedQueryFunc
+	chunkQuery      ChunkQueryFunc
+	searcher        Searcher
+	resolveSearcher func() (Searcher, error)
+	localizer       *localization.Manager
 }
 
 type Config struct {
+	// ResolveSearcher selects the current configured search service for each request.
+	// Server bindings use this when configuration can replace the cached service.
+	ResolveSearcher func() (Searcher, error)
 	DefaultDatabase string
 	MaxLimit        int
 	// RerankEnabled enables Stage-2 reranking for search when a reranker is configured.
@@ -77,6 +83,7 @@ func NewService(cfg Config, embedQuery EmbedQueryFunc, chunkQuery ChunkQueryFunc
 		embedQuery:      embedQuery,
 		chunkQuery:      chunkQuery,
 		searcher:        searcher,
+		resolveSearcher: cfg.ResolveSearcher,
 		localizer:       cfg.Localizer,
 	}, nil
 }
@@ -89,6 +96,17 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 	}
 	if req.Query == "" {
 		return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.QueryRequired())
+	}
+	searcher := s.searcher
+	if s.resolveSearcher != nil {
+		var err error
+		searcher, err = s.resolveSearcher()
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		if searcher == nil {
+			return nil, s.localizedStatus(ctx, codes.Internal, localization.SearcherRequired())
+		}
 	}
 
 	limit := int(req.Limit)
@@ -110,6 +128,14 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		opts.MinSimilarity = &v
 	}
 
+	native, _ := searcher.(interface {
+		NativeRerankEnabled() bool
+		RerankSearchResponse(context.Context, string, *search.SearchResponse, *search.SearchOptions) error
+	})
+	if native != nil && native.NativeRerankEnabled() {
+		opts.RerankEnabled = true
+	}
+	nativeAfterFusion := false
 	// If embeddings are available, proactively chunk long queries by length.
 	// This keeps vector search usable for paragraph-sized inputs without relying
 	// on embedder/tokenizer failures to detect "too long" queries.
@@ -140,7 +166,7 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		if len(queryChunks) <= 1 {
 			emb, embedErr := s.embedQuery(ctx, req.Query)
 			if embedErr == nil && len(emb) > 0 {
-				resp, err = s.searcher.Search(ctx, req.Query, emb, opts)
+				resp, err = searcher.Search(ctx, req.Query, emb, opts)
 			}
 		} else {
 			// Pull more candidates per chunk, then cut down after fusion.
@@ -162,6 +188,10 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 			}
 			fusedByID := make(map[string]*fused)
 
+			nativeAfterFusion = opts.RerankEnabled && native != nil && native.NativeRerankEnabled()
+			if nativeAfterFusion {
+				perChunkLimit = opts.RerankTopK
+			}
 			var usedVectorChunks int
 			for _, chunkQuery := range queryChunks {
 				emb, embedErr := s.embedQuery(ctx, chunkQuery)
@@ -172,7 +202,10 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 
 				chunkOpts := *opts
 				chunkOpts.Limit = perChunkLimit
-				chunkResp, searchErr := s.searcher.Search(ctx, chunkQuery, emb, &chunkOpts)
+				if nativeAfterFusion {
+					chunkOpts.RerankEnabled = false
+				}
+				chunkResp, searchErr := searcher.Search(ctx, chunkQuery, emb, &chunkOpts)
 				if searchErr != nil || chunkResp == nil {
 					continue
 				}
@@ -202,7 +235,7 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 				sort.Slice(fusedList, func(i, j int) bool {
 					return fusedList[i].scoreRRF > fusedList[j].scoreRRF
 				})
-				if len(fusedList) > limit {
+				if !nativeAfterFusion && len(fusedList) > limit {
 					fusedList = fusedList[:limit]
 				}
 
@@ -223,9 +256,14 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		}
 	}
 
+	if nativeAfterFusion && resp != nil {
+		if err := native.RerankSearchResponse(ctx, req.Query, resp, opts); err != nil {
+			return nil, s.localizedStatus(ctx, codes.Internal, localization.SearchFailed(err))
+		}
+	}
 	// If vector path didn't produce a response, fall back to BM25.
 	if resp == nil {
-		resp, err = s.searcher.Search(ctx, req.Query, nil, opts)
+		resp, err = searcher.Search(ctx, req.Query, nil, opts)
 		if err != nil {
 			return nil, s.localizedStatus(ctx, codes.Internal, localization.SearchFailed(err))
 		}
@@ -236,6 +274,10 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 	out := make([]*gen.SearchHit, 0, len(resp.Results))
 	for _, r := range resp.Results {
 		props, _ := structpb.NewStruct(r.Properties)
+		passages := make([]*gen.SupportingPassage, 0, len(r.Passages))
+		for _, p := range r.Passages {
+			passages = append(passages, &gen.SupportingPassage{NodeId: p.NodeID, ChunkIndex: uint32(p.ChunkIndex), Text: p.Text, MatchedBy: p.MatchedBy, Space: p.Space, SourceFingerprint: p.SourceFingerprint})
+		}
 		out = append(out, &gen.SearchHit{
 			NodeId:     string(r.NodeID),
 			Labels:     r.Labels,
@@ -244,9 +286,14 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 			RrfScore:   float32(r.RRFScore),
 			VectorRank: int32(r.VectorRank),
 			Bm25Rank:   int32(r.BM25Rank),
+			Passages:   passages,
 		})
 	}
 
+	if resp.Rerank != nil {
+		report, _ := json.Marshal(resp.Rerank)
+		grpc.SetTrailer(ctx, metadata.Pairs("nornicdb-rerank", string(report)))
+	}
 	return &gen.SearchTextResponse{
 		SearchMethod:      resp.SearchMethod,
 		Hits:              out,

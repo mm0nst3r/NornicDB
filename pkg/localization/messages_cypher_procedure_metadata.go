@@ -9,6 +9,8 @@ const (
 	MessageCypherProcedureMetadataDbConstraints                                 MessageID = "cypherproceduremetadata.db_constraints"
 	MessageCypherProcedureMetadataDbCreateSetNodeVectorProperty                 MessageID = "cypherproceduremetadata.db_create_setnodevectorproperty"
 	MessageCypherProcedureMetadataDbCreateSetRelationshipVectorProperty         MessageID = "cypherproceduremetadata.db_create_setrelationshipvectorproperty"
+	MessageCypherProcedureMetadataDbEmbeddingControl                            MessageID = "cypherproceduremetadata.db_embedding_control"
+	MessageCypherProcedureMetadataDbEmbeddingStatus                             MessageID = "cypherproceduremetadata.db_embedding_status"
 	MessageCypherProcedureMetadataDbIndexFulltextCreateNodeIndex                MessageID = "cypherproceduremetadata.db_index_fulltext_createnodeindex"
 	MessageCypherProcedureMetadataDbIndexFulltextCreateRelationshipIndex        MessageID = "cypherproceduremetadata.db_index_fulltext_createrelationshipindex"
 	MessageCypherProcedureMetadataDbIndexFulltextDrop                           MessageID = "cypherproceduremetadata.db_index_fulltext_drop"
@@ -106,6 +108,16 @@ func CypherProcedureMetadataDbCreateSetNodeVectorProperty() Message {
 // CypherProcedureMetadataDbCreateSetRelationshipVectorProperty describes db.create.setRelationshipVectorProperty in procedure listings.
 func CypherProcedureMetadataDbCreateSetRelationshipVectorProperty() Message {
 	return Message{ID: MessageCypherProcedureMetadataDbCreateSetRelationshipVectorProperty, Fallback: "Sets vector property on a relationship"}
+}
+
+// CypherProcedureMetadataDbEmbeddingControl describes db.embedding.control in procedure listings.
+func CypherProcedureMetadataDbEmbeddingControl() Message {
+	return Message{ID: MessageCypherProcedureMetadataDbEmbeddingControl, Fallback: "Controls managed embedding work for a source node"}
+}
+
+// CypherProcedureMetadataDbEmbeddingStatus describes db.embedding.status in procedure listings.
+func CypherProcedureMetadataDbEmbeddingStatus() Message {
+	return Message{ID: MessageCypherProcedureMetadataDbEmbeddingStatus, Fallback: "Returns managed embedding status for a source node"}
 }
 
 // CypherProcedureMetadataDbIndexFulltextCreateNodeIndex describes db.index.fulltext.createNodeIndex in procedure listings.
@@ -450,6 +462,8 @@ var cypherProcedureMetadata = map[string]func() Message{
 	"db.constraints":                                   CypherProcedureMetadataDbConstraints,
 	"db.create.setNodeVectorProperty":                  CypherProcedureMetadataDbCreateSetNodeVectorProperty,
 	"db.create.setRelationshipVectorProperty":          CypherProcedureMetadataDbCreateSetRelationshipVectorProperty,
+	"db.embedding.control":                             CypherProcedureMetadataDbEmbeddingControl,
+	"db.embedding.status":                              CypherProcedureMetadataDbEmbeddingStatus,
 	"db.index.fulltext.createNodeIndex":                CypherProcedureMetadataDbIndexFulltextCreateNodeIndex,
 	"db.index.fulltext.createRelationshipIndex":        CypherProcedureMetadataDbIndexFulltextCreateRelationshipIndex,
 	"db.index.fulltext.drop":                           CypherProcedureMetadataDbIndexFulltextDrop,

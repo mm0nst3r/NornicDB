@@ -413,7 +413,7 @@ func (b *BadgerEngine) UpdateNode(node *Node) error {
 		}
 
 		// Manage pending embeddings index atomically
-		if len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0 {
+		if ManagedEmbeddingCurrent(node) {
 			// Node has embedding - remove from pending index
 			txn.Delete(pendingEmbedKey(node.ID))
 		} else if b.shouldIndexPendingEmbed(node) {
@@ -488,118 +488,7 @@ func (b *BadgerEngine) UpdateNode(node *Node) error {
 // This is used by the embedding queue to prevent creating orphaned nodes.
 // REQUIRES: node.ID must be prefixed with namespace (e.g., "nornic:node-123").
 func (b *BadgerEngine) UpdateNodeEmbedding(node *Node) error {
-	if node == nil {
-		return ErrInvalidData
-	}
-	if node.ID == "" {
-		return ErrInvalidID
-	}
-	// Enforce namespace prefix at storage layer - all node IDs must be prefixed
-	if !strings.Contains(string(node.ID), ":") {
-		return localizedError(localization.StorageClientNodeIDNamespaceUnprefixed(string(node.ID)), nil)
-	}
-
-	if err := b.ensureOpen(); err != nil {
-		return err
-	}
-
-	var updated *Node
-	var persistSeparateEmbeddings bool
-	var embeddingsToPersist [][]float32
-	err := b.withUpdate(func(txn *badger.Txn) error {
-		version, err := b.allocateMVCCVersion(txn, namespaceForNodeID(node.ID), time.Now())
-		if err != nil {
-			return err
-		}
-		key := nodeKey(node.ID)
-
-		// Get existing node - MUST exist (no upsert)
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return ErrNotFound // Node doesn't exist - don't create it
-		}
-		if err != nil {
-			return err
-		}
-		// Archive the superseded body before we overwrite the primary key.
-		if err := b.archiveNodeOnUpdateInTxn(txn, node.ID); err != nil {
-			return err
-		}
-
-		// Decode existing node
-		var existing *Node
-		if err := item.Value(func(val []byte) error {
-			var decodeErr error
-			existing, decodeErr = b.decodeNodeWithEmbeddings(txn, val, node.ID)
-			return decodeErr
-		}); err != nil {
-			return err
-		}
-
-		// Update only the embedding and related metadata (stored in ChunkEmbeddings and EmbedMeta)
-		existing.ChunkEmbeddings = node.ChunkEmbeddings
-		// Copy embedding metadata from EmbedMeta (not Properties - avoids namespace pollution)
-		if node.EmbedMeta != nil {
-			existing.EmbedMeta = make(map[string]any, len(node.EmbedMeta))
-			for k, v := range node.EmbedMeta {
-				existing.EmbedMeta[k] = v
-			}
-		}
-		existing.UpdatedAt = time.Now() // Use time from encoding if available, otherwise current time
-
-		// Serialize and store updated node (may store embeddings separately if too large)
-		data, embeddingsSeparate, err := b.encodeNodeInTxn(txn, namespaceForNodeID(node.ID), existing)
-		if err != nil {
-			return localizedError(localization.StorageClientNodeEncodeFailed(err), err)
-		}
-
-		if err := txn.Set(key, data); err != nil {
-			return err
-		}
-
-		// If embeddings are stored separately, write them after commit in bounded txns.
-		if embeddingsSeparate {
-			persistSeparateEmbeddings = true
-			embeddingsToPersist = existing.ChunkEmbeddings
-		} else {
-			// Node fits inline - clean up any old separately stored embeddings
-			embPrefix := embeddingPrefix(node.ID)
-			opts := badger.DefaultIteratorOptions
-			opts.Prefix = embPrefix
-			embIt := txn.NewIterator(opts)
-			defer embIt.Close()
-			for embIt.Rewind(); embIt.Valid(); embIt.Next() {
-				if err := txn.Delete(embIt.Item().Key()); err != nil {
-					return localizedError(localization.StorageClientNodeEmbeddingChunkDeleteFailed(err), err)
-				}
-			}
-		}
-
-		// Remove from pending embeddings index if node now has embeddings
-		if len(existing.ChunkEmbeddings) > 0 && len(existing.ChunkEmbeddings[0]) > 0 {
-			txn.Delete(pendingEmbedKey(node.ID))
-		}
-
-		updated = existing
-		// Primary key now holds the new body; archive of prior body
-		// into the version record happened above.
-		return b.writeNodeMVCCHeadInTxn(txn, updated.ID, version, false)
-	})
-	if err == nil && persistSeparateEmbeddings {
-		err = b.replaceSeparateEmbeddingChunks(node.ID, embeddingsToPersist)
-	}
-
-	// Update cache on successful operation
-	if err == nil {
-		if updated == nil {
-			updated = node
-		}
-		b.cacheOnNodeUpdated(updated)
-		// Notify listeners to re-index the updated node
-		b.notifyNodeUpdated(updated)
-	}
-
-	return err
+	return finishEmbeddingUpdate(b.updateEmbeddingDeferred(node, nil))
 }
 
 func (b *BadgerEngine) replaceSeparateEmbeddingChunks(nodeID NodeID, embeddings [][]float32) error {

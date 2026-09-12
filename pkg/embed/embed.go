@@ -124,13 +124,14 @@ type Embedder interface {
 //		Timeout:    60 * time.Second,
 //	}
 type Config struct {
-	Provider   string        // ollama, openai, local
-	APIURL     string        // e.g., http://localhost:11434
-	APIPath    string        // e.g., /api/embeddings or /v1/embeddings
-	APIKey     string        // For OpenAI
-	Model      string        // e.g., mxbai-embed-large
-	Dimensions int           // Expected dimensions (for validation)
-	Timeout    time.Duration // Request timeout
+	Voyage     *VoyageEmbeddingOptions // Native provider options; nil uses provider defaults.
+	Provider   string                  // ollama, openai, local
+	APIURL     string                  // e.g., http://localhost:11434
+	APIPath    string                  // e.g., /api/embeddings or /v1/embeddings
+	APIKey     string                  // For OpenAI
+	Model      string                  // e.g., mxbai-embed-large
+	Dimensions int                     // Expected dimensions (for validation)
+	Timeout    time.Duration           // Request timeout
 
 	// Local GGUF model settings (used when Provider="local")
 	ModelsDir      string        // Directory containing .gguf models (default: ./models)
@@ -870,7 +871,12 @@ func (e *OpenAIEmbedder) Backend() string {
 // Returns an Embedder interface, or an error if the provider is unknown or
 // configuration is invalid (e.g., OpenAI without API key, local without model).
 func NewEmbedder(config *Config) (Embedder, error) {
+	if config == nil {
+		return nil, fmt.Errorf("embedding configuration is required")
+	}
 	switch config.Provider {
+	case "voyage-context", "voyage-multimodal":
+		return NewVoyage(config, config.Voyage)
 	case "local":
 		return NewLocalGGUF(config)
 	case "ollama":
@@ -881,6 +887,6 @@ func NewEmbedder(config *Config) (Embedder, error) {
 		}
 		return NewOpenAI(config), nil
 	default:
-		return nil, fmt.Errorf("unknown provider: %s (supported: local, ollama, openai)", config.Provider)
+		return nil, fmt.Errorf("unknown provider: %s (supported: local, ollama, openai, voyage-context, voyage-multimodal)", config.Provider)
 	}
 }

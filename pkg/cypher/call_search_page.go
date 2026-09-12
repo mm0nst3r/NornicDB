@@ -132,13 +132,17 @@ func (e *StorageExecutor) callDbRetrievePage(ctx context.Context, statement stri
 func nativeSearchPage(p *search.SearchPageResponse) map[string]interface{} {
 	hits := make([]interface{}, 0, len(p.Results))
 	for _, h := range p.Results {
-		hits = append(hits, map[string]interface{}{"id": h.ID, "group_key": h.GroupKey, "phase": string(h.Phase), "score": h.Score, "similarity": h.Similarity, "rrf_score": h.RRFScore, "vector_rank": int64(h.VectorRank), "bm25_rank": int64(h.BM25Rank)})
+		hit := map[string]interface{}{"id": h.ID, "group_key": h.GroupKey, "phase": string(h.Phase), "score": h.Score, "similarity": h.Similarity, "rrf_score": h.RRFScore, "vector_rank": int64(h.VectorRank), "bm25_rank": int64(h.BM25Rank)}
+		if len(h.Passages) > 0 {
+			hit["passages"] = search.PassageMaps(h.Passages)
+		}
+		hits = append(hits, hit)
 	}
 	var eligible interface{}
 	if p.EligibleCount != nil {
 		eligible = int64(*p.EligibleCount)
 	}
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"total_candidates": int64(p.TotalCandidates), "fallback_triggered": p.FallbackTriggered,
 		"vector_stop_reason": p.VectorStopReason, "vector_candidate_limit": int64(p.VectorCandidateLimit),
 		"bm25_stop_reason": p.BM25StopReason, "bm25_candidate_limit": int64(p.BM25CandidateLimit),
@@ -146,4 +150,8 @@ func nativeSearchPage(p *search.SearchPageResponse) map[string]interface{} {
 		"mode": string(p.Mode), "grouped": p.Grouped, "population": p.Population, "search_method": p.SearchMethod, "candidate_limit": int64(p.CandidateLimit),
 		"ranked_pool_exhausted": p.RankedPoolExhausted, "exhausted": p.Exhausted, "collection_exhausted": p.CollectionExhausted, "completion": p.Completion, "expires_at": p.ExpiresAt.UTC().Format(time.RFC3339Nano),
 	}
+	if p.Rerank != nil {
+		result["rerank"] = p.Rerank.Map()
+	}
+	return result
 }

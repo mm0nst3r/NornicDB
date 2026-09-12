@@ -75,7 +75,7 @@ func TestBuiltInProcedureMetadataDescriptorCoverage(t *testing.T) {
 		require.NotEmpty(t, spec.DescriptionMessage.ID, "core metadata requires a descriptor: %s", spec.Name)
 		require.Equal(t, spec.Description, spec.DescriptionMessage.Fallback, "English fallback changed: %s", spec.Name)
 	}
-	require.Equal(t, 73, coreCount)
+	require.Equal(t, 75, coreCount)
 	require.Equal(t, 28, apocCount)
 }
 

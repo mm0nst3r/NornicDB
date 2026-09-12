@@ -3,6 +3,7 @@ package embeddingutil
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,7 +45,14 @@ func BuildText(properties map[string]interface{}, labels []string, opts *EmbedTe
 		}
 	}
 
-	for key, val := range properties {
+	// Stable property ordering is required for source fingerprints and retries.
+	keys := make([]string, 0, len(properties))
+	for key := range properties {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		val := properties[key]
 		if excludeSet[key] {
 			continue
 		}
@@ -99,8 +107,7 @@ func InvalidateManagedEmbeddings(node *storage.Node) {
 	if node == nil {
 		return
 	}
-	node.ChunkEmbeddings = nil
-	node.EmbedMeta = nil
+	_ = ApplyEmbeddingWorkEvent(node, EmbeddingWorkEvent{Action: "invalidate"})
 }
 
 // EmbedTextOptionsFromConfig maps runtime embedding worker config to text builder options.

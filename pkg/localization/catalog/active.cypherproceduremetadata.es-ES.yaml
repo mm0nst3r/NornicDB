@@ -10,6 +10,10 @@
   other: "Establece una propiedad vectorial en un nodo"
 - id: cypherproceduremetadata.db_create_setrelationshipvectorproperty
   other: "Establece una propiedad vectorial en una relación"
+- id: cypherproceduremetadata.db_embedding_control
+  other: "Controla el trabajo de embeddings gestionados para un nodo de origen"
+- id: cypherproceduremetadata.db_embedding_status
+  other: "Devuelve el estado de embeddings gestionados para un nodo de origen"
 - id: cypherproceduremetadata.db_index_fulltext_createnodeindex
   other: "Crea un índice de texto completo en nodos"
 - id: cypherproceduremetadata.db_index_fulltext_createrelationshipindex
