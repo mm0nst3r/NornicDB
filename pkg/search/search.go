@@ -259,17 +259,22 @@ type SearchResponse struct {
 
 // SearchMetrics contains timing and statistics.
 type SearchMetrics struct {
-	VectorSearchTimeMs     int `json:"vector_search_time_ms"`
-	BM25SearchTimeMs       int `json:"bm25_search_time_ms"`
-	FusionTimeMs           int `json:"fusion_time_ms"`
-	TotalTimeMs            int `json:"total_time_ms"`
-	VectorCandidates       int `json:"vector_candidates"`
-	VectorRawCandidates    int `json:"vector_raw_candidates"`
-	VectorOverfetchRetries int `json:"vector_overfetch_retries"`
-	BM25Candidates         int `json:"bm25_candidates"`
-	BM25RawCandidates      int `json:"bm25_raw_candidates"`
-	BM25OverfetchRetries   int `json:"bm25_overfetch_retries"`
-	FusedCandidates        int `json:"fused_candidates"`
+	// Stop reasons describe the bounded retrieval loop, never exhaustive ANN recall.
+	VectorStopReason       string `json:"vector_stop_reason,omitempty"`
+	VectorCandidateLimit   int    `json:"vector_candidate_limit,omitempty"`
+	BM25StopReason         string `json:"bm25_stop_reason,omitempty"`
+	BM25CandidateLimit     int    `json:"bm25_candidate_limit,omitempty"`
+	VectorSearchTimeMs     int    `json:"vector_search_time_ms"`
+	BM25SearchTimeMs       int    `json:"bm25_search_time_ms"`
+	FusionTimeMs           int    `json:"fusion_time_ms"`
+	TotalTimeMs            int    `json:"total_time_ms"`
+	VectorCandidates       int    `json:"vector_candidates"`
+	VectorRawCandidates    int    `json:"vector_raw_candidates"`
+	VectorOverfetchRetries int    `json:"vector_overfetch_retries"`
+	BM25Candidates         int    `json:"bm25_candidates"`
+	BM25RawCandidates      int    `json:"bm25_raw_candidates"`
+	BM25OverfetchRetries   int    `json:"bm25_overfetch_retries"`
+	FusedCandidates        int    `json:"fused_candidates"`
 }
 
 // SearchOptions configures the search behavior.
@@ -707,6 +712,7 @@ type Service struct {
 	// All call paths (HTTP search, Cypher, etc.) benefit. Invalidated on IndexNode/RemoveNode.
 	resultCache    *searchResultCache
 	cacheNamespace string
+	continuation   searchContinuationState
 
 	nodeDecayFilter NodeDecayFilterFunc
 
@@ -1129,6 +1135,11 @@ func (s *Service) MarkReadyDisabled() {
 // the construction path in getOrCreateSearchService) can observe whether
 // the swap was a no-op.
 func (s *Service) SetIndexFlags(bm25Enabled, vectorEnabled bool) (changed bool) {
+	s.continuation.policyMu.Lock()
+	defer s.continuation.policyMu.Unlock()
+	if s.bm25Enabled.Load() != bm25Enabled || s.vectorEnabled.Load() != vectorEnabled {
+		defer s.BeginSearchContinuationMutation()()
+	}
 	prevBM25 := s.bm25Enabled.Swap(bm25Enabled)
 	prevVec := s.vectorEnabled.Swap(vectorEnabled)
 	return prevBM25 != bm25Enabled || prevVec != vectorEnabled
@@ -1762,6 +1773,9 @@ func (s *Service) SetPersistenceEnabled(enabled bool) {
 // It is safe to call more than once. PersistIndexesToDisk should be called by owners before
 // Close when shutdown persistence is desired.
 func (s *Service) Close() error {
+	if s != nil {
+		s.continuation.store.Close()
+	}
 	if s == nil {
 		return nil
 	}
@@ -2309,6 +2323,7 @@ func (s *Service) maybeAutoSetVectorDimensions(dimensions int) {
 // This is used when regenerating all embeddings to reset the index count.
 // Also frees memory from HNSW tombstones which can accumulate over time.
 func (s *Service) ClearVectorIndex() {
+	defer s.BeginSearchContinuationMutation()()
 	// Lock order: pipelineMu -> mu -> hnswMu, matching pipeline construction paths.
 	s.pipelineMu.Lock()
 	s.vectorPipeline = nil
@@ -2357,6 +2372,7 @@ func (s *Service) ClearVectorIndex() {
 // IndexNode adds a node to all search indexes.
 // All embeddings are stored in ChunkEmbeddings (even single chunk = array of 1).
 func (s *Service) IndexNode(node *storage.Node) error {
+	defer s.BeginSearchContinuationMutation()()
 	// Per-DB master switches: when both indexes are off, IndexNode is a full
 	// no-op — the database has no search and never will until a flag flip
 	// triggers ResetSearchService. When one is off, indexNodeLocked still
@@ -2980,6 +2996,7 @@ func (s *Service) removeNodeLocked(nodeIDStr string) {
 // RemoveNode removes a node from all search indexes.
 // Also removes all chunk embeddings (for nodes with multiple chunks).
 func (s *Service) RemoveNode(nodeID storage.NodeID) error {
+	defer s.BeginSearchContinuationMutation()()
 	if !s.buildInProgress.Load() {
 		defer s.schedulePersist()
 		if s.resultCache != nil {
@@ -3156,6 +3173,7 @@ func (s *Service) CountPropertyVectorEntries(propertyKey string) int {
 // propertyKey. Callers are expected to also call DropIndex on the schema
 // to remove the named-index entry that points at this property.
 func (s *Service) RemovePropertyVectorIndex(propertyKey string) {
+	defer s.BeginSearchContinuationMutation()()
 	if s == nil || propertyKey == "" {
 		return
 	}
@@ -3238,6 +3256,7 @@ type NodeIterator interface {
 // if both load with count > 0 (and semver format version matches), the full iteration
 // is skipped. Otherwise iterates over storage and saves both indexes at the end when paths are set.
 func (s *Service) BuildIndexes(ctx context.Context) error {
+	defer s.BeginSearchContinuationMutation()()
 	s.buildMu.Lock()
 	defer s.buildMu.Unlock()
 	if ctx == nil {
@@ -3991,6 +4010,16 @@ func (s *Service) tryRestoreClusteredWarmupFromDisk(ctx context.Context, cluster
 //
 // Returns a SearchResponse with ranked results and metadata about the search method used.
 func (s *Service) Search(ctx context.Context, query string, embedding []float32, opts *SearchOptions) (resp *SearchResponse, err error) {
+	return s.searchWithResultCache(ctx, query, embedding, opts, true)
+}
+
+// searchWithResultCache lets continuation freeze a fresh retrieval without
+// inheriting the ordinary result cache's lifetime or key equivalences.
+func (s *Service) searchWithResultCache(ctx context.Context, query string, embedding []float32, opts *SearchOptions, cacheResults bool) (resp *SearchResponse, err error) {
+	resultCache := s.resultCache
+	if !cacheResults {
+		resultCache = nil
+	}
 	start := time.Now()
 	// Plan 04-05-05: observe requests_total + candidates_rows at the
 	// single Search chokepoint so all internal call paths (vector-only,
@@ -4042,8 +4071,8 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 
 	// Cache key for result cache (same query+options => same key; used for Get and Put).
 	cacheKey := s.cacheNamespace + "\x00" + searchCacheKey(query, embedding, opts)
-	if s.resultCache != nil {
-		if cached := s.resultCache.Get(cacheKey); cached != nil {
+	if resultCache != nil {
+		if cached := resultCache.Get(cacheKey); cached != nil {
 			s.maybeLogSearchTiming(query, cached, time.Since(start), true)
 			return cached, nil
 		}
@@ -4053,16 +4082,16 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if len(embedding) == 0 {
 		if !opts.fallbackEnabled() {
 			response := &SearchResponse{Status: "success", Query: query, SearchMethod: "rrf_hybrid"}
-			if s.resultCache != nil {
-				s.resultCache.Put(cacheKey, response)
+			if resultCache != nil {
+				resultCache.Put(cacheKey, response)
 			}
 			s.maybeLogSearchTiming(query, response, time.Since(start), false)
 			return response, nil
 		}
 		mode = "bm25" // Plan 04-05-05: closed AllowedSearchModes
 		resp, err := s.fullTextSearchOnly(ctx, query, opts)
-		if err == nil && s.resultCache != nil {
-			s.resultCache.Put(cacheKey, resp)
+		if err == nil && resultCache != nil {
+			resultCache.Put(cacheKey, resp)
 		}
 		s.maybeLogSearchTiming(query, resp, time.Since(start), false)
 		return resp, err
@@ -4074,8 +4103,8 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if strings.TrimSpace(query) == "" {
 		mode = "vector" // Plan 04-05-05: closed AllowedSearchModes
 		resp, err := s.vectorSearchOnly(ctx, embedding, opts)
-		if err == nil && s.resultCache != nil {
-			s.resultCache.Put(cacheKey, resp)
+		if err == nil && resultCache != nil {
+			resultCache.Put(cacheKey, resp)
 		}
 		s.maybeLogSearchTiming(query, resp, time.Since(start), false)
 		return resp, err
@@ -4084,8 +4113,8 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	// Try RRF hybrid search
 	response, err := s.rrfHybridSearch(ctx, query, embedding, opts)
 	if err == nil && len(response.Results) > 0 {
-		if s.resultCache != nil {
-			s.resultCache.Put(cacheKey, response)
+		if resultCache != nil {
+			resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
 		return response, nil
@@ -4094,8 +4123,8 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 		if response == nil {
 			response = &SearchResponse{Status: "success", Query: query, SearchMethod: "rrf_hybrid"}
 		}
-		if err == nil && s.resultCache != nil {
-			s.resultCache.Put(cacheKey, response)
+		if err == nil && resultCache != nil {
+			resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
 		return response, err
@@ -4106,8 +4135,8 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if err == nil && len(response.Results) > 0 {
 		response.FallbackTriggered = true
 		response.Message = "RRF search returned no results, fell back to vector search"
-		if s.resultCache != nil {
-			s.resultCache.Put(cacheKey, response)
+		if resultCache != nil {
+			resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
 		return response, nil
@@ -4116,8 +4145,8 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	// Final fallback to full-text
 	mode = "bm25" // Plan 04-05-05: final fallback to BM25-only
 	resp, err = s.fullTextSearchOnly(ctx, query, opts)
-	if err == nil && s.resultCache != nil {
-		s.resultCache.Put(cacheKey, resp)
+	if err == nil && resultCache != nil {
+		resultCache.Put(cacheKey, resp)
 	}
 	s.maybeLogSearchTiming(query, resp, time.Since(start), false)
 	return resp, err
@@ -4264,9 +4293,13 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 			VectorCandidates:       len(vectorResults),
 			VectorRawCandidates:    vectorStats.rawCandidates,
 			VectorOverfetchRetries: vectorStats.retries,
+			VectorStopReason:       vectorStats.stopReason,
+			VectorCandidateLimit:   vectorStats.candidateLimit,
 			BM25Candidates:         len(bm25Results),
 			BM25RawCandidates:      bm25Result.stats.rawCandidates,
 			BM25OverfetchRetries:   bm25Result.stats.retries,
+			BM25StopReason:         bm25Result.stats.stopReason,
+			BM25CandidateLimit:     bm25Result.stats.candidateLimit,
 			FusedCandidates:        len(fusedResults),
 		},
 	}, nil
@@ -4339,8 +4372,10 @@ type adaptiveOverfetchConfig struct {
 }
 
 type vectorOverfetchStats struct {
-	rawCandidates int
-	retries       int
+	rawCandidates  int
+	retries        int
+	stopReason     string
+	candidateLimit int
 }
 
 func resolveAdaptiveOverfetch(opts *SearchOptions) adaptiveOverfetchConfig {
@@ -4426,7 +4461,7 @@ func (s *Service) adaptiveVectorSearch(
 	}
 	config := resolveVectorAdaptiveOverfetch(opts, pipeline)
 	requestLimit := config.initialLimit
-	var stats vectorOverfetchStats
+	stats := vectorOverfetchStats{candidateLimit: config.maxLimit}
 	for {
 		scored, err := pipeline.Search(ctx, embedding, requestLimit, opts.GetMinSimilarity(0.5))
 		if err != nil {
@@ -4442,9 +4477,18 @@ func (s *Service) adaptiveVectorSearch(
 			results = postProcess(results)
 		}
 		if len(results) >= config.target {
+			stats.stopReason = "target_reached"
 			return results[:config.target], stats, nil
 		}
 		if !config.adaptive || requestLimit >= config.maxLimit || len(scored) < requestLimit {
+			switch {
+			case len(scored) < requestLimit:
+				stats.stopReason = "short_response"
+			case requestLimit >= config.maxLimit:
+				stats.stopReason = "candidate_limit"
+			default:
+				stats.stopReason = "adaptive_disabled"
+			}
 			return results, stats, nil
 		}
 		nextLimit := int(math.Ceil(float64(requestLimit) * config.growthFactor))
@@ -4468,7 +4512,7 @@ func (s *Service) adaptiveBM25Search(
 	}
 	config := resolveAdaptiveOverfetch(opts)
 	requestLimit := config.initialLimit
-	var stats vectorOverfetchStats
+	stats := vectorOverfetchStats{candidateLimit: config.maxLimit}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, stats, err
@@ -4480,9 +4524,18 @@ func (s *Service) adaptiveBM25Search(
 			results = postProcess(results)
 		}
 		if len(results) >= config.target {
+			stats.stopReason = "target_reached"
 			return results[:config.target], stats, nil
 		}
 		if !config.adaptive || requestLimit >= config.maxLimit || len(rawResults) < requestLimit {
+			switch {
+			case len(rawResults) < requestLimit:
+				stats.stopReason = "short_response"
+			case requestLimit >= config.maxLimit:
+				stats.stopReason = "candidate_limit"
+			default:
+				stats.stopReason = "adaptive_disabled"
+			}
 			return results, stats, nil
 		}
 		nextLimit := int(math.Ceil(float64(requestLimit) * config.growthFactor))
@@ -6070,6 +6123,7 @@ func (s *Service) applyStage2Rerank(ctx context.Context, query string, results [
 //		Model:   "cross-encoder/ms-marco-MiniLM-L-6-v2",
 //	}))
 func (s *Service) SetCrossEncoder(ce *CrossEncoder) {
+	defer s.BeginSearchContinuationMutation()()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reranker = ce
@@ -6086,6 +6140,7 @@ func (s *Service) SetReranker(r Reranker) {
 	if current == r {
 		return
 	}
+	defer s.BeginSearchContinuationMutation()()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reranker = r
@@ -6252,6 +6307,8 @@ func (s *Service) vectorSearchOnly(ctx context.Context, embedding []float32, opt
 			VectorCandidates:       len(results),
 			VectorRawCandidates:    vectorStats.rawCandidates,
 			VectorOverfetchRetries: vectorStats.retries,
+			VectorStopReason:       vectorStats.stopReason,
+			VectorCandidateLimit:   vectorStats.candidateLimit,
 		},
 	}, nil
 }
@@ -6313,6 +6370,8 @@ func (s *Service) fullTextSearchOnly(ctx context.Context, query string, opts *Se
 			BM25Candidates:       len(results),
 			BM25RawCandidates:    bm25Stats.rawCandidates,
 			BM25OverfetchRetries: bm25Stats.retries,
+			BM25StopReason:       bm25Stats.stopReason,
+			BM25CandidateLimit:   bm25Stats.candidateLimit,
 		},
 	}, nil
 }

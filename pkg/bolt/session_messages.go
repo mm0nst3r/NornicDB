@@ -259,6 +259,7 @@ func (s *Session) handleRun(data []byte) error {
 	defer s.clearActiveRun()
 	ctx = cypher.WithAuthToken(ctx, s.forwardedAuthHeader)
 	if s.authResult != nil {
+		ctx = cypher.WithSearchContinuationScope(ctx, s.authResult.Username, s.authResult.Roles)
 		ctx = cypher.WithPermissionChecker(ctx, func(permission string) bool {
 			return s.authResult.HasPermission(permission)
 		})
@@ -371,6 +372,9 @@ func (s *Session) logRunTiming(status, dbName, query string, duration time.Durat
 func mapBoltQueryError(err error) (code, message string) {
 	if err == nil {
 		return "Neo.ClientError.Statement.SyntaxError", ""
+	}
+	if code := cypher.SearchContinuationErrorCode(err); code != "" {
+		return code, err.Error()
 	}
 	var permissionDenied *cypher.PermissionDeniedError
 	if errors.As(err, &permissionDenied) {

@@ -1259,6 +1259,9 @@ func (s *Server) handleImplicitTransaction(w http.ResponseWriter, r *http.Reques
 
 		if err != nil {
 			code := "Neo.ClientError.Statement.SyntaxError"
+			if searchCode := cypher.SearchContinuationErrorCode(err); searchCode != "" {
+				code = searchCode
+			}
 			if transientCode, ok := mapTransientTransactionError(err); ok {
 				code = transientCode
 			}
@@ -1465,6 +1468,9 @@ func (s *Server) handleSingleStatementFastPath(w http.ResponseWriter, r *http.Re
 
 	if execErr != nil {
 		code := "Neo.ClientError.Statement.SyntaxError"
+		if searchCode := cypher.SearchContinuationErrorCode(execErr); searchCode != "" {
+			code = searchCode
+		}
 		if transientCode, ok := mapTransientTransactionError(execErr); ok {
 			code = transientCode
 		}
@@ -1882,6 +1888,9 @@ func (s *Server) executeTxStatements(
 func mapSessionExecError(err error) (code, message string) {
 	if err == nil {
 		return "Neo.ClientError.Statement.SyntaxError", ""
+	}
+	if code := cypher.SearchContinuationErrorCode(err); code != "" {
+		return code, err.Error()
 	}
 	msg := err.Error()
 	if transientCode, ok := mapTransientTransactionError(err); ok {

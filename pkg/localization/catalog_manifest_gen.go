@@ -582,6 +582,8 @@ var CatalogManifest = [...]CatalogManifestEntry{
 	{ID: "cypherproceduremetadata.db_rerank", Constructor: "CypherProcedureMetadataDbRerank", Fields: []string{}, PluralForms: []string{"other"}},
 	{ID: "cypherproceduremetadata.db_resampleindex", Constructor: "CypherProcedureMetadataDbResampleIndex", Fields: []string{}, PluralForms: []string{"other"}},
 	{ID: "cypherproceduremetadata.db_retrieve", Constructor: "CypherProcedureMetadataDbRetrieve", Fields: []string{}, PluralForms: []string{"other"}},
+	{ID: "cypherproceduremetadata.db_retrieve_page", Constructor: "CypherProcedureMetadataDbRetrievePage", Fields: []string{}, PluralForms: []string{"other"}},
+	{ID: "cypherproceduremetadata.db_retrieve_release", Constructor: "CypherProcedureMetadataDbRetrieveRelease", Fields: []string{}, PluralForms: []string{"other"}},
 	{ID: "cypherproceduremetadata.db_rretrieve", Constructor: "CypherProcedureMetadataDbRretrieve", Fields: []string{}, PluralForms: []string{"other"}},
 	{ID: "cypherproceduremetadata.db_schema_nodeproperties", Constructor: "CypherProcedureMetadataDbSchemaNodeProperties", Fields: []string{}, PluralForms: []string{"other"}},
 	{ID: "cypherproceduremetadata.db_schema_relproperties", Constructor: "CypherProcedureMetadataDbSchemaRelProperties", Fields: []string{}, PluralForms: []string{"other"}},
