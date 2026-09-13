@@ -368,6 +368,15 @@ func (s *Server) missingQueryPermission(claims *auth.JWTClaims, dbName, query st
 }
 
 func (s *Server) withDatabasePermissionChecker(ctx context.Context, claims *auth.JWTClaims, dbName string) context.Context {
+	if claims != nil {
+		principal := claims.Username
+		if principal == "" {
+			principal = claims.Sub
+		}
+		ctx = cypher.WithSearchContinuationScope(ctx, principal, claims.Roles)
+	} else {
+		ctx = cypher.WithSearchContinuationScope(ctx, "anonymous", nil)
+	}
 	if !s.isRBACEnforced() {
 		return ctx
 	}

@@ -32,6 +32,8 @@ const (
 	MessageCypherProcedureMetadataDbRerank                                      MessageID = "cypherproceduremetadata.db_rerank"
 	MessageCypherProcedureMetadataDbResampleIndex                               MessageID = "cypherproceduremetadata.db_resampleindex"
 	MessageCypherProcedureMetadataDbRetrieve                                    MessageID = "cypherproceduremetadata.db_retrieve"
+	MessageCypherProcedureMetadataDbRetrievePage                                MessageID = "cypherproceduremetadata.db_retrieve_page"
+	MessageCypherProcedureMetadataDbRetrieveRelease                             MessageID = "cypherproceduremetadata.db_retrieve_release"
 	MessageCypherProcedureMetadataDbRretrieve                                   MessageID = "cypherproceduremetadata.db_rretrieve"
 	MessageCypherProcedureMetadataDbSchemaNodeProperties                        MessageID = "cypherproceduremetadata.db_schema_nodeproperties"
 	MessageCypherProcedureMetadataDbSchemaRelProperties                         MessageID = "cypherproceduremetadata.db_schema_relproperties"
@@ -219,6 +221,16 @@ func CypherProcedureMetadataDbResampleIndex() Message {
 // CypherProcedureMetadataDbRetrieve describes db.retrieve in procedure listings.
 func CypherProcedureMetadataDbRetrieve() Message {
 	return Message{ID: MessageCypherProcedureMetadataDbRetrieve, Fallback: "Hybrid retrieval procedure"}
+}
+
+// CypherProcedureMetadataDbRetrievePage describes db.retrieve.page in procedure listings.
+func CypherProcedureMetadataDbRetrievePage() Message {
+	return Message{ID: MessageCypherProcedureMetadataDbRetrievePage, Fallback: "Returns a stable page from a filtered search population"}
+}
+
+// CypherProcedureMetadataDbRetrieveRelease describes db.retrieve.release in procedure listings.
+func CypherProcedureMetadataDbRetrieveRelease() Message {
+	return Message{ID: MessageCypherProcedureMetadataDbRetrieveRelease, Fallback: "Releases a retained search continuation"}
 }
 
 // CypherProcedureMetadataDbRretrieve describes db.rretrieve in procedure listings.
@@ -461,6 +473,8 @@ var cypherProcedureMetadata = map[string]func() Message{
 	"db.rerank":                                        CypherProcedureMetadataDbRerank,
 	"db.resampleIndex":                                 CypherProcedureMetadataDbResampleIndex,
 	"db.retrieve":                                      CypherProcedureMetadataDbRetrieve,
+	"db.retrieve.page":                                 CypherProcedureMetadataDbRetrievePage,
+	"db.retrieve.release":                              CypherProcedureMetadataDbRetrieveRelease,
 	"db.rretrieve":                                     CypherProcedureMetadataDbRretrieve,
 	"db.schema.nodeProperties":                         CypherProcedureMetadataDbSchemaNodeProperties,
 	"db.schema.relProperties":                          CypherProcedureMetadataDbSchemaRelProperties,
