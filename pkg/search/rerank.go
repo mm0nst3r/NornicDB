@@ -56,9 +56,9 @@ import (
 
 // Reranker is a Stage-2 reranking component.
 //
-// Implementations MUST be fail-open: if reranking cannot be performed (service
-// unavailable, parse error, timeout), they should return a pass-through ranking
-// rather than failing the overall search request.
+// Legacy implementations retain their historical fail-open behavior. Native
+// ReportingReranker implementations return explicit outcomes and honor caller
+// failure policy; provider failures must never be reported as successful reranks.
 type Reranker interface {
 	// Name identifies the reranker implementation for observability.
 	// Examples: "cross_encoder", "heimdall_llm".
@@ -77,6 +77,10 @@ type Reranker interface {
 
 // CrossEncoderConfig configures the cross-encoder reranker.
 type CrossEncoderConfig struct {
+	// Native Voyage controls; other providers retain their own protocol behavior.
+	Truncation    bool
+	FailurePolicy RerankFailurePolicy
+
 	// Enabled turns on cross-encoder reranking
 	Enabled bool
 

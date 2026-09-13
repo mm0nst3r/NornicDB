@@ -573,6 +573,7 @@ func (s *Session) handlePull(data []byte) error {
 	if !hasMore {
 		// Capture stats before clearing the result reference.
 		resultStats := s.lastResult.Stats
+		rerankReport := s.lastResult.Metadata["rerank"]
 		s.lastResult = nil
 		s.resultIndex = 0
 
@@ -629,6 +630,9 @@ func (s *Session) handlePull(data []byte) error {
 			}
 		}
 
+		if rerankReport != nil {
+			metadata["rerank"] = rerankReport
+		}
 		// Note: Neo4j does NOT send has_more when it's false
 		if err := s.sendSuccessNoFlush(metadata); err != nil {
 			return err
@@ -672,8 +676,10 @@ func databaseFromMetadata(metadata map[string]any) (string, bool) {
 func (s *Session) handleDiscard(data []byte) error {
 	// Capture stats before clearing the result.
 	var resultStats *QueryStats
+	var rerankReport any
 	if s.lastResult != nil {
 		resultStats = s.lastResult.Stats
+		rerankReport = s.lastResult.Metadata["rerank"]
 	}
 	s.lastResult = nil
 	s.resultIndex = 0
@@ -724,6 +730,9 @@ func (s *Session) handleDiscard(data []byte) error {
 		}
 	}
 
+	if rerankReport != nil {
+		metadata["rerank"] = rerankReport
+	}
 	if err := s.sendSuccessNoFlush(metadata); err != nil {
 		return err
 	}
