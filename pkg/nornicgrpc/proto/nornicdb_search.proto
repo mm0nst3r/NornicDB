@@ -82,6 +82,8 @@ message SearchHit {
   // of the number of passages. Child passages use the same SearchHit shape as
   // top-level hits so per-hit metadata survives grouped serialization.
   repeated SearchHit passages = 10;
+  // Provider-returned text supporting this hit (distinct from grouped passages).
+  repeated SupportingPassage supporting_passages = 11;
 }
 
 message SearchTextResponse {
@@ -116,4 +118,14 @@ message SearchTextResponse {
   // max_results_reached means the caller's explicit result ceiling stopped the
   // stream before full collection exhaustion.
   string completion = 18;
+}
+
+// Complete provider-returned supporting text, with its source and model identity.
+message SupportingPassage {
+  string node_id = 1;
+  uint32 chunk_index = 2;
+  string text = 3;
+  repeated string matched_by = 4;
+  string space = 5;
+  string source_fingerprint = 6;
 }

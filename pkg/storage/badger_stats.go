@@ -318,12 +318,15 @@ func (b *BadgerEngine) FindNodeNeedingEmbedding() *Node {
 			}
 
 			// If node no longer needs embedding, remove it from the pending index.
-			if (len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0) || !NodeNeedsEmbedding(node) {
+			if !NodeHasPendingEmbedding(node) {
 				_ = txn.Delete(pendingEmbedKey(nodeID))
 				removedNoLongerNeeds++
 				continue
 			}
 
+			if !NodeNeedsEmbedding(node) {
+				continue
+			}
 			found = node
 			break
 		}
@@ -463,7 +466,7 @@ func (b *BadgerEngine) RefreshPendingEmbeddingsIndex() int {
 			}
 
 			// Remove from index if node already has embedding or doesn't need one
-			if (len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0) || !NodeNeedsEmbedding(node) {
+			if !NodeHasPendingEmbedding(node) {
 				txn.Delete(key)
 				removed++
 			}
@@ -503,7 +506,7 @@ func (b *BadgerEngine) RefreshPendingEmbeddingsIndex() int {
 				}
 
 				// Check if needs embedding and not already in index
-				if (len(node.ChunkEmbeddings) == 0 || len(node.ChunkEmbeddings[0]) == 0) && NodeNeedsEmbedding(node) {
+				if NodeHasPendingEmbedding(node) {
 					// Check if already in pending index
 					_, err := txn.Get(pendingEmbedKey(node.ID))
 					if err == badger.ErrKeyNotFound {

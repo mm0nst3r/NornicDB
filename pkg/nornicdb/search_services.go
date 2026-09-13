@@ -206,6 +206,12 @@ func (db *DB) getOrCreateSearchService(dbName string, storageEngine storage.Engi
 		}
 	}
 
+	var serviceOptions *search.ServiceOptions
+	if optionsResolver != nil {
+		resolved := optionsResolver(dbName)
+		serviceOptions = &resolved
+	}
+
 	var gpuMgr *gpu.Manager
 	db.gpuManagerMu.RLock()
 	if m, ok := db.gpuManager.(*gpu.Manager); ok {
@@ -237,6 +243,9 @@ func (db *DB) getOrCreateSearchService(dbName string, storageEngine storage.Engi
 		// This keeps behavior consistent even if the reranker is configured after the
 		// service was created (e.g. Heimdall initializes later in server startup).
 		if svc != nil {
+			if serviceOptions != nil {
+				svc.SetEmbeddingSpace(serviceOptions.EmbeddingSpace)
+			}
 			svc.SetReranker(reranker)
 		}
 		return svc, nil
@@ -267,11 +276,6 @@ func (db *DB) getOrCreateSearchService(dbName string, storageEngine storage.Engi
 	if dims <= 0 {
 		dims = 1024
 	}
-	var serviceOptions *search.ServiceOptions
-	if optionsResolver != nil {
-		resolved := optionsResolver(dbName)
-		serviceOptions = &resolved
-	}
 	svc := search.NewServiceWithDimensionsAndBM25EngineAndOptions(storageEngine, dims, bm25Engine, serviceOptions)
 	continuations, err := db.getOrCreateSearchContinuationRegistry()
 	if err != nil {
@@ -279,6 +283,12 @@ func (db *DB) getOrCreateSearchService(dbName string, storageEngine storage.Engi
 		return nil, err
 	}
 	svc.SetContinuationRegistry(continuations)
+	if serviceOptions == nil {
+		db.searchServicesMu.RLock()
+		space := db.defaultEmbeddingSpace
+		db.searchServicesMu.RUnlock()
+		svc.SetEmbeddingSpace(space)
+	}
 	svc.SetDefaultMinSimilarity(minSim)
 	if db.config != nil {
 		svc.SetFulltextProperties(db.config.Memory.SearchBM25Properties)
@@ -833,6 +843,16 @@ func (db *DB) EnsureSearchIndexesBuildStarted(dbName string, storageEngine stora
 func (db *DB) indexNodeFromEvent(node *storage.Node) {
 	if node == nil {
 		return
+	}
+	// Recovery can emit durable node updates before server configuration is
+	// installed. The gated startup rebuild reads those nodes from storage; an
+	// event must not create/build an index with the global model in the meantime.
+	if db.searchWarmupReady != nil {
+		select {
+		case <-db.searchWarmupReady:
+		default:
+			return
+		}
 	}
 
 	dbName, local, ok := splitQualifiedID(string(node.ID))

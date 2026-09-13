@@ -151,9 +151,10 @@ func DefaultConfig() *Config {
 //
 //	All methods are thread-safe and can be called concurrently.
 type DB struct {
-	config *Config
-	mu     sync.RWMutex
-	closed bool
+	defaultEmbeddingSpace string // protected by searchServicesMu
+	config                *Config
+	mu                    sync.RWMutex
+	closed                bool
 
 	// Internal components
 	storage           storage.Engine // Namespaced storage for default database (all DB operations use this)
@@ -285,7 +286,8 @@ func embedConfigKey(cfg *embed.Config) string {
 	if cfg == nil {
 		return ""
 	}
-	return cfg.Provider + "|" + cfg.Model + "|" + strconv.Itoa(cfg.Dimensions) + "|" +
+	options, _ := json.Marshal(cfg.Voyage)
+	return string(options) + "|" + cfg.APIPath + "|" + cfg.Provider + "|" + cfg.Model + "|" + strconv.Itoa(cfg.Dimensions) + "|" +
 		cfg.APIURL + "|" + cfg.APIKey + "|" + cfg.ModelsDir + "|" + strconv.Itoa(cfg.GPULayers)
 }
 
@@ -1113,7 +1115,8 @@ func Open(dataDir string, config *Config) (*DB, error) {
 	if config.Memory.EmbeddingEnabled && db.baseStorage != nil && db.embedWorkerConfig != nil {
 		workerCfg := *db.embedWorkerConfig
 		workerCfg.DeferWorkerStart = true
-		db.embedQueue = NewEmbedQueue(nil, db.baseStorage, &workerCfg)
+		db.embedQueue = NewEmbedQueue(nil, db.GetBaseStorageForManager(), &workerCfg)
+		db.embedQueue.SetEmbedderResolver(db.resolveWorkerEmbedder)
 		if db.embedQueueYieldFn != nil {
 			db.embedQueue.SetShouldYield(db.embedQueueYieldFn)
 		}
@@ -1531,6 +1534,23 @@ func (db *DB) maybeEnableReplication(base storage.Engine) (storage.Engine, error
 // This should be called by the server after creating a working embedder.
 // The embedder is shared with the MCP server and Cypher executor for consistency.
 func (db *DB) SetEmbedder(embedder embed.Embedder) {
+	if embedder != nil {
+		db.dbConfigResolverMu.RLock()
+		optionsResolver := db.dbSearchOptionsResolver
+		db.dbConfigResolverMu.RUnlock()
+		db.searchServicesMu.Lock()
+		db.defaultEmbeddingSpace = embed.NativeEmbeddingSpace(embedder)
+		for name, entry := range db.searchServices {
+			if entry.svc != nil {
+				space := db.defaultEmbeddingSpace
+				if optionsResolver != nil {
+					space = optionsResolver(name).EmbeddingSpace
+				}
+				entry.svc.SetEmbeddingSpace(space)
+			}
+		}
+		db.searchServicesMu.Unlock()
+	}
 	if embedder == nil {
 		return
 	}
@@ -1543,6 +1563,7 @@ func (db *DB) SetEmbedder(embedder embed.Embedder) {
 		db.mu.Unlock()
 		panic("nornicdb: baseStorage is nil in SetEmbedder")
 	}
+	workerStorage := db.baseStorageForManager()
 
 	// Share embedder with Cypher executor for server-side query embedding
 	// This enables: CALL db.index.vector.queryNodes('idx', 10, 'search text')
@@ -1570,7 +1591,8 @@ func (db *DB) SetEmbedder(embedder embed.Embedder) {
 
 	// Create embed queue against the un-namespaced base storage so it can pull work
 	// from ALL databases (node IDs are fully-qualified, e.g. "nornic:<id>").
-	db.embedQueue = NewEmbedQueue(embedder, db.baseStorage, db.embedWorkerConfig)
+	db.embedQueue = NewEmbedQueue(embedder, workerStorage, db.embedWorkerConfig)
+	db.embedQueue.SetEmbedderResolver(db.resolveWorkerEmbedder)
 	if db.embedQueueYieldFn != nil {
 		db.embedQueue.SetShouldYield(db.embedQueueYieldFn)
 	}
@@ -1725,7 +1747,9 @@ func (db *DB) getOrCreateEmbedderForDB(dbName string) (embed.Embedder, error) {
 			return e, nil
 		}
 		db.embedderRegistryMu.RUnlock()
-		// Creation completed but no registry entry (likely create failed). Fall back.
+		if strings.HasPrefix(cfg.Provider, "voyage-") {
+			return nil, fmt.Errorf("configured embedding provider initialization failed")
+		}
 		return embedQueue.embedder, nil
 	}
 	ch := make(chan struct{})
@@ -1750,6 +1774,12 @@ func (db *DB) getOrCreateEmbedderForDB(dbName string) (embed.Embedder, error) {
 	db.embedderCreateMu.Unlock()
 
 	if createErr != nil || newEmbedder == nil {
+		if strings.HasPrefix(cfg.Provider, "voyage-") {
+			if createErr != nil {
+				return nil, createErr
+			}
+			return nil, fmt.Errorf("configured embedding provider is unavailable")
+		}
 		return embedQueue.embedder, nil
 	}
 	return newEmbedder, nil
@@ -1792,7 +1822,11 @@ func (db *DB) GetStorage() storage.Engine {
 func (db *DB) GetBaseStorageForManager() storage.Engine {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
+	return db.baseStorageForManager()
+}
 
+// baseStorageForManager is shared by callers already holding db.mu.
+func (db *DB) baseStorageForManager() storage.Engine {
 	// Unwrap the NamespacedEngine to get the base storage
 	if namespaced, ok := db.storage.(*storage.NamespacedEngine); ok {
 		return namespaced.GetInnerEngine()
@@ -2295,7 +2329,7 @@ func (db *DB) embedQueryChunksWithEmbedder(ctx context.Context, emb embed.Embedd
 		return nil, nil, nil
 	}
 	if len(chunks) == 1 {
-		vec, err := emb.Embed(ctx, chunks[0])
+		vec, err := embed.QueryVector(ctx, emb, chunks[0])
 		if err != nil || len(vec) == 0 {
 			return chunks, nil, err
 		}
@@ -2468,10 +2502,7 @@ func (db *DB) ChunkQueryForDB(ctx context.Context, dbName string, query string) 
 	db.mu.RUnlock()
 	if useRegistry {
 		emb, err := db.getOrCreateEmbedderForDB(dbName)
-		if err != nil {
-			return nil, err
-		}
-		if emb != nil {
+		if err == nil && emb != nil {
 			return db.chunkQueryWithEmbedder(ctx, emb, query)
 		}
 	}
@@ -2580,4 +2611,17 @@ func unwrapToBadgerEngine(eng storage.Engine) *storage.BadgerEngine {
 			return nil
 		}
 	}
+}
+
+// GetEmbedderForDB returns the canonical configured provider for native callers.
+func (db *DB) GetEmbedderForDB(name string) (embed.Embedder, error) {
+	return db.getOrCreateEmbedderForDB(name)
+}
+
+func (db *DB) resolveWorkerEmbedder(id storage.NodeID) (embed.Embedder, error) {
+	name, _, ok := splitQualifiedID(string(id))
+	if !ok {
+		name = db.defaultDatabaseName()
+	}
+	return db.getOrCreateEmbedderForDB(name)
 }

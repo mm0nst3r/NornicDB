@@ -881,7 +881,11 @@ type SearchResult struct {
 	GroupKey string          `json:"group_key,omitempty"`
 	Phase    string          `json:"phase,omitempty"`
 	Passages []*SearchResult `json:"passages,omitempty"`
-	Score    float64         `json:"score"`
+	// SupportingPassages are provider-returned text passages (distinct from grouped Passages).
+	SupportingPassages []search.SupportingPassage `json:"supporting_passages,omitempty"`
+	// Rerank is present only when a native provider reported an outcome.
+	Rerank *search.RerankReport `json:"rerank,omitempty"`
+	Score  float64              `json:"score"`
 
 	// RRF metadata (vector_rank/bm25_rank always emitted so clients see original
 	// ranks even when Stage-2 reranking is applied; 0 = not in that result set)
@@ -899,6 +903,7 @@ func MapSearchResponse(response *search.SearchResponse) []*SearchResult {
 	out := make([]*SearchResult, len(response.Results))
 	for i := range response.Results {
 		out[i] = mapSingleSearchResult(response.Results[i])
+		out[i].Rerank = response.Rerank
 	}
 	return out
 }
@@ -910,10 +915,11 @@ func mapSingleSearchResult(r search.SearchResult) *SearchResult {
 			Labels:     r.Labels,
 			Properties: r.Properties,
 		},
-		Score:      r.Score,
-		RRFScore:   r.RRFScore,
-		VectorRank: r.VectorRank,
-		BM25Rank:   r.BM25Rank,
+		Score:              r.Score,
+		SupportingPassages: r.SupportingPassages,
+		RRFScore:           r.RRFScore,
+		VectorRank:         r.VectorRank,
+		BM25Rank:           r.BM25Rank,
 	}
 	result.GroupKey = r.GroupKey
 	result.Phase = r.Phase

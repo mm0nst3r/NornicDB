@@ -48,6 +48,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/orneryd/nornicdb/pkg/embed"
 	"io"
 	"math"
 	"net/http"
@@ -922,6 +923,14 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 		}
 		svc, err := s.db.GetOrCreateSearchService(dbName, engine)
 		if err == nil && svc != nil {
+			var activeEmbedder Embedder = s.embed
+			configured, resolveErr := s.db.GetEmbedderForDB(dbName)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			if configured != nil {
+				activeEmbedder = configured
+			}
 			opts := search.GetAdaptiveRRFConfig(query)
 			opts.Limit = limit
 			if len(nodeTypes) > 0 {
@@ -930,14 +939,21 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 
 			var chunkQuery search.ChunkQueryFunc
 			var embedQuery search.EmbedQueryFunc
-			if s.embed != nil && s.config.EmbeddingEnabled {
+			if activeEmbedder != nil && s.config.EmbeddingEnabled {
 				chunkQuery = func(_ context.Context, text string) ([]string, error) {
-					return s.embed.ChunkText(text, 512, 50)
+					return activeEmbedder.ChunkText(text, 512, 50)
 				}
-				embedQuery = s.embed.Embed
+				embedQuery = func(ctx context.Context, text string) ([]float32, error) {
+					return embed.QueryVector(ctx, activeEmbedder, text)
+				}
 			}
 
-			resp, err := search.SearchTextChunks(ctx, query, opts, chunkQuery, embedQuery, svc.Search)
+			resp, err := search.SearchTextChunksWithErrorPolicy(ctx, query, opts, chunkQuery, embedQuery, svc.Search, search.ChunkedSearchErrorPolicy{
+				FatalEmbeddingError: func(error) bool { _, native := embed.QueryProvider(activeEmbedder); return native },
+			})
+			if err != nil {
+				return nil, err
+			}
 			if err == nil && resp != nil {
 				if resp.SearchMethod == "chunked_rrf_hybrid" {
 					method = "vector"
@@ -956,6 +972,7 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 						Title:          r.Title,
 						ContentPreview: r.ContentPreview,
 						Similarity:     discoverResultSimilarity(r),
+						Passages:       r.Passages,
 						Properties:     sanitizePropertiesForLLM(props),
 					}
 					if depth > 1 {

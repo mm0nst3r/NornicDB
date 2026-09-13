@@ -1473,10 +1473,12 @@ func newTxScopedExecutor(db *nornicdb.DB, dbName string) (*cypher.StorageExecuto
 	executor := cypher.NewStorageExecutor(storageEngine)
 
 	// Keep query embedding and search behavior consistent with the base DB executor.
+	provider, providerErr := db.GetEmbedderForDB(dbName)
+	if providerErr != nil {
+		return nil, providerErr
+	}
+	executor.SetEmbedder(provider)
 	if baseExec := db.GetCypherExecutor(); baseExec != nil {
-		if embedder := baseExec.GetEmbedder(); embedder != nil {
-			executor.SetEmbedder(embedder)
-		}
 		if inferMgr := baseExec.GetInferenceManager(); inferMgr != nil {
 			executor.SetInferenceManager(inferMgr)
 		}
@@ -1518,14 +1520,16 @@ func (e *DBQueryExecutor) BaseCypherExecutor() *cypher.StorageExecutor {
 // ConfigureDatabaseExecutor applies production runtime wiring to a DB-scoped
 // executor created by protocol adapters (for example Bolt multi-database
 // sessions), keeping behavior aligned with HTTP/GraphQL execution paths.
-func (e *DBQueryExecutor) ConfigureDatabaseExecutor(exec *cypher.StorageExecutor, dbName string, storageEngine storage.Engine) {
+func (e *DBQueryExecutor) ConfigureDatabaseExecutor(exec *cypher.StorageExecutor, dbName string, storageEngine storage.Engine) error {
 	if e == nil || e.db == nil || exec == nil {
-		return
+		return nil
 	}
+	provider, err := e.db.GetEmbedderForDB(dbName)
+	if err != nil {
+		return err
+	}
+	exec.SetEmbedder(provider)
 	if baseExec := e.db.GetCypherExecutor(); baseExec != nil {
-		if emb := baseExec.GetEmbedder(); emb != nil {
-			exec.SetEmbedder(emb)
-		}
 		if inferMgr := baseExec.GetInferenceManager(); inferMgr != nil {
 			exec.SetInferenceManager(inferMgr)
 		}
@@ -1538,6 +1542,7 @@ func (e *DBQueryExecutor) ConfigureDatabaseExecutor(exec *cypher.StorageExecutor
 			q.Enqueue(nodeID)
 		})
 	}
+	return nil
 }
 
 // Execute runs a Cypher query against the database.

@@ -1326,10 +1326,33 @@ func StreamEdgesWithFallback(ctx context.Context, engine Engine, chunkSize int, 
 //	    }
 //	}
 func NodeNeedsEmbedding(node *Node) bool {
+	if !NodeHasPendingEmbedding(node) {
+		return false
+	}
+	if EmbeddingAttemptSourceCurrent(node) {
+		retryAt, _ := node.EmbedMeta["embedding_retry_at"].(string)
+		if due, err := time.Parse(time.RFC3339Nano, retryAt); err == nil && time.Now().Before(due) {
+			return false
+		}
+	}
+	return true
+}
+
+// NodeHasPendingEmbedding includes delayed retries. The durable pending index
+// keeps these entries; NodeNeedsEmbedding decides when the worker can claim one.
+func NodeHasPendingEmbedding(node *Node) bool {
 	if node == nil {
 		return false
 	}
 
+	if control, _ := node.EmbedMeta["embedding_control"].(string); control == "paused" || control == "cancelled" {
+		return false
+	}
+	status, _ := node.EmbedMeta["embedding_status"].(string)
+	retryAt, _ := node.EmbedMeta["embedding_retry_at"].(string)
+	if status == "failed" && retryAt == "" && EmbeddingAttemptSourceCurrent(node) {
+		return false
+	}
 	// Skip internal nodes (labels starting with _)
 	for _, label := range node.Labels {
 		if len(label) > 0 && label[0] == '_' {
@@ -1348,7 +1371,7 @@ func NodeNeedsEmbedding(node *Node) bool {
 	}
 
 	// Skip if already has managed embeddings (ChunkEmbeddings).
-	if len(node.ChunkEmbeddings) > 0 && len(node.ChunkEmbeddings[0]) > 0 {
+	if ManagedEmbeddingCurrent(node) {
 		return false
 	}
 

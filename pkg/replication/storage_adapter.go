@@ -174,6 +174,8 @@ func (a *StorageAdapter) ApplyCommand(cmd *Command) error {
 		execErr = a.applyCreateNode(cmd.Data)
 	case CmdUpdateNode:
 		execErr = a.applyUpdateNode(cmd.Data)
+	case CmdUpdateEmbeddingIfCurrent:
+		execErr = a.applyConditionalEmbedding(cmd.Data)
 	case CmdDeleteNode:
 		execErr = a.applyDeleteNode(cmd.Data)
 	case CmdCreateEdge:

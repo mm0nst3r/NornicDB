@@ -224,17 +224,20 @@ var searchablePropertiesSet = func() map[string]struct{} {
 
 // SearchResult represents a unified search result.
 type SearchResult struct {
-	ID             string          `json:"id"`
-	NodeID         storage.NodeID  `json:"nodeId"`
-	GroupKey       string          `json:"group_key,omitempty"`
-	Phase          string          `json:"phase,omitempty"`
-	Passages       []SearchPassage `json:"passages,omitempty"`
-	Type           string          `json:"type"`
-	Labels         []string        `json:"labels"`
-	Title          string          `json:"title,omitempty"`
-	Description    string          `json:"description,omitempty"`
-	ContentPreview string          `json:"content_preview,omitempty"`
-	Properties     map[string]any  `json:"properties,omitempty"`
+	ID       string          `json:"id"`
+	NodeID   storage.NodeID  `json:"nodeId"`
+	GroupKey string          `json:"group_key,omitempty"`
+	Phase    string          `json:"phase,omitempty"`
+	Passages []SearchPassage `json:"passages,omitempty"`
+	// SupportingPassages are provider-returned text passages supporting this hit.
+	// They are distinct from Passages, which are grouped child results.
+	SupportingPassages []SupportingPassage `json:"supporting_passages,omitempty"`
+	Type               string              `json:"type"`
+	Labels             []string            `json:"labels"`
+	Title              string              `json:"title,omitempty"`
+	Description        string              `json:"description,omitempty"`
+	ContentPreview     string              `json:"content_preview,omitempty"`
+	Properties         map[string]any      `json:"properties,omitempty"`
 
 	// Scoring
 	Score      float64 `json:"score"`
@@ -259,16 +262,18 @@ type SearchResponse struct {
 	// CandidateBudgetReached is internal continuation evidence: the selected
 	// producer hit a configured candidate budget and cannot expose a deeper
 	// ranked prefix without changing that budget.
-	CandidateBudgetReached bool           `json:"-"`
-	Status                 string         `json:"status"`
-	Query                  string         `json:"query"`
-	Results                []SearchResult `json:"results"`
-	TotalCandidates        int            `json:"total_candidates"`
-	Returned               int            `json:"returned"`
-	SearchMethod           string         `json:"search_method"`
-	FallbackTriggered      bool           `json:"fallback_triggered"`
-	Message                string         `json:"message,omitempty"`
-	Metrics                *SearchMetrics `json:"metrics,omitempty"`
+	CandidateBudgetReached bool `json:"-"`
+	// Rerank is the native provider outcome, present only when one ran.
+	Rerank            *RerankReport  `json:"rerank,omitempty"`
+	Status            string         `json:"status"`
+	Query             string         `json:"query"`
+	Results           []SearchResult `json:"results"`
+	TotalCandidates   int            `json:"total_candidates"`
+	Returned          int            `json:"returned"`
+	SearchMethod      string         `json:"search_method"`
+	FallbackTriggered bool           `json:"fallback_triggered"`
+	Message           string         `json:"message,omitempty"`
+	Metrics           *SearchMetrics `json:"metrics,omitempty"`
 }
 
 // SearchMetrics contains timing and statistics.
@@ -290,6 +295,9 @@ type SearchMetrics struct {
 type SearchOptions struct {
 	// continuation allows chunk candidate depth to grow beyond one-shot limits.
 	continuation bool
+	// Native rerank overrides; empty policy/nil truncation use provider settings.
+	RerankFailurePolicy RerankFailurePolicy
+	RerankTruncation    *bool
 	// Limit is the maximum number of results to return
 	Limit int
 
@@ -329,6 +337,9 @@ type SearchOptions struct {
 	RerankEnabled  bool    // Enable cross-encoder reranking (default: false)
 	RerankTopK     int     // How many candidates to rerank (default: 100)
 	RerankMinScore float64 // Minimum cross-encoder score to include (default: 0)
+	// RerankAfterFusion applies configured native reranking to the shared
+	// multi-chunk result, rather than independently ranking each chunk.
+	RerankAfterFusion func(context.Context, string, *SearchResponse, *SearchOptions) error `json:"-"`
 
 	// Filters pre-filters nodes by property values before top-K selection.
 	// Keys are property names; values are acceptable values (OR within a key, AND across keys).
@@ -585,6 +596,7 @@ func (c *searchResultCache) Invalidate() {
 //		log.Printf("Failed to index: %v", err)
 //	}
 type Service struct {
+	embeddingSpace         atomic.Value // string, configured database model identity
 	engine                 storage.Engine
 	vectorIndex            *VectorIndex
 	vectorFileStore        *VectorFileStore // when set, vectors are stored on disk (low-RAM build)
@@ -909,6 +921,8 @@ func NewServiceWithDimensionsAndBM25Engine(engine storage.Engine, dimensions int
 
 // ServiceOptions configures database-specific search service resources.
 type ServiceOptions struct {
+	// EmbeddingSpace restricts native vectors to this model/API/endpoint identity.
+	EmbeddingSpace           string
 	DatabaseID               string
 	SearchResultCacheEntries int
 	SearchResultCacheTTL     time.Duration
@@ -966,6 +980,7 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 	}
 	svc.completePolicy.Store(defaultCompleteContinuationPolicy())
 	if options != nil {
+		svc.embeddingSpace.Store(options.EmbeddingSpace)
 		svc.bm25MemoryMaxBytes = options.BM25MemoryMaxBytes
 		svc.vectorMemoryMaxBytes = options.VectorMemoryMaxBytes
 		svc.metadataMemoryMaxBytes = options.MetadataMemoryMaxBytes
@@ -2639,7 +2654,7 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 	// addVectorLocked returns ErrVectorDisabled in that case, but we also
 	// short-circuit at this top level so we don't even iterate node
 	// properties looking for vector-shaped values.
-	indexVectorState := vectorOn && !skipVectorMutation
+	indexVectorState := vectorOn && !skipVectorMutation && s.embeddingNodeEligible(node)
 
 	// When building from storage with a vector path, use file-backed store to bound RAM.
 	if vectorOn && skipFulltext && s.persistEnabled.Load() && s.vectorIndexPath != "" {
@@ -4076,13 +4091,57 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 		defaults := defaultSearchOptionsValue()
 		opts = &defaults
 	}
+	// One native Stage-2 owner covers lexical, dense, hybrid and retrieval
+	// fallback. Collect its leading pool first; apply caller output limits only
+	// after reranking. Pure-vector requests without query text remain independent.
+	useResultCache := true
+	if opts.RerankEnabled && strings.TrimSpace(query) != "" && s.NativeRerankEnabled() {
+		requested := *opts
+		retrieval := requested
+		retrieval.RerankEnabled = false
+		budget := requested.RerankTopK
+		if budget <= 0 {
+			budget = 100
+		}
+		if budget > 1000 {
+			return nil, fmt.Errorf("rerank candidate budget exceeds 1000")
+		}
+		// Retrieve one candidate beyond the budget so the response can prove whether
+		// the fixed rerank pool truncated retrieval (continuation budget contract).
+		retrieval.Limit = budget + 1
+		if retrieval.CandidateTarget <= 0 {
+			retrieval.CandidateTarget = budget + 1
+		}
+		opts = &retrieval
+		useResultCache = false
+		defer func() {
+			if err != nil || resp == nil {
+				return
+			}
+			retrievalExhausted := resp.RetrievalExhausted
+			overBudget := len(resp.Results) > budget
+			if overBudget {
+				resp.Results = resp.Results[:budget]
+				resp.Returned = len(resp.Results)
+			}
+			pool := len(resp.Results)
+			if err = s.RerankSearchResponse(ctx, query, resp, &requested); err != nil {
+				return
+			}
+			// Declare the rerank pool as the boundary only once the requested depth
+			// reaches it; a shallower request can still deepen inside the same pool.
+			resp.CandidateBudgetReached = overBudget && requested.Limit >= budget
+			resp.RetrievalExhausted = retrievalExhausted && resp.RetrievalExhausted && !overBudget &&
+				(requested.Limit <= 0 || pool <= requested.Limit)
+		}()
+	}
 
 	// Set resolved value back for downstream use
 	opts.MinSimilarity = s.resolveMinSimilarity(opts)
 
 	// Cache key for result cache (same query+options => same key; used for Get and Put).
 	cacheKey := s.cacheNamespace + "\x00" + searchCacheKey(query, embedding, opts)
-	if s.resultCache != nil {
+	if useResultCache && s.resultCache != nil {
 		if cached := s.resultCache.Get(cacheKey); cached != nil {
 			s.maybeLogSearchTiming(query, cached, time.Since(start), true)
 			return cached, nil
@@ -4093,7 +4152,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if len(embedding) == 0 {
 		if !opts.fallbackEnabled() {
 			response := &SearchResponse{Status: "success", Query: query, SearchMethod: "rrf_hybrid", RetrievalExhausted: true}
-			if s.resultCache != nil {
+			if useResultCache && s.resultCache != nil {
 				s.resultCache.Put(cacheKey, response)
 			}
 			s.maybeLogSearchTiming(query, response, time.Since(start), false)
@@ -4101,7 +4160,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 		}
 		mode = "bm25" // Plan 04-05-05: closed AllowedSearchModes
 		resp, err := s.fullTextSearchOnly(ctx, query, opts)
-		if err == nil && s.resultCache != nil {
+		if useResultCache && err == nil && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, resp)
 		}
 		s.maybeLogSearchTiming(query, resp, time.Since(start), false)
@@ -4114,7 +4173,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if strings.TrimSpace(query) == "" {
 		mode = "vector" // Plan 04-05-05: closed AllowedSearchModes
 		resp, err := s.vectorSearchOnly(ctx, embedding, opts)
-		if err == nil && s.resultCache != nil {
+		if useResultCache && err == nil && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, resp)
 		}
 		s.maybeLogSearchTiming(query, resp, time.Since(start), false)
@@ -4124,7 +4183,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	// Try RRF hybrid search
 	response, err := s.rrfHybridSearch(ctx, query, embedding, opts)
 	if err == nil && len(response.Results) > 0 {
-		if s.resultCache != nil {
+		if useResultCache && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
@@ -4134,7 +4193,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 		if response == nil {
 			response = &SearchResponse{Status: "success", Query: query, SearchMethod: "rrf_hybrid"}
 		}
-		if err == nil && s.resultCache != nil {
+		if useResultCache && err == nil && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
@@ -4150,7 +4209,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 		response.RetrievalExhausted = response.RetrievalExhausted && !hybridIncomplete
 		response.FallbackTriggered = true
 		response.Message = "RRF search returned no results, fell back to vector search"
-		if s.resultCache != nil {
+		if useResultCache && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
@@ -4164,7 +4223,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if resp != nil {
 		resp.RetrievalExhausted = resp.RetrievalExhausted && !hybridIncomplete && !vectorIncomplete
 	}
-	if err == nil && s.resultCache != nil {
+	if useResultCache && err == nil && s.resultCache != nil {
 		s.resultCache.Put(cacheKey, resp)
 	}
 	s.maybeLogSearchTiming(query, resp, time.Since(start), false)
@@ -4292,7 +4351,7 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	}
 
 	// Step 7: Convert to SearchResult and enrich with node data
-	results := s.enrichResults(ctx, fusedResults, opts.Limit, seenOrphans)
+	results := s.enrichResults(ctx, fusedResults, opts.Limit, seenOrphans, query)
 	fusionMs := int(time.Since(fusionStart).Milliseconds())
 	totalMs := int(time.Since(totalStart).Milliseconds())
 
@@ -4499,11 +4558,17 @@ func (s *Service) adaptiveVectorSearch(
 		stats.exhausted = exhausted
 		results := make([]indexResult, 0, len(scored))
 		for _, result := range scored {
-			results = append(results, indexResult{ID: result.ID, Score: result.Score})
+			// MatchID keeps the winning vector/chunk ID through parent collapse so
+			// supporting passages can select the exact matched chunk.
+			results = append(results, indexResult{MatchID: result.ID, ID: result.ID, Score: result.Score})
 		}
 		results = collapseIndexResultsByNodeID(results)
 		if postProcess != nil {
 			results = postProcess(results)
+		}
+		results, err = s.filterCurrentEmbeddingResults(results)
+		if err != nil {
+			return nil, stats, err
 		}
 		if len(results) >= config.target {
 			stats.exhausted = stats.exhausted && len(results) == config.target
@@ -4637,16 +4702,18 @@ func collapseIndexResultsByNodeID(results []indexResult) []indexResult {
 }
 
 func collapseIndexResultsByNodeIDSlow(results []indexResult) []indexResult {
-	best := make(map[string]float64, len(results))
+	best := make(map[string]indexResult, len(results))
 	for _, r := range results {
 		nodeID := normalizeVectorResultIDToNodeID(r.ID)
-		if prev, ok := best[nodeID]; !ok || r.Score > prev {
-			best[nodeID] = r.Score
+		if prev, ok := best[nodeID]; !ok || r.Score > prev.Score {
+			// Carry the winner's existing MatchID; callers set it before collapse.
+			r.ID = nodeID
+			best[nodeID] = r
 		}
 	}
 	out := make([]indexResult, 0, len(best))
-	for id, score := range best {
-		out = append(out, indexResult{ID: id, Score: score})
+	for _, result := range best {
+		out = append(out, result)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out
@@ -5901,6 +5968,11 @@ func (s *Service) fuseRRF(vectorResults, bm25Results []indexResult, opts *Search
 			entry.vectorComponent = component
 			entry.result.RRFScore += component
 			entry.result.VectorRank = rank
+			// The winning vector/chunk ID selects supporting passages after fusion.
+			entry.result.VectorMatchID = candidate.MatchID
+			if entry.result.VectorMatchID == "" {
+				entry.result.VectorMatchID = candidate.ID
+			}
 			if !entry.hasVectorScore {
 				entry.result.OriginalScore = candidate.Score
 				entry.hasVectorScore = true
@@ -6257,6 +6329,11 @@ func (s *Service) CrossEncoderAvailable(ctx context.Context) bool {
 func (s *Service) RerankerAvailable(ctx context.Context) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	// Native policy must execute even when the provider is unavailable.
+	// Avoid a second, potentially billable request on the search hot path.
+	if _, ok := s.reranker.(ReportingReranker); ok {
+		return s.reranker.Enabled()
+	}
 	return s.reranker != nil && s.reranker.IsAvailable(ctx)
 }
 
@@ -6300,6 +6377,16 @@ func (s *Service) RerankCandidates(ctx context.Context, query string, candidates
 		candidates = candidates[:topK]
 	}
 
+	if native, ok := reranker.(ReportingReranker); ok {
+		out, err := native.RerankWithOptions(ctx, query, candidates, nativeRerankRequest(opts))
+		if err != nil {
+			return nil, err
+		}
+		if out.Report.Status == "fallback" {
+			return out.Results, fmt.Errorf("reranking used original results: %s", out.Report.Error)
+		}
+		return out.Results, nil
+	}
 	reranked, err := reranker.Rerank(ctx, query, candidates)
 	if err != nil {
 		return nil, err
@@ -6431,7 +6518,7 @@ func (s *Service) fullTextSearchOnly(ctx context.Context, query string, opts *Se
 	}
 	bm25Ms := int(time.Since(bm25Start).Milliseconds())
 
-	searchResults := s.enrichIndexResults(ctx, results, opts.Limit, seenOrphans)
+	searchResults := s.enrichIndexResults(ctx, results, opts.Limit, seenOrphans, query)
 	// Full-text only: set bm25_rank from position (1-based), vector_rank = 0
 	for i := range searchResults {
 		searchResults[i].VectorRank = 0
@@ -6871,13 +6958,13 @@ func (s *Service) filterByType(ctx context.Context, results []indexResult, types
 }
 
 // enrichResults converts RRF results to SearchResult with full node data.
-func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, limit int, seenOrphans map[string]bool) []SearchResult {
+func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, limit int, seenOrphans map[string]bool, queries ...string) []SearchResult {
 	resultLimit := boundedResultLimit(len(rrfResults), limit)
 	if resultLimit == 0 {
 		return nil
 	}
 	if !s.supportsBatchNodesWithoutEmbeddings() {
-		return s.enrichResultsIndividually(ctx, rrfResults[:resultLimit], seenOrphans)
+		return s.enrichResultsIndividually(ctx, rrfResults[:resultLimit], seenOrphans, queries...)
 	}
 
 	ids := make([]storage.NodeID, resultLimit)
@@ -6899,15 +6986,16 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 		}
 
 		result := SearchResult{
-			ID:         rrf.ID,
-			NodeID:     node.ID,
-			Labels:     node.Labels,
-			Properties: node.Properties,
-			Score:      rrf.RRFScore,
-			Similarity: rrf.OriginalScore,
-			RRFScore:   rrf.RRFScore,
-			VectorRank: rrf.VectorRank,
-			BM25Rank:   rrf.BM25Rank,
+			ID:                 rrf.ID,
+			NodeID:             node.ID,
+			Labels:             node.Labels,
+			Properties:         node.Properties,
+			Score:              rrf.RRFScore,
+			Similarity:         rrf.OriginalScore,
+			RRFScore:           rrf.RRFScore,
+			VectorRank:         rrf.VectorRank,
+			BM25Rank:           rrf.BM25Rank,
+			SupportingPassages: s.supportingPassages(node, rrf.VectorMatchID, firstPassageQuery(queries)),
 		}
 
 		// Extract common fields
@@ -6932,7 +7020,7 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 	return results
 }
 
-func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rrfResult, seenOrphans map[string]bool) []SearchResult {
+func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rrfResult, seenOrphans map[string]bool, queries ...string) []SearchResult {
 	results := make([]SearchResult, 0, len(rrfResults))
 	for _, rrf := range rrfResults {
 		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(rrf.ID))
@@ -6943,15 +7031,16 @@ func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rr
 			continue
 		}
 		result := SearchResult{
-			ID:         rrf.ID,
-			NodeID:     node.ID,
-			Labels:     node.Labels,
-			Properties: node.Properties,
-			Score:      rrf.RRFScore,
-			Similarity: rrf.OriginalScore,
-			RRFScore:   rrf.RRFScore,
-			VectorRank: rrf.VectorRank,
-			BM25Rank:   rrf.BM25Rank,
+			ID:                 rrf.ID,
+			NodeID:             node.ID,
+			Labels:             node.Labels,
+			Properties:         node.Properties,
+			Score:              rrf.RRFScore,
+			Similarity:         rrf.OriginalScore,
+			RRFScore:           rrf.RRFScore,
+			VectorRank:         rrf.VectorRank,
+			BM25Rank:           rrf.BM25Rank,
+			SupportingPassages: s.supportingPassages(node, rrf.VectorMatchID, firstPassageQuery(queries)),
 		}
 		if t, ok := node.Properties["type"].(string); ok {
 			result.Type = t
@@ -6974,7 +7063,7 @@ func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rr
 
 // enrichIndexResults converts raw index results to SearchResult.
 // Maps chunk IDs (e.g., "node-id-chunk-0") back to the original node ID.
-func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexResult, limit int, seenOrphans map[string]bool) []SearchResult {
+func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexResult, limit int, seenOrphans map[string]bool, queries ...string) []SearchResult {
 	resultLimit := boundedResultLimit(len(indexResults), limit)
 	if resultLimit == 0 {
 		return nil
@@ -6982,6 +7071,7 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 
 	ids := make([]storage.NodeID, 0, resultLimit)
 	scores := make([]float64, 0, resultLimit)
+	matchIDs := make([]string, 0, resultLimit)
 	var seen map[string]struct{}
 	for _, ir := range indexResults {
 		if len(ids) >= resultLimit {
@@ -7015,9 +7105,14 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 		}
 		ids = append(ids, storage.NodeID(nodeIDStr))
 		scores = append(scores, ir.Score)
+		matchID := ir.MatchID
+		if len(queries) == 0 && matchID == "" {
+			matchID = ir.ID
+		}
+		matchIDs = append(matchIDs, matchID)
 	}
 	if !s.supportsBatchNodesWithoutEmbeddings() {
-		return s.enrichIndexResultsIndividually(ctx, ids, scores, seenOrphans)
+		return s.enrichIndexResultsIndividually(ctx, ids, scores, matchIDs, seenOrphans, queries...)
 	}
 
 	nodes, err := s.batchGetNodesWithoutEmbeddings(ids)
@@ -7034,12 +7129,13 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 			continue
 		}
 		result := SearchResult{
-			ID:         nodeIDStr, // Use original node ID, not chunk ID
-			NodeID:     node.ID,
-			Labels:     node.Labels,
-			Properties: node.Properties,
-			Score:      scores[index],
-			Similarity: scores[index],
+			ID:                 nodeIDStr, // Use original node ID, not chunk ID
+			NodeID:             node.ID,
+			Labels:             node.Labels,
+			Properties:         node.Properties,
+			Score:              scores[index],
+			Similarity:         scores[index],
+			SupportingPassages: s.supportingPassages(node, matchIDs[index], firstPassageQuery(queries)),
 		}
 
 		// Extract common fields
@@ -7064,7 +7160,7 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 	return results
 }
 
-func (s *Service) enrichIndexResultsIndividually(ctx context.Context, ids []storage.NodeID, scores []float64, seenOrphans map[string]bool) []SearchResult {
+func (s *Service) enrichIndexResultsIndividually(ctx context.Context, ids []storage.NodeID, scores []float64, matchIDs []string, seenOrphans map[string]bool, queries ...string) []SearchResult {
 	results := make([]SearchResult, 0, len(ids))
 	for index, id := range ids {
 		nodeIDStr := string(id)
@@ -7076,12 +7172,13 @@ func (s *Service) enrichIndexResultsIndividually(ctx context.Context, ids []stor
 			continue
 		}
 		result := SearchResult{
-			ID:         nodeIDStr,
-			NodeID:     node.ID,
-			Labels:     node.Labels,
-			Properties: node.Properties,
-			Score:      scores[index],
-			Similarity: scores[index],
+			ID:                 nodeIDStr,
+			NodeID:             node.ID,
+			Labels:             node.Labels,
+			Properties:         node.Properties,
+			Score:              scores[index],
+			Similarity:         scores[index],
+			SupportingPassages: s.supportingPassages(node, matchIDs[index], firstPassageQuery(queries)),
 		}
 		if t, ok := node.Properties["type"].(string); ok {
 			result.Type = t
@@ -7125,16 +7222,19 @@ func GetAdaptiveRRFConfig(query string) *SearchOptions {
 
 // Helper types
 type indexResult struct {
-	ID    string
-	Score float64
+	MatchID string // Original winning vector/chunk ID before parent collapse.
+	ID      string
+	Score   float64
 }
 
 type rrfResult struct {
-	ID            string
-	RRFScore      float64
-	VectorRank    int
-	BM25Rank      int
-	OriginalScore float64
+	VectorMatchID      string
+	SupportingPassages []SupportingPassage
+	ID                 string
+	RRFScore           float64
+	VectorRank         int
+	BM25Rank           int
+	OriginalScore      float64
 }
 
 func truncate(s string, maxLen int) string {

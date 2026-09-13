@@ -2,6 +2,7 @@ package nornicgrpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -58,6 +59,22 @@ type Service struct {
 	allowDatabase    func(context.Context, string) error
 	resolveDatabase  func(context.Context, string) (DatabaseDependencies, error)
 	resolveQID       func(owner, qid, requestedDatabase string) (string, error)
+}
+
+// nativeRerankSearcher is implemented by search services with a configured
+// native provider that reranks one fused multi-chunk candidate pool.
+type nativeRerankSearcher interface {
+	NativeRerankEnabled() bool
+	RerankSearchResponse(context.Context, string, *search.SearchResponse, *search.SearchOptions) error
+}
+
+// applyNativeRerank routes multi-chunk requests through one native rerank of
+// the fused pool when the resolved searcher has a native provider configured.
+func applyNativeRerank(opts *search.SearchOptions, searcher Searcher) {
+	if native, ok := searcher.(nativeRerankSearcher); ok && native.NativeRerankEnabled() {
+		opts.RerankEnabled = true
+		opts.RerankAfterFusion = native.RerankSearchResponse
+	}
 }
 
 type Config struct {
@@ -173,8 +190,10 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		if req.RankedLimit != nil {
 			continuation.RankedLimit = int(*req.RankedLimit)
 		}
+		continuationOptions := searchOptions(req, s.maxLimit, s.rerankEnabled)
+		applyNativeRerank(continuationOptions, dependencies.Searcher)
 		page, err := continuable.SearchTextContinuation(
-			ctx, req.Query, searchOptions(req, s.maxLimit, s.rerankEnabled), continuation,
+			ctx, req.Query, continuationOptions, continuation,
 			search.ChunkQueryFunc(dependencies.ChunkQuery), search.EmbedQueryFunc(dependencies.EmbedQuery), dependencies.Searcher.Search, search.ChunkedSearchErrorPolicy{},
 		)
 		if err != nil {
@@ -207,6 +226,7 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		opts.MinSimilarity = &v
 	}
 
+	applyNativeRerank(opts, dependencies.Searcher)
 	chunkQuery := search.ChunkQueryFunc(nil)
 	if dependencies.ChunkQuery != nil {
 		chunkQuery = func(ctx context.Context, query string) ([]string, error) {
@@ -230,6 +250,10 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		out = append(out, grpcSearchHit(r))
 	}
 
+	if resp.Rerank != nil {
+		report, _ := json.Marshal(resp.Rerank)
+		grpc.SetTrailer(ctx, metadata.Pairs("nornicdb-rerank", string(report)))
+	}
 	return &gen.SearchTextResponse{
 		SearchMethod:      resp.SearchMethod,
 		Hits:              out,
@@ -300,13 +324,23 @@ func grpcContinuationResponse(page *search.SearchContinuationPage, elapsed time.
 	return response
 }
 
+// grpcSearchHit is the single wire mapping for search results. Grouped children
+// reuse it, so supporting passages survive for every child as well as the parent.
 func grpcSearchHit(r search.SearchResult) *gen.SearchHit {
 	props, _ := structpb.NewStruct(r.Properties)
+	var supporting []*gen.SupportingPassage
+	if len(r.SupportingPassages) > 0 {
+		supporting = make([]*gen.SupportingPassage, 0, len(r.SupportingPassages))
+		for _, p := range r.SupportingPassages {
+			supporting = append(supporting, &gen.SupportingPassage{NodeId: p.NodeID, ChunkIndex: uint32(p.ChunkIndex), Text: p.Text, MatchedBy: p.MatchedBy, Space: p.Space, SourceFingerprint: p.SourceFingerprint})
+		}
+	}
 	return &gen.SearchHit{
 		NodeId: string(r.NodeID), Labels: r.Labels, Properties: props,
 		Score: float32(r.Score), RrfScore: float32(r.RRFScore),
 		VectorRank: int32(r.VectorRank), Bm25Rank: int32(r.BM25Rank),
 		Phase: r.Phase, GroupKey: r.GroupKey, Passages: grpcSearchPassages(r.Passages),
+		SupportingPassages: supporting,
 	}
 }
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -301,18 +302,22 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Database    string              `json:"database,omitempty"` // Optional: defaults to default database
-		Query       string              `json:"query"`
-		Labels      []string            `json:"labels,omitempty"`
-		Limit       int                 `json:"limit,omitempty"`
-		Filters     map[string][]string `json:"filters,omitempty"`
-		QID         string              `json:"qid,omitempty"`
-		N           int                 `json:"n,omitempty"`
-		Discard     bool                `json:"discard,omitempty"`
-		MaxResults  int                 `json:"max_results,omitempty"`
-		Mode        string              `json:"mode,omitempty"`
-		GroupBy     string              `json:"group_by,omitempty"`
-		RankedLimit int                 `json:"ranked_limit,omitempty"`
+		Database            string                     `json:"database,omitempty"` // Optional: defaults to default database
+		Query               string                     `json:"query"`
+		Labels              []string                   `json:"labels,omitempty"`
+		Limit               int                        `json:"limit,omitempty"`
+		Filters             map[string][]string        `json:"filters,omitempty"`
+		QID                 string                     `json:"qid,omitempty"`
+		N                   int                        `json:"n,omitempty"`
+		Discard             bool                       `json:"discard,omitempty"`
+		MaxResults          int                        `json:"max_results,omitempty"`
+		Mode                string                     `json:"mode,omitempty"`
+		GroupBy             string                     `json:"group_by,omitempty"`
+		RankedLimit         int                        `json:"ranked_limit,omitempty"`
+		RerankFailurePolicy search.RerankFailurePolicy `json:"rerank_failure_policy,omitempty"`
+		RerankTruncation    *bool                      `json:"rerank_truncation,omitempty"`
+		RerankTopK          int                        `json:"rerank_top_k,omitempty"`
+		RerankMinScore      float64                    `json:"rerank_min_score,omitempty"`
 	}
 
 	if err := s.readJSON(r, &req); err != nil {
@@ -493,6 +498,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		opts.Filters = req.Filters
 	}
 	opts.RerankEnabled = searchSvc.RerankerAvailable(ctx)
+	opts.RerankFailurePolicy = req.RerankFailurePolicy
+	opts.RerankTruncation = req.RerankTruncation
+	if req.RerankTopK > 0 {
+		opts.RerankTopK = req.RerankTopK
+	}
+	opts.RerankMinScore = req.RerankMinScore
+	if searchSvc.NativeRerankEnabled() {
+		opts.RerankAfterFusion = searchSvc.RerankSearchResponse
+	}
 
 	var embedQuery search.EmbedQueryFunc
 	if searchSvc.EmbeddingCount() > 0 {
@@ -598,6 +612,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if searchResponse.Rerank != nil {
+		report, _ := json.Marshal(searchResponse.Rerank)
+		w.Header().Set("X-NornicDB-Rerank", string(report))
+	}
 	// Canonical mapping keeps DB and server adapters consistent.
 	results := nornicdb.MapSearchResponse(searchResponse)
 	if continuationPage != nil {

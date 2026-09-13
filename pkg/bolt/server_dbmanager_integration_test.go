@@ -409,13 +409,14 @@ func (p *providerBackedExecutor) BaseCypherExecutor() *cypher.StorageExecutor {
 	return p.base
 }
 
-func (p *providerBackedExecutor) ConfigureDatabaseExecutor(exec *cypher.StorageExecutor, _ string, _ storage.Engine) {
+func (p *providerBackedExecutor) ConfigureDatabaseExecutor(exec *cypher.StorageExecutor, _ string, _ storage.Engine) error {
 	if p == nil || p.base == nil || exec == nil {
-		return
+		return nil
 	}
 	if emb := p.base.GetEmbedder(); emb != nil {
 		exec.SetEmbedder(emb)
 	}
+	return nil
 }
 
 func TestSessionGetExecutorForDatabase_InheritsEmbedder_ForStringVectorQuery(t *testing.T) {

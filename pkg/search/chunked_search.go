@@ -3,6 +3,7 @@ package search
 import (
 	"cmp"
 	"context"
+	"errors"
 	"slices"
 )
 
@@ -101,6 +102,16 @@ func SearchTextChunksWithErrorPolicy(
 		chunkOpts.Limit = max(chunkOpts.Limit, opts.Limit)
 	}
 	exhausted := true
+	// Native rerank after fusion owns one shared candidate pool for all chunks.
+	// Chunks retrieve one candidate beyond the budget so the fused pool can prove
+	// whether the budget truncated it (the continuation budget contract).
+	rerankAfterFusion := opts.RerankEnabled && opts.RerankAfterFusion != nil
+	rerankBudget := 0
+	if rerankAfterFusion {
+		rerankBudget = effectiveRerankTopK(opts)
+		chunkOpts.RerankEnabled = false
+		chunkOpts.Limit = rerankBudget + 1
+	}
 	var (
 		fusedIndexes  map[string]int
 		fused         []fusedResult
@@ -183,7 +194,14 @@ func SearchTextChunksWithErrorPolicy(
 		}
 		return cmp.Compare(searchResultID(*left.best), searchResultID(*right.best))
 	})
-	if opts.Limit > 0 && len(fused) > opts.Limit {
+	overRerankBudget := false
+	if rerankAfterFusion {
+		if len(fused) > rerankBudget {
+			overRerankBudget = true
+			exhausted = false
+			fused = fused[:rerankBudget]
+		}
+	} else if opts.Limit > 0 && len(fused) > opts.Limit {
 		exhausted = false
 		fused = fused[:opts.Limit]
 	}
@@ -207,6 +225,17 @@ func SearchTextChunksWithErrorPolicy(
 		result.BM25Rank = 0
 		response.Results = append(response.Results, result)
 	}
+	if rerankAfterFusion {
+		pool := len(response.Results)
+		if err := opts.RerankAfterFusion(ctx, query, response, opts); err != nil {
+			return nil, err
+		}
+		// Declare the rerank pool as the boundary only once the requested depth
+		// reaches it; a shallower request can still deepen inside the same pool.
+		response.CandidateBudgetReached = budgetReached || (overRerankBudget && opts.Limit >= rerankBudget)
+		response.RetrievalExhausted = response.RetrievalExhausted && !response.CandidateBudgetReached &&
+			(opts.Limit <= 0 || pool <= opts.Limit)
+	}
 	return response, nil
 }
 
@@ -229,5 +258,9 @@ func searchResultID(result SearchResult) string {
 }
 
 func isFatalChunkedSearchError(predicate func(error) bool, err error) bool {
+	var required *errRequiredRerank
+	if errors.As(err, &required) {
+		return true
+	}
 	return predicate != nil && predicate(err)
 }

@@ -128,7 +128,7 @@ func (s *Server) startQdrantGRPC() error {
 		return fmt.Errorf("qdrant grpc: failed to initialize server: %w", err)
 	}
 
-	rerankEnabled := searchSvc.RerankerAvailable(context.Background())
+	rerankEnabled := searchSvc.NativeRerankEnabled() || searchSvc.RerankerAvailable(context.Background())
 	nornicSearchSvc, err := nornicgrpc.NewService(
 		nornicgrpc.Config{
 			DefaultDatabase:  dbName,
@@ -161,7 +161,7 @@ func (s *Server) startQdrantGRPC() error {
 			},
 		},
 		func(ctx context.Context, query string) ([]float32, error) {
-			return s.db.EmbedQuery(ctx, query)
+			return s.db.EmbedQueryForDB(ctx, dbName, query)
 		},
 		func(ctx context.Context, query string) ([]string, error) {
 			return s.db.ChunkQueryForDB(ctx, dbName, query)
