@@ -279,6 +279,10 @@ type SearchMetrics struct {
 
 // SearchOptions configures the search behavior.
 type SearchOptions struct {
+	// Continuation must freeze fresh retrieval without reading or populating the
+	// ordinary result cache. This private option is set only on its owned copy.
+	bypassResultCache bool
+
 	// Limit is the maximum number of results to return
 	Limit int
 
@@ -4010,14 +4014,8 @@ func (s *Service) tryRestoreClusteredWarmupFromDisk(ctx context.Context, cluster
 //
 // Returns a SearchResponse with ranked results and metadata about the search method used.
 func (s *Service) Search(ctx context.Context, query string, embedding []float32, opts *SearchOptions) (resp *SearchResponse, err error) {
-	return s.searchWithResultCache(ctx, query, embedding, opts, true)
-}
-
-// searchWithResultCache lets continuation freeze a fresh retrieval without
-// inheriting the ordinary result cache's lifetime or key equivalences.
-func (s *Service) searchWithResultCache(ctx context.Context, query string, embedding []float32, opts *SearchOptions, cacheResults bool) (resp *SearchResponse, err error) {
 	resultCache := s.resultCache
-	if !cacheResults {
+	if opts != nil && opts.bypassResultCache {
 		resultCache = nil
 	}
 	start := time.Now()

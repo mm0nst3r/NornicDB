@@ -1,6 +1,7 @@
 package continuation
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -256,18 +257,19 @@ func (t *Ticket) Commit(ctx context.Context, fingerprint [32]byte, population Po
 }
 
 func clonePopulation(ctx context.Context, p Population, c Config) (Population, int64, error) {
-	if !validMode(p.Mode) || p.RankedCount < 0 || p.RankedCount > len(p.Hits) || p.CandidateLimit < 0 ||
+	if !validMetadata(p.Metadata) || !validMode(p.Mode) || p.RankedCount < 0 || p.RankedCount > len(p.Hits) || p.CandidateLimit < 0 ||
 		(p.Mode == RankedOnly && p.RankedCount != len(p.Hits)) || (p.Mode == IDOnly && p.RankedCount != 0) {
 		return Population{}, 0, ErrInvalidRequest
 	}
 	if len(p.Hits) > c.MaxResults {
 		return Population{}, 0, ErrCapacity
 	}
-	bytes := int64(len(p.SearchMethod)) + 256
-	if bytes > c.MaxBytes || bytes > c.MaxBuildBytes {
+	retainedBytes := int64(len(p.SearchMethod)) + int64(len(p.Metadata)) + 256
+	if retainedBytes > c.MaxBytes || retainedBytes > c.MaxBuildBytes {
 		return Population{}, 0, ErrCapacity
 	}
 	out := p
+	out.Metadata = bytes.Clone(p.Metadata)
 	out.SearchMethod = strings.Clone(p.SearchMethod)
 	out.Hits = make([]Hit, 0, len(p.Hits))
 	seenIDs := make(map[string]bool, len(p.Hits))
@@ -283,23 +285,24 @@ func clonePopulation(ctx context.Context, p Population, c Config) (Population, i
 		if h.ID == "" || !utf8.ValidString(h.ID) || !utf8.ValidString(h.GroupKey) ||
 			h.Phase != expectedPhase || seenIDs[h.ID] ||
 			(p.Grouped && (h.GroupKey == "" || seenGroups[h.GroupKey])) || (!p.Grouped && h.GroupKey != "") ||
-			!finiteHit(h) {
+			!finiteHit(h) || !validMetadata(h.Metadata) {
 			return Population{}, 0, ErrInvalidRequest
 		}
 		size := hitBytes(h)
-		if size > c.MaxBytes-bytes || size > c.MaxBuildBytes-bytes {
+		if size > c.MaxBytes-retainedBytes || size > c.MaxBuildBytes-retainedBytes {
 			return Population{}, 0, ErrCapacity
 		}
-		bytes += size
+		retainedBytes += size
 		seenIDs[h.ID] = true
 		if p.Grouped {
 			seenGroups[h.GroupKey] = true
 		}
 		h.ID = strings.Clone(h.ID)
 		h.GroupKey = strings.Clone(h.GroupKey)
+		h.Metadata = bytes.Clone(h.Metadata)
 		out.Hits = append(out.Hits, h)
 	}
-	return out, bytes, nil
+	return out, retainedBytes, nil
 }
 
 func finiteHit(h Hit) bool {
@@ -390,8 +393,12 @@ func (s *Store) pageLocked(entry *session, position, pageSize int) *Page {
 	end := position + min(pageSize, len(p.Hits)-position)
 	results := make([]Hit, end-position)
 	copy(results, p.Hits[position:end])
+	for i := range results {
+		results[i].Metadata = bytes.Clone(results[i].Metadata)
+	}
 	done := end == len(p.Hits)
 	page := &Page{Results: results, Returned: len(results), Position: position, Total: len(p.Hits),
+		Metadata:        bytes.Clone(p.Metadata),
 		TotalCandidates: p.TotalCandidates, FallbackTriggered: p.FallbackTriggered,
 		VectorStopReason: p.VectorStopReason, VectorCandidateLimit: p.VectorCandidateLimit,
 		BM25StopReason: p.BM25StopReason, BM25CandidateLimit: p.BM25CandidateLimit,

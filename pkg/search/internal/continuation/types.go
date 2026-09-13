@@ -3,6 +3,7 @@
 package continuation
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -45,18 +46,22 @@ var (
 // Score is meaningful only in RankedPhase. Catalogue hits are unscored, not
 // low-relevance matches. GroupKey is the distinct parent key when grouping.
 type Hit struct {
-	ID         string  `json:"id"`
-	GroupKey   string  `json:"group_key,omitempty"`
-	Phase      Phase   `json:"phase"`
-	Score      float64 `json:"score"`
-	Similarity float64 `json:"similarity,omitempty"`
-	RRFScore   float64 `json:"rrf_score,omitempty"`
-	VectorRank int     `json:"vector_rank"`
-	BM25Rank   int     `json:"bm25_rank"`
+	// Metadata holds copied explanatory JSON fields from retrieval. JSON output
+	// flattens them without permitting overrides of this descriptor's fields.
+	Metadata   json.RawMessage `json:"-"`
+	ID         string          `json:"id"`
+	GroupKey   string          `json:"group_key,omitempty"`
+	Phase      Phase           `json:"phase"`
+	Score      float64         `json:"score"`
+	Similarity float64         `json:"similarity,omitempty"`
+	RRFScore   float64         `json:"rrf_score,omitempty"`
+	VectorRank int             `json:"vector_rank"`
+	BM25Rank   int             `json:"bm25_rank"`
 }
 
 // Population is the fixed order selected by one initial request.
 type Population struct {
+	Metadata             json.RawMessage
 	TotalCandidates      int
 	FallbackTriggered    bool
 	VectorStopReason     string
@@ -75,29 +80,32 @@ type Population struct {
 // EligibleCount is unknown (nil) for RankedOnly, even for an empty ANN result.
 // Position is the zero-based starting position in this population.
 type Page struct {
-	TotalCandidates      int       `json:"total_candidates"`
-	FallbackTriggered    bool      `json:"fallback_triggered"`
-	VectorStopReason     string    `json:"vector_stop_reason,omitempty"`
-	VectorCandidateLimit int       `json:"vector_candidate_limit,omitempty"`
-	BM25StopReason       string    `json:"bm25_stop_reason,omitempty"`
-	BM25CandidateLimit   int       `json:"bm25_candidate_limit,omitempty"`
-	Results              []Hit     `json:"results"`
-	NextCursor           string    `json:"next_cursor,omitempty"`
-	Returned             int       `json:"returned"`
-	Position             int       `json:"position"`
-	Total                int       `json:"total"`
-	RankedCount          int       `json:"ranked_count"`
-	EligibleCount        *int      `json:"eligible_count,omitempty"`
-	Mode                 Mode      `json:"mode"`
-	Grouped              bool      `json:"grouped"`
-	Population           string    `json:"population"`
-	SearchMethod         string    `json:"search_method"`
-	CandidateLimit       int       `json:"candidate_limit"`
-	RankedPoolExhausted  bool      `json:"ranked_pool_exhausted"`
-	Exhausted            bool      `json:"exhausted"`
-	CollectionExhausted  bool      `json:"collection_exhausted"`
-	Completion           string    `json:"completion"`
-	ExpiresAt            time.Time `json:"expires_at"`
+	// Metadata is the initial retrieval's copied diagnostic JSON object. It is
+	// repeated on every page; JSON output preserves the original field names.
+	Metadata             json.RawMessage `json:"-"`
+	TotalCandidates      int             `json:"total_candidates"`
+	FallbackTriggered    bool            `json:"fallback_triggered"`
+	VectorStopReason     string          `json:"vector_stop_reason,omitempty"`
+	VectorCandidateLimit int             `json:"vector_candidate_limit,omitempty"`
+	BM25StopReason       string          `json:"bm25_stop_reason,omitempty"`
+	BM25CandidateLimit   int             `json:"bm25_candidate_limit,omitempty"`
+	Results              []Hit           `json:"results"`
+	NextCursor           string          `json:"next_cursor,omitempty"`
+	Returned             int             `json:"returned"`
+	Position             int             `json:"position"`
+	Total                int             `json:"total"`
+	RankedCount          int             `json:"ranked_count"`
+	EligibleCount        *int            `json:"eligible_count,omitempty"`
+	Mode                 Mode            `json:"mode"`
+	Grouped              bool            `json:"grouped"`
+	Population           string          `json:"population"`
+	SearchMethod         string          `json:"search_method"`
+	CandidateLimit       int             `json:"candidate_limit"`
+	RankedPoolExhausted  bool            `json:"ranked_pool_exhausted"`
+	Exhausted            bool            `json:"exhausted"`
+	CollectionExhausted  bool            `json:"collection_exhausted"`
+	Completion           string          `json:"completion"`
+	ExpiresAt            time.Time       `json:"expires_at"`
 }
 
 // Config bounds retained state and simultaneous initial materialisations.
@@ -168,4 +176,6 @@ func validMode(m Mode) bool { return m == RankedOnly || m == RankedThenID || m =
 // Descriptor accounting includes space for map/slice overhead during builds.
 const descriptorBytes int64 = 256
 
-func hitBytes(h Hit) int64 { return descriptorBytes + int64(len(h.ID)) + int64(len(h.GroupKey)) }
+func hitBytes(h Hit) int64 {
+	return descriptorBytes + int64(len(h.ID)) + int64(len(h.GroupKey)) + int64(len(h.Metadata))
+}

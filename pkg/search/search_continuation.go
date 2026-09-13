@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -194,12 +195,15 @@ func (s *Service) SearchPage(ctx context.Context, query string, embedding []floa
 
 	var ranked []continuation.Hit
 	var retrieval *SearchResponse
+	var metadata json.RawMessage
+	buildConfig := ticket.Config()
 	method, candidateLimit := "id", 0
 	if r.page.Mode != SearchPageID {
 		// Deliberately bypass the ordinary result cache: continuation binds its
 		// own canonical SHA-256 request and must not inherit an older cached
 		// response or rely on the ordinary cache's key/lifetime semantics.
-		response, err := s.searchWithResultCache(ctx, r.query, r.embedding, &r.options, false)
+		r.options.bypassResultCache = true
+		response, err := s.Search(ctx, r.query, r.embedding, &r.options)
 		if err != nil {
 			return nil, err
 		}
@@ -211,10 +215,25 @@ func (s *Service) SearchPage(ctx context.Context, query string, embedding []floa
 		}
 		method = response.SearchMethod
 		retrieval = response
+		metadata, err = searchPageMetadata(response, buildConfig.MaxBuildBytes)
+		if err != nil {
+			return nil, err
+		}
+		buildConfig.MaxBuildBytes -= int64(len(metadata))
+		if buildConfig.MaxBuildBytes <= 0 {
+			return nil, ErrSearchContinuationLimit
+		}
+		remainingMetadata := buildConfig.MaxBuildBytes
 		candidateLimit = resolveAdaptiveOverfetch(&r.options).maxLimit
 		ranked = make([]continuation.Hit, 0, len(response.Results))
 		for _, hit := range response.Results {
+			hitMetadata, err := searchPageMetadata(hit, remainingMetadata)
+			if err != nil {
+				return nil, err
+			}
+			remainingMetadata -= int64(len(hitMetadata))
 			ranked = append(ranked, continuation.Hit{ID: hit.ID, Score: hit.Score,
+				Metadata:   hitMetadata,
 				Similarity: hit.Similarity, RRFScore: hit.RRFScore,
 				VectorRank: hit.VectorRank, BM25Rank: hit.BM25Rank})
 		}
@@ -222,7 +241,7 @@ func (s *Service) SearchPage(ctx context.Context, query string, embedding []floa
 	if err := ticket.Check(ctx); err != nil {
 		return nil, err
 	}
-	builder, err := continuation.NewBuilder(r.page.Mode, r.page.GroupBy != "", ranked, ticket.Config())
+	builder, err := continuation.NewBuilder(r.page.Mode, r.page.GroupBy != "", ranked, buildConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -278,6 +297,7 @@ func (s *Service) SearchPage(ctx context.Context, query string, embedding []floa
 		return nil, err
 	}
 	population.SearchMethod = method
+	population.Metadata = metadata
 	population.CandidateLimit = candidateLimit
 	if retrieval != nil {
 		population.TotalCandidates, population.FallbackTriggered = retrieval.TotalCandidates, retrieval.FallbackTriggered

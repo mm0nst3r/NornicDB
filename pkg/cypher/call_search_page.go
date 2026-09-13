@@ -1,13 +1,13 @@
 package cypher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"sort"
-	"time"
 
 	"github.com/orneryd/nornicdb/pkg/search"
 )
@@ -126,24 +126,77 @@ func (e *StorageExecutor) callDbRetrievePage(ctx context.Context, statement stri
 	if err != nil {
 		return nil, err
 	}
-	return &ExecuteResult{Columns: []string{"page"}, Rows: [][]interface{}{{nativeSearchPage(page)}}}, nil
+	native, err := nativeSearchPage(page)
+	if err != nil {
+		return nil, err
+	}
+	return &ExecuteResult{Columns: []string{"page"}, Rows: [][]interface{}{{native}}}, nil
 }
 
-func nativeSearchPage(p *search.SearchPageResponse) map[string]interface{} {
-	hits := make([]interface{}, 0, len(p.Results))
-	for _, h := range p.Results {
-		hits = append(hits, map[string]interface{}{"id": h.ID, "group_key": h.GroupKey, "phase": string(h.Phase), "score": h.Score, "similarity": h.Similarity, "rrf_score": h.RRFScore, "vector_rank": int64(h.VectorRank), "bm25_rank": int64(h.BM25Rank)})
+// Use the page's canonical JSON projection so optional retrieval fields keep
+// the same names across Go JSON and Cypher/Bolt. Decode numbers explicitly:
+// native integer diagnostics must not round through a float64.
+func nativeSearchPage(p *search.SearchPageResponse) (map[string]interface{}, error) {
+	encoded, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
 	}
-	var eligible interface{}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var value interface{}
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	native, err := nativeSearchPageValue(value)
+	if err != nil {
+		return nil, err
+	}
+	out := native.(map[string]interface{})
+	// The existing native contract emits these optional core fields even when
+	// their JSON forms omit zero values. Metadata never supplies their values.
+	out["next_cursor"] = p.NextCursor
+	out["eligible_count"] = nil
 	if p.EligibleCount != nil {
-		eligible = int64(*p.EligibleCount)
+		out["eligible_count"] = int64(*p.EligibleCount)
 	}
-	return map[string]interface{}{
-		"total_candidates": int64(p.TotalCandidates), "fallback_triggered": p.FallbackTriggered,
-		"vector_stop_reason": p.VectorStopReason, "vector_candidate_limit": int64(p.VectorCandidateLimit),
-		"bm25_stop_reason": p.BM25StopReason, "bm25_candidate_limit": int64(p.BM25CandidateLimit),
-		"results": hits, "next_cursor": p.NextCursor, "returned": int64(p.Returned), "position": int64(p.Position), "total": int64(p.Total), "ranked_count": int64(p.RankedCount), "eligible_count": eligible,
-		"mode": string(p.Mode), "grouped": p.Grouped, "population": p.Population, "search_method": p.SearchMethod, "candidate_limit": int64(p.CandidateLimit),
-		"ranked_pool_exhausted": p.RankedPoolExhausted, "exhausted": p.Exhausted, "collection_exhausted": p.CollectionExhausted, "completion": p.Completion, "expires_at": p.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	out["vector_stop_reason"] = p.VectorStopReason
+	out["vector_candidate_limit"] = int64(p.VectorCandidateLimit)
+	out["bm25_stop_reason"] = p.BM25StopReason
+	out["bm25_candidate_limit"] = int64(p.BM25CandidateLimit)
+	hits := out["results"].([]interface{})
+	for i, h := range p.Results {
+		hit := hits[i].(map[string]interface{})
+		hit["group_key"] = h.GroupKey
+		hit["score"] = h.Score
+		hit["similarity"] = h.Similarity
+		hit["rrf_score"] = h.RRFScore
 	}
+	return out, nil
+}
+
+func nativeSearchPageValue(value interface{}) (interface{}, error) {
+	switch v := value.(type) {
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return n, nil
+		}
+		return v.Float64()
+	case []interface{}:
+		for i := range v {
+			item, err := nativeSearchPageValue(v[i])
+			if err != nil {
+				return nil, err
+			}
+			v[i] = item
+		}
+	case map[string]interface{}:
+		for key := range v {
+			item, err := nativeSearchPageValue(v[key])
+			if err != nil {
+				return nil, err
+			}
+			v[key] = item
+		}
+	}
+	return value, nil
 }

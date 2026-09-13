@@ -1,6 +1,7 @@
 package continuation
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -36,7 +37,7 @@ func NewBuilder(mode Mode, grouped bool, ranked []Hit, config Config) (*Builder,
 	}
 	b := &Builder{mode: mode, grouped: grouped, config: c, ranked: make(map[string]Hit), members: make(map[string]Hit)}
 	for _, h := range ranked {
-		if h.ID == "" || !utf8.ValidString(h.ID) || !finiteHit(h) {
+		if h.ID == "" || !utf8.ValidString(h.ID) || !finiteHit(h) || !validMetadata(h.Metadata) {
 			return nil, ErrInvalidRequest
 		}
 		h.GroupKey = ""
@@ -54,6 +55,7 @@ func NewBuilder(mode Mode, grouped bool, ranked []Hit, config Config) (*Builder,
 		}
 		b.bytes += delta
 		h.ID = strings.Clone(h.ID)
+		h.Metadata = bytes.Clone(h.Metadata)
 		b.ranked[h.ID] = h
 	}
 	return b, nil

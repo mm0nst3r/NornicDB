@@ -149,6 +149,22 @@ grouping enabled, counts refer to distinct parents, not frames.
 ## Response semantics
 
 `results` contains lightweight descriptors, never full properties or embeddings.
+Optional explanatory fields returned by the retrieval pipeline are retained with
+the selected representative hit; optional response diagnostics are repeated on
+every page. For example, when a retrieval implementation supplies `passages` or
+`rerank`, JSON and native Cypher preserve `results[i].passages` and `page.rerank`.
+Continuation has no dependency on a particular provider or those field types.
+The standalone retrieval pipeline supplies no such additional fields.
+
+Go callers can decode the copied JSON object in each hit's `Metadata` or the
+page's `Metadata`. The wire format flattens these objects at their original keys;
+they cannot override core continuation fields, including omitted optional keys.
+Copies isolate the retrieval response, retained population and every returned
+page, so changing caller-owned metadata cannot change a later page or replay.
+Metadata bytes count toward the existing build and retained-session limits;
+an oversized payload fails explicitly rather than truncating passages or reports.
+Source properties, nodes, previews and vectors are excluded before capture.
+
 Each descriptor explicitly identifies `phase` as `ranked` or `catalog`. Catalogue
 scores are zero placeholders and have no relevance interpretation.
 

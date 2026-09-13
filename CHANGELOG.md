@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native Go and Cypher search continuation with scope-bound, replayable cursors, explicit
   ranked-pool versus collection exhaustion, optional parent grouping, and a
   deterministic ID-ordered catalogue tail. Built-in storage and index mutations invalidate sessions;
-  materialisation and cursor resources have explicit limits. See
+  materialisation and cursor resources have explicit limits. Optional retrieval
+  explanations and diagnostics retain their original JSON/Cypher fields across
+  pages within the same byte limits, without a provider dependency. See
   [search continuation](docs/user-guides/search-continuation.md). (#346)
 
 ## [v1.3.3] - 9/13/2026
