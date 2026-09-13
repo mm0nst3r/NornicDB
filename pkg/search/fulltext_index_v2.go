@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	bm25V2FormatVersion        = "2.1.0"
+	bm25V2FormatVersion        = "2.2.0"
 	bm25PrefixWeight           = 0.8
 	bm25SparseMinDocSlots      = 100_000
 	bm25DenseMinPostingVisits  = 4096
@@ -35,6 +35,9 @@ type bm25TermState struct {
 // It stores compact postings (docNum/tf) and uses bounded prefix expansion + top-k scoring.
 type FulltextIndexV2 struct {
 	mu sync.RWMutex
+
+	// Immutable, shared by indexing, deletion, and query planning.
+	analyzer *bm25Analyzer
 
 	documents map[string]string
 
@@ -59,7 +62,14 @@ type FulltextIndexV2 struct {
 	minPrefixLength     int
 }
 
+// NewFulltextIndexV2 creates a V2 index using EnvBM25Stemmer. Invalid stemmer
+// configuration panics before creating the index. Use
+// NewFulltextIndexV2WithStemmer for explicit configuration with error handling.
 func NewFulltextIndexV2() *FulltextIndexV2 {
+	return newFulltextIndexV2WithAnalyzer(mustBM25AnalyzerFromEnv())
+}
+
+func newFulltextIndexV2WithAnalyzer(analyzer *bm25Analyzer) *FulltextIndexV2 {
 	maxPrefixExpansions := envutil.GetInt("NORNICDB_BM25_PREFIX_MAX_EXPANSIONS", 0)
 	if maxPrefixExpansions < 0 {
 		maxPrefixExpansions = 0
@@ -69,6 +79,7 @@ func NewFulltextIndexV2() *FulltextIndexV2 {
 		minPrefixLength = 1
 	}
 	return &FulltextIndexV2{
+		analyzer:            analyzer,
 		documents:           make(map[string]string),
 		docIDToNum:          make(map[string]uint32),
 		termIndex:           make(map[string]*bm25TermState),
@@ -148,7 +159,7 @@ func (f *FulltextIndexV2) IndexBatch(entries []FulltextBatchEntry) {
 		if f.removeInternalLocked(e.ID) {
 			dirty = true
 		}
-		tokens := tokenize(e.Text)
+		tokens := f.analyzer.analyze(e.Text)
 		if len(tokens) == 0 {
 			continue
 		}
@@ -231,7 +242,7 @@ func (f *FulltextIndexV2) removeInternalLocked(id string) bool {
 		return false
 	}
 
-	tokens := tokenize(text)
+	tokens := f.analyzer.analyze(text)
 	seen := make(map[string]struct{}, len(tokens))
 	for _, t := range tokens {
 		if _, exists := seen[t]; exists {
@@ -284,7 +295,7 @@ func (f *FulltextIndexV2) Search(query string, limit int) []indexResult {
 		plan := cached.(bm25QueryPlan)
 		weightedTerms = plan.terms
 	} else {
-		queryTerms := tokenize(query)
+		queryTerms := f.analyzer.analyze(query)
 		if len(queryTerms) == 0 {
 			return nil
 		}
