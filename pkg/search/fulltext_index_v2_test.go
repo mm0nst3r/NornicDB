@@ -74,7 +74,8 @@ func TestFulltextIndexV2_SaveLoadAndMigrateV1(t *testing.T) {
 
 	legacyPath := t.TempDir() + "/bm25_legacy"
 	legacySnap := bm25V1Snapshot{
-		Version:   "1.0.0",
+		Version:   fulltextIndexFormatVersion,
+		Analyzer:  bm25AnalyzerVersion,
 		Documents: map[string]string{"docA": "legacy migration path", "docB": "legacy bm25 test"},
 		InvertedIndex: map[string]map[string]int{
 			"legacy":    {"docA": 1, "docB": 1},
@@ -153,7 +154,7 @@ func TestFulltextIndexV2_PersistenceErrorAndMigrationBranches(t *testing.T) {
 	nilMapsPath := filepath.Join(t.TempDir(), "legacy_nil_maps")
 	file, err = os.Create(nilMapsPath)
 	require.NoError(t, err)
-	require.NoError(t, msgpack.NewEncoder(file).Encode(&bm25V1Snapshot{Version: "1.0.0"}))
+	require.NoError(t, msgpack.NewEncoder(file).Encode(&bm25V1Snapshot{Version: fulltextIndexFormatVersion, Analyzer: bm25AnalyzerVersion}))
 	require.NoError(t, file.Close())
 	require.NoError(t, idx.Load(nilMapsPath))
 	require.Equal(t, 0, idx.Count())
@@ -162,7 +163,8 @@ func TestFulltextIndexV2_PersistenceErrorAndMigrationBranches(t *testing.T) {
 	file, err = os.Create(legacyEdgePath)
 	require.NoError(t, err)
 	require.NoError(t, msgpack.NewEncoder(file).Encode(&bm25V1Snapshot{
-		Version:   "1.0.0",
+		Version:   fulltextIndexFormatVersion,
+		Analyzer:  bm25AnalyzerVersion,
 		Documents: map[string]string{"good": "alpha", "neg": "beta"},
 		InvertedIndex: map[string]map[string]int{
 			"empty": {},

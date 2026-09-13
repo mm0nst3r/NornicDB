@@ -29,6 +29,9 @@ const (
 type FulltextIndex struct {
 	mu sync.RWMutex
 
+	// Immutable, shared by all index-time and query-time token processing.
+	analyzer *bm25Analyzer
+
 	// Document storage: docID -> original text
 	documents map[string]string
 
@@ -52,9 +55,16 @@ type FulltextIndex struct {
 	persistedVersion uint64
 }
 
-// NewFulltextIndex creates a new full-text search index.
+// NewFulltextIndex creates a new full-text search index using EnvBM25Stemmer.
+// Invalid stemmer configuration panics before creating the index. Use
+// NewFulltextIndexWithStemmer for explicit configuration with error handling.
 func NewFulltextIndex() *FulltextIndex {
+	return newFulltextIndexWithAnalyzer(mustBM25AnalyzerFromEnv())
+}
+
+func newFulltextIndexWithAnalyzer(analyzer *bm25Analyzer) *FulltextIndex {
 	return &FulltextIndex{
+		analyzer:      analyzer,
 		documents:     make(map[string]string),
 		invertedIndex: make(map[string]map[string]int),
 		docLengths:    make(map[string]int),
@@ -64,11 +74,12 @@ func NewFulltextIndex() *FulltextIndex {
 // fulltextIndexFormatVersion is the semver written into saved index files (Qdrant-style).
 // On load, if the file's version is not equal to this, the file is not loaded (caller rebuilds).
 // If the file was written by a newer version, we log and skip so the user can upgrade.
-const fulltextIndexFormatVersion = "1.1.0"
+const fulltextIndexFormatVersion = "1.2.0"
 
 // fulltextIndexSnapshot is the serializable form of the BM25 index (no mutex).
 type fulltextIndexSnapshot struct {
 	Version       string
+	Analyzer      string
 	Documents     map[string]string
 	InvertedIndex map[string]map[string]int
 	DocLengths    map[string]int
@@ -104,6 +115,7 @@ func (f *FulltextIndex) Save(path string) error {
 
 	snap := fulltextIndexSnapshot{
 		Version:       fulltextIndexFormatVersion,
+		Analyzer:      f.AnalyzerIdentity(),
 		Documents:     documents,
 		InvertedIndex: invertedIndex,
 		DocLengths:    docLengths,
@@ -126,6 +138,7 @@ func (f *FulltextIndex) SaveNoCopy(path string) error {
 
 	snap := fulltextIndexSnapshot{
 		Version:       fulltextIndexFormatVersion,
+		Analyzer:      f.AnalyzerIdentity(),
 		Documents:     f.documents,
 		InvertedIndex: f.invertedIndex,
 		DocLengths:    f.docLengths,
@@ -177,6 +190,11 @@ func (f *FulltextIndex) Load(path string) error {
 		f.docCount = 0
 		f.totalDocLength = 0
 		f.mu.Unlock()
+		return nil
+	}
+	if !f.analyzer.compatible(snap.Analyzer) {
+		logSearchPrintf("BM25 analyzer mismatch: saved=%q current=%q; rebuilding", snap.Analyzer, f.AnalyzerIdentity())
+		f.Clear()
 		return nil
 	}
 	if snap.Documents == nil {
@@ -253,7 +271,7 @@ func (f *FulltextIndex) Index(id string, text string) {
 	removed := f.removeInternal(id)
 
 	// Tokenize and normalize
-	tokens := tokenize(text)
+	tokens := f.analyzer.analyze(text)
 	if len(tokens) == 0 {
 		if removed {
 			f.markDirtyLocked()
@@ -307,7 +325,7 @@ func (f *FulltextIndex) IndexBatch(entries []FulltextBatchEntry) {
 		if f.removeInternal(e.ID) {
 			dirty = true
 		}
-		tokens := tokenize(e.Text)
+		tokens := f.analyzer.analyze(e.Text)
 		if len(tokens) == 0 {
 			continue
 		}
@@ -353,7 +371,7 @@ func (f *FulltextIndex) removeInternal(id string) bool {
 
 	// Get the document's terms
 	text := f.documents[id]
-	tokens := tokenize(text)
+	tokens := f.analyzer.analyze(text)
 
 	// Count term frequencies
 	termFreq := make(map[string]int)
@@ -390,7 +408,7 @@ func (f *FulltextIndex) Search(query string, limit int) []indexResult {
 	}
 
 	// Tokenize query
-	queryTerms := tokenize(query)
+	queryTerms := f.analyzer.analyze(query)
 	if len(queryTerms) == 0 {
 		return nil
 	}

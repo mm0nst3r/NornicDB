@@ -107,7 +107,7 @@ func (s *Service) composeBM25BuildSettings() string {
 	return fmt.Sprintf("schema=%s;format=%s;analyzer=%s;props=%s",
 		bm25SettingsSchemaVersion,
 		s.currentBM25FormatVersion(),
-		bm25AnalyzerVersion,
+		s.bm25AnalyzerIdentity(),
 		properties)
 }
 
