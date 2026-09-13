@@ -197,35 +197,8 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 		return nil, localizedError(localization.CypherSubqueriesQueryRequired(), nil)
 	}
 
-	opts := search.GetAdaptiveRRFConfig(query)
-	if limit, ok := toInt(req["limit"]); ok && limit > 0 {
-		opts.Limit = limit
-	}
-	failClosed, err := applyRetrievalPolicyOptions(opts, req)
+	opts, failClosed, err := retrievalOptions(query, req, forceRerank)
 	if err != nil {
-		return nil, err
-	}
-	if types := toStringSlice(firstPresent(req, "types", "labels")); len(types) > 0 {
-		opts.Types = types
-	}
-	if minSim, ok := ragToFloat64(firstPresent(req, "minSimilarity", "min_similarity")); ok && (!failClosed || isFinite(minSim)) {
-		opts.MinSimilarity = &minSim
-	} else if failClosed {
-		if _, present := policyPresent(req, "minSimilarity", "min_similarity"); present {
-			return nil, localizedError(localization.CypherSubqueriesRAGFailClosedInvalid("minSimilarity"), nil)
-		}
-	}
-	if forceRerank {
-		opts.RerankEnabled = true
-	}
-	if v, ok := toInt(firstPresent(req, "rerankTopK", "rerank_top_k")); ok && v > 0 {
-		opts.RerankTopK = v
-	}
-	if v, ok := ragToFloat64(firstPresent(req, "rerankMinScore", "rerank_min_score")); ok {
-		opts.RerankMinScore = v
-	}
-
-	if err := applyNativeRerankOptions(opts, req); err != nil {
 		return nil, err
 	}
 	embedding, suppliedEmbedding, err := resolveSuppliedRetrieveEmbedding(req, failClosed)
@@ -337,6 +310,41 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 	}
 	appendRerankReport(result, response.Rerank)
 	return result, nil
+}
+
+func retrievalOptions(query string, req map[string]interface{}, forceRerank bool) (*search.SearchOptions, bool, error) {
+	opts := search.GetAdaptiveRRFConfig(query)
+	if limit, ok := toInt(req["limit"]); ok && limit > 0 {
+		opts.Limit = limit
+	}
+	failClosed, err := applyRetrievalPolicyOptions(opts, req)
+	if err != nil {
+		return nil, false, err
+	}
+	if types := toStringSlice(firstPresent(req, "types", "labels")); len(types) > 0 {
+		opts.Types = types
+	}
+	if minSim, ok := ragToFloat64(firstPresent(req, "minSimilarity", "min_similarity")); ok && (!failClosed || isFinite(minSim)) {
+		opts.MinSimilarity = &minSim
+	} else if failClosed {
+		if _, present := policyPresent(req, "minSimilarity", "min_similarity"); present {
+			return nil, false, localizedError(localization.CypherSubqueriesRAGFailClosedInvalid("minSimilarity"), nil)
+		}
+	}
+	if forceRerank {
+		opts.RerankEnabled = true
+	}
+	if v, ok := toInt(firstPresent(req, "rerankTopK", "rerank_top_k")); ok && v > 0 {
+		opts.RerankTopK = v
+	}
+	if v, ok := ragToFloat64(firstPresent(req, "rerankMinScore", "rerank_min_score")); ok {
+		opts.RerankMinScore = v
+	}
+
+	if err := applyNativeRerankOptions(opts, req); err != nil {
+		return nil, false, err
+	}
+	return opts, failClosed, nil
 }
 
 func applyRetrievalPolicyOptions(opts *search.SearchOptions, req map[string]interface{}) (bool, error) {

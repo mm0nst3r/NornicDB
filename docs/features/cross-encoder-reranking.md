@@ -54,7 +54,7 @@ When reranking is **enabled**, the server loads the configured reranker at start
 | Variable                          | Default     | Description                                                                                                                         |
 | --------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `NORNICDB_SEARCH_RERANK_ENABLED`  | `false`     | Enable Stage-2 reranking for vector/hybrid search                                                                                   |
-| `NORNICDB_SEARCH_RERANK_PROVIDER` | `local`     | Backend: `local` (GGUF), `ollama`, `openai`, or `http`                                                                              |
+| `NORNICDB_SEARCH_RERANK_PROVIDER` | `local`     | Backend: `local` (GGUF), `ollama`, `openai`, `http`, or `voyage`                                                                              |
 | `NORNICDB_SEARCH_RERANK_MODEL`    | (see below) | For **local**: GGUF filename (e.g. `bge-reranker-v2-m3-Q4_K_M.gguf`). For **API**: model name/id (e.g. `rerank-english-v3.0`)       |
 | `NORNICDB_SEARCH_RERANK_API_URL`  | (see below) | Rerank API endpoint for non-local providers (required when provider ≠ local; default for `ollama`: `http://localhost:11434/rerank`) |
 | `NORNICDB_SEARCH_RERANK_API_KEY`  | (empty)     | API key for authenticated providers (e.g. Cohere, OpenAI)                                                                           |
@@ -75,9 +75,9 @@ make download-bge-reranker
 ```yaml
 search_rerank:
   enabled: true
-  provider: local # local | ollama | openai | http
+  provider: local # local | ollama | openai | http | voyage
   model: bge-reranker-v2-m3-Q4_K_M.gguf # GGUF filename (local) or API model name
-  api_url: "" # For ollama/openai/http (e.g. https://api.cohere.ai/v1/rerank)
+  api_url: "" # For external providers (e.g. https://api.cohere.ai/v1/rerank)
   api_key: "" # For Cohere, OpenAI, etc.
 ```
 
@@ -124,9 +124,11 @@ If every result has the same score (e.g. 0.49) or ordering is worse than with re
 1. **Check model output dimension:** Set `NORNICDB_RERANK_DEBUG=1` and run a search. Logs show `dims=1`, `raw_logit`, and `score` per candidate. A non-scalar classifier head is rejected during model loading with its selected pooling type in the error.
 2. **Fallback:** When the reranker produces nearly identical scores (range &lt; 0.05), NornicDB automatically falls back to RRF order and scores so search quality matches "reranking off" until you fix the model or config.
 
-### External Providers (ollama / openai / http)
+### External Providers (ollama / openai / http / voyage)
 
 Use an HTTP rerank API (Cohere, HuggingFace TEI, or a custom/Ollama adapter). Set provider and API URL; for authenticated APIs, set the API key.
+
+**Voyage:** Set `NORNICDB_SEARCH_RERANK_PROVIDER=voyage`, model `rerank-2.5` and API URL `https://api.voyageai.com/v1/rerank`. Truncation is opt-in (`NORNICDB_SEARCH_RERANK_TRUNCATION=false` by default); failure policy defaults to `error`, with explicit `original` preserving the original order on provider failure. Requests can override both choices. See [Native Voyage retrieval](../user-guides/voyage.md) for configuration and request fields.
 
 **Cohere:**
 
