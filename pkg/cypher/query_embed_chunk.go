@@ -2,6 +2,7 @@ package cypher
 
 import (
 	"context"
+	"github.com/orneryd/nornicdb/pkg/embed"
 
 	"github.com/orneryd/nornicdb/pkg/localization"
 	"github.com/orneryd/nornicdb/pkg/math/vector"
@@ -14,11 +15,17 @@ import (
 //   - CALL db.index.vector.queryNodes(..., "search text")
 //   - CALL db.index.vector.queryRelationships(..., "search text")
 //
-// The Cypher layer uses a minimal QueryEmbedder interface, so chunking and
-// sequential embedding stay provider-specific without importing embed.
+// The Cypher layer uses a minimal QueryEmbedder interface and resolves native
+// query purpose through the shared embed capability helper.
 func embedQueryChunked(ctx context.Context, embedder QueryEmbedder, text string) ([]float32, error) {
 	if embedder == nil {
 		return nil, localizedError(localization.CypherCoreEmbedderNotConfigured(), nil)
+	}
+
+	// Native queries must use their model's explicit query purpose, never
+	// document auto-chunking or a normalized average of independent chunks.
+	if q, ok := embed.QueryProvider(embedder); ok {
+		return q.EmbedQuery(ctx, text)
 	}
 
 	const (

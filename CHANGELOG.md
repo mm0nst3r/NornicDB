@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Native Voyage reranking with explicit truncation/failure policies, stable candidate identity and provider outcome reports.
+- Managed contextualized and multimodal Voyage embeddings with complete provider-returned passages, per-database model spaces, durable job controls/retries and source-conditional publication. See [Native Voyage retrieval](docs/user-guides/voyage.md).
+
+### Fixed
+
+- Preserve sanitized provider diagnostics when native Voyage reranking returns a failure through public APIs.
+
 ## [v1.3.3] - 9/13/2026
 
 ### Added

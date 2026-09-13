@@ -122,6 +122,7 @@ import (
 
 	apoccfg "github.com/orneryd/nornicdb/apoc"
 	"github.com/orneryd/nornicdb/pkg/config"
+	"github.com/orneryd/nornicdb/pkg/embed"
 	"github.com/orneryd/nornicdb/pkg/embeddingutil"
 	nornicerrors "github.com/orneryd/nornicdb/pkg/errors"
 	"github.com/orneryd/nornicdb/pkg/fabric"
@@ -2372,6 +2373,26 @@ func (e *StorageExecutor) applyInlineEmbeddingMutations(ctx context.Context, ids
 			return err
 		}
 		if node == nil {
+			continue
+		}
+		if provider, ok := embed.ManagedProvider(e.embedder); ok {
+			if err := embeddingutil.ApplyEmbeddingWorkEvent(node, embeddingutil.EmbeddingWorkEvent{Action: "begin", Provider: "voyage", Model: provider.EmbeddingSpace().Model}); err != nil {
+				return err
+			}
+			input, err := embed.PrepareManagedNode(provider, node, e.inlineEmbeddingTextOptions)
+			if err != nil {
+				return err
+			}
+			result, err := provider.EmbedDocument(ctx, input)
+			if err != nil {
+				return err
+			}
+			if err := embed.ApplyManagedDocumentResult(node, result); err != nil {
+				return err
+			}
+			if err := store.UpdateNode(node); err != nil {
+				return err
+			}
 			continue
 		}
 		text := embeddingutil.BuildText(node.Properties, node.Labels, e.inlineEmbeddingTextOptions)

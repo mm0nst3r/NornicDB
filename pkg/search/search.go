@@ -224,14 +224,15 @@ var searchablePropertiesSet = func() map[string]struct{} {
 
 // SearchResult represents a unified search result.
 type SearchResult struct {
-	ID             string         `json:"id"`
-	NodeID         storage.NodeID `json:"nodeId"`
-	Type           string         `json:"type"`
-	Labels         []string       `json:"labels"`
-	Title          string         `json:"title,omitempty"`
-	Description    string         `json:"description,omitempty"`
-	ContentPreview string         `json:"content_preview,omitempty"`
-	Properties     map[string]any `json:"properties,omitempty"`
+	Passages       []SupportingPassage `json:"passages,omitempty"`
+	ID             string              `json:"id"`
+	NodeID         storage.NodeID      `json:"nodeId"`
+	Type           string              `json:"type"`
+	Labels         []string            `json:"labels"`
+	Title          string              `json:"title,omitempty"`
+	Description    string              `json:"description,omitempty"`
+	ContentPreview string              `json:"content_preview,omitempty"`
+	Properties     map[string]any      `json:"properties,omitempty"`
 
 	// Scoring
 	Score      float64 `json:"score"`
@@ -246,6 +247,7 @@ type SearchResult struct {
 
 // SearchResponse is the response from a search operation.
 type SearchResponse struct {
+	Rerank            *RerankReport  `json:"rerank,omitempty"`
 	Status            string         `json:"status"`
 	Query             string         `json:"query"`
 	Results           []SearchResult `json:"results"`
@@ -274,6 +276,9 @@ type SearchMetrics struct {
 
 // SearchOptions configures the search behavior.
 type SearchOptions struct {
+	// Native rerank overrides; empty policy/nil truncation use provider settings.
+	RerankFailurePolicy RerankFailurePolicy
+	RerankTruncation    *bool
 	// Limit is the maximum number of results to return
 	Limit int
 
@@ -313,6 +318,9 @@ type SearchOptions struct {
 	RerankEnabled  bool    // Enable cross-encoder reranking (default: false)
 	RerankTopK     int     // How many candidates to rerank (default: 100)
 	RerankMinScore float64 // Minimum cross-encoder score to include (default: 0)
+	// RerankAfterFusion applies configured native reranking to the shared
+	// multi-chunk result, rather than independently ranking each chunk.
+	RerankAfterFusion func(context.Context, string, *SearchResponse, *SearchOptions) error `json:"-"`
 
 	// Filters pre-filters nodes by property values before top-K selection.
 	// Keys are property names; values are acceptable values (OR within a key, AND across keys).
@@ -561,6 +569,7 @@ func (c *searchResultCache) Invalidate() {
 //		log.Printf("Failed to index: %v", err)
 //	}
 type Service struct {
+	embeddingSpace         atomic.Value // string, configured database model identity
 	engine                 storage.Engine
 	vectorIndex            *VectorIndex
 	vectorFileStore        *VectorFileStore // when set, vectors are stored on disk (low-RAM build)
@@ -878,6 +887,8 @@ func NewServiceWithDimensionsAndBM25Engine(engine storage.Engine, dimensions int
 
 // ServiceOptions configures database-specific search service resources.
 type ServiceOptions struct {
+	// EmbeddingSpace restricts native vectors to this model/API/endpoint identity.
+	EmbeddingSpace           string
 	DatabaseID               string
 	SearchResultCacheEntries int
 	SearchResultCacheTTL     time.Duration
@@ -934,6 +945,7 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 		lifecycleCancel:            lifecycleCancel,
 	}
 	if options != nil {
+		svc.embeddingSpace.Store(options.EmbeddingSpace)
 		svc.bm25MemoryMaxBytes = options.BM25MemoryMaxBytes
 		svc.vectorMemoryMaxBytes = options.VectorMemoryMaxBytes
 		svc.metadataMemoryMaxBytes = options.MetadataMemoryMaxBytes
@@ -2600,7 +2612,7 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 	// addVectorLocked returns ErrVectorDisabled in that case, but we also
 	// short-circuit at this top level so we don't even iterate node
 	// properties looking for vector-shaped values.
-	indexVectorState := vectorOn && !skipVectorMutation
+	indexVectorState := vectorOn && !skipVectorMutation && s.embeddingNodeEligible(node)
 
 	// When building from storage with a vector path, use file-backed store to bound RAM.
 	if vectorOn && skipFulltext && s.persistEnabled.Load() && s.vectorIndexPath != "" {
@@ -4036,13 +4048,40 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if opts == nil {
 		opts = DefaultSearchOptions()
 	}
+	// One native Stage-2 owner covers lexical, dense, hybrid and retrieval
+	// fallback. Collect its leading pool first; apply caller output limits only
+	// after reranking. Pure-vector requests without query text remain independent.
+	useResultCache := true
+	if opts.RerankEnabled && strings.TrimSpace(query) != "" && s.NativeRerankEnabled() {
+		requested := *opts
+		retrieval := requested
+		retrieval.RerankEnabled = false
+		budget := requested.RerankTopK
+		if budget <= 0 {
+			budget = 100
+		}
+		if budget > 1000 {
+			return nil, fmt.Errorf("rerank candidate budget exceeds 1000")
+		}
+		retrieval.Limit = budget
+		if retrieval.CandidateTarget <= 0 {
+			retrieval.CandidateTarget = budget
+		}
+		opts = &retrieval
+		useResultCache = false
+		defer func() {
+			if err == nil && resp != nil {
+				err = s.RerankSearchResponse(ctx, query, resp, &requested)
+			}
+		}()
+	}
 
 	// Set resolved value back for downstream use
 	opts.MinSimilarity = s.resolveMinSimilarity(opts)
 
 	// Cache key for result cache (same query+options => same key; used for Get and Put).
 	cacheKey := s.cacheNamespace + "\x00" + searchCacheKey(query, embedding, opts)
-	if s.resultCache != nil {
+	if useResultCache && s.resultCache != nil {
 		if cached := s.resultCache.Get(cacheKey); cached != nil {
 			s.maybeLogSearchTiming(query, cached, time.Since(start), true)
 			return cached, nil
@@ -4053,7 +4092,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if len(embedding) == 0 {
 		if !opts.fallbackEnabled() {
 			response := &SearchResponse{Status: "success", Query: query, SearchMethod: "rrf_hybrid"}
-			if s.resultCache != nil {
+			if useResultCache && s.resultCache != nil {
 				s.resultCache.Put(cacheKey, response)
 			}
 			s.maybeLogSearchTiming(query, response, time.Since(start), false)
@@ -4061,7 +4100,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 		}
 		mode = "bm25" // Plan 04-05-05: closed AllowedSearchModes
 		resp, err := s.fullTextSearchOnly(ctx, query, opts)
-		if err == nil && s.resultCache != nil {
+		if useResultCache && err == nil && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, resp)
 		}
 		s.maybeLogSearchTiming(query, resp, time.Since(start), false)
@@ -4074,7 +4113,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if strings.TrimSpace(query) == "" {
 		mode = "vector" // Plan 04-05-05: closed AllowedSearchModes
 		resp, err := s.vectorSearchOnly(ctx, embedding, opts)
-		if err == nil && s.resultCache != nil {
+		if useResultCache && err == nil && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, resp)
 		}
 		s.maybeLogSearchTiming(query, resp, time.Since(start), false)
@@ -4084,7 +4123,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	// Try RRF hybrid search
 	response, err := s.rrfHybridSearch(ctx, query, embedding, opts)
 	if err == nil && len(response.Results) > 0 {
-		if s.resultCache != nil {
+		if useResultCache && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
@@ -4094,7 +4133,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 		if response == nil {
 			response = &SearchResponse{Status: "success", Query: query, SearchMethod: "rrf_hybrid"}
 		}
-		if err == nil && s.resultCache != nil {
+		if useResultCache && err == nil && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
@@ -4106,7 +4145,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	if err == nil && len(response.Results) > 0 {
 		response.FallbackTriggered = true
 		response.Message = "RRF search returned no results, fell back to vector search"
-		if s.resultCache != nil {
+		if useResultCache && s.resultCache != nil {
 			s.resultCache.Put(cacheKey, response)
 		}
 		s.maybeLogSearchTiming(query, response, time.Since(start), false)
@@ -4116,7 +4155,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	// Final fallback to full-text
 	mode = "bm25" // Plan 04-05-05: final fallback to BM25-only
 	resp, err = s.fullTextSearchOnly(ctx, query, opts)
-	if err == nil && s.resultCache != nil {
+	if useResultCache && err == nil && s.resultCache != nil {
 		s.resultCache.Put(cacheKey, resp)
 	}
 	s.maybeLogSearchTiming(query, resp, time.Since(start), false)
@@ -4240,7 +4279,7 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	}
 
 	// Step 7: Convert to SearchResult and enrich with node data
-	results := s.enrichResults(ctx, fusedResults, opts.Limit, seenOrphans)
+	results := s.enrichResults(ctx, fusedResults, opts.Limit, seenOrphans, query)
 	fusionMs := int(time.Since(fusionStart).Milliseconds())
 	totalMs := int(time.Since(totalStart).Milliseconds())
 
@@ -4441,6 +4480,10 @@ func (s *Service) adaptiveVectorSearch(
 		if postProcess != nil {
 			results = postProcess(results)
 		}
+		results, err = s.filterCurrentEmbeddingResults(results)
+		if err != nil {
+			return nil, stats, err
+		}
 		if len(results) >= config.target {
 			return results[:config.target], stats, nil
 		}
@@ -4547,16 +4590,20 @@ func collapseIndexResultsByNodeID(results []indexResult) []indexResult {
 	if len(results) == 0 {
 		return nil
 	}
-	best := make(map[string]float64, len(results))
+	best := make(map[string]indexResult, len(results))
 	for _, r := range results {
 		nodeID := normalizeVectorResultIDToNodeID(r.ID)
-		if prev, ok := best[nodeID]; !ok || r.Score > prev {
-			best[nodeID] = r.Score
+		if prev, ok := best[nodeID]; !ok || r.Score > prev.Score {
+			if r.MatchID == "" {
+				r.MatchID = r.ID
+			}
+			r.ID = nodeID
+			best[nodeID] = r
 		}
 	}
 	out := make([]indexResult, 0, len(best))
-	for id, score := range best {
-		out = append(out, indexResult{ID: id, Score: score})
+	for _, result := range best {
+		out = append(out, result)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out
@@ -5730,9 +5777,14 @@ func (s *Service) filterCandidatesByType(ctx context.Context, candidates []Searc
 // measures in combining results from multiple text retrieval systems."
 func (s *Service) fuseRRF(vectorResults, bm25Results []indexResult, opts *SearchOptions) []rrfResult {
 	// Create rank maps (1-indexed per RRF formula)
+	vectorMatches := make(map[string]string)
 	vectorRanks := make(map[string]int)
 	for i, r := range vectorResults {
 		vectorRanks[r.ID] = i + 1
+		vectorMatches[r.ID] = r.MatchID
+		if vectorMatches[r.ID] == "" {
+			vectorMatches[r.ID] = r.ID
+		}
 	}
 
 	bm25Ranks := make(map[string]int)
@@ -5795,6 +5847,7 @@ func (s *Service) fuseRRF(vectorResults, bm25Results []indexResult, opts *Search
 			VectorRank:    vectorRanks[id],
 			BM25Rank:      bm25Ranks[id],
 			OriginalScore: originalScore,
+			VectorMatchID: vectorMatches[id],
 		})
 	}
 
@@ -6119,6 +6172,11 @@ func (s *Service) CrossEncoderAvailable(ctx context.Context) bool {
 func (s *Service) RerankerAvailable(ctx context.Context) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	// Native policy must execute even when the provider is unavailable.
+	// Avoid a second, potentially billable request on the search hot path.
+	if _, ok := s.reranker.(ReportingReranker); ok {
+		return s.reranker.Enabled()
+	}
 	return s.reranker != nil && s.reranker.IsAvailable(ctx)
 }
 
@@ -6161,6 +6219,16 @@ func (s *Service) RerankCandidates(ctx context.Context, query string, candidates
 		candidates = candidates[:topK]
 	}
 
+	if native, ok := reranker.(ReportingReranker); ok {
+		out, err := native.RerankWithOptions(ctx, query, candidates, nativeRerankRequest(opts))
+		if err != nil {
+			return nil, err
+		}
+		if out.Report.Status == "fallback" {
+			return out.Results, fmt.Errorf("reranking used original results: %s", out.Report.Error)
+		}
+		return out.Results, nil
+	}
 	reranked, err := reranker.Rerank(ctx, query, candidates)
 	if err != nil {
 		return nil, err
@@ -6290,7 +6358,7 @@ func (s *Service) fullTextSearchOnly(ctx context.Context, query string, opts *Se
 	}
 	bm25Ms := int(time.Since(bm25Start).Milliseconds())
 
-	searchResults := s.enrichIndexResults(ctx, results, opts.Limit, seenOrphans)
+	searchResults := s.enrichIndexResults(ctx, results, opts.Limit, seenOrphans, query)
 	// Full-text only: set bm25_rank from position (1-based), vector_rank = 0
 	for i := range searchResults {
 		searchResults[i].VectorRank = 0
@@ -6729,7 +6797,7 @@ func (s *Service) filterByType(ctx context.Context, results []indexResult, types
 }
 
 // enrichResults converts RRF results to SearchResult with full node data.
-func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, limit int, seenOrphans map[string]bool) []SearchResult {
+func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, limit int, seenOrphans map[string]bool, queries ...string) []SearchResult {
 	var results []SearchResult
 
 	for i, rrf := range rrfResults {
@@ -6755,6 +6823,7 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 			RRFScore:   rrf.RRFScore,
 			VectorRank: rrf.VectorRank,
 			BM25Rank:   rrf.BM25Rank,
+			Passages:   s.supportingPassages(node, rrf.VectorMatchID, firstPassageQuery(queries)),
 		}
 
 		// Extract common fields
@@ -6781,7 +6850,7 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 
 // enrichIndexResults converts raw index results to SearchResult.
 // Maps chunk IDs (e.g., "node-id-chunk-0") back to the original node ID.
-func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexResult, limit int, seenOrphans map[string]bool) []SearchResult {
+func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexResult, limit int, seenOrphans map[string]bool, queries ...string) []SearchResult {
 	var results []SearchResult
 	seenNodes := make(map[string]bool) // Track nodes we've already added to avoid duplicates
 
@@ -6806,6 +6875,10 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 		}
 
 		seenNodes[nodeIDStr] = true
+		matchID := ir.MatchID
+		if len(queries) == 0 && matchID == "" {
+			matchID = ir.ID
+		}
 
 		result := SearchResult{
 			ID:         nodeIDStr, // Use original node ID, not chunk ID
@@ -6814,6 +6887,7 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 			Properties: node.Properties,
 			Score:      ir.Score,
 			Similarity: ir.Score,
+			Passages:   s.supportingPassages(node, matchID, firstPassageQuery(queries)),
 		}
 
 		// Extract common fields
@@ -6851,11 +6925,14 @@ func GetAdaptiveRRFConfig(query string) *SearchOptions {
 
 // Helper types
 type indexResult struct {
-	ID    string
-	Score float64
+	MatchID string // Original winning vector/chunk ID before parent collapse.
+	ID      string
+	Score   float64
 }
 
 type rrfResult struct {
+	VectorMatchID string
+	Passages      []SupportingPassage
 	ID            string
 	RRFScore      float64
 	VectorRank    int

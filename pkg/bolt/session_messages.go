@@ -751,6 +751,7 @@ func (s *Session) handlePull(data []byte) error {
 	// Clear result if done
 	if !hasMore {
 		resultStats := stream.result.Stats
+		rerankReport := stream.result.Metadata["rerank"]
 
 		// Neo4j-style deferred commit: flush pending writes after streaming completes.
 		if err := s.flushPendingExecutorWrites(); err != nil {
@@ -805,6 +806,9 @@ func (s *Session) handlePull(data []byte) error {
 			}
 		}
 
+		if rerankReport != nil {
+			metadata["rerank"] = rerankReport
+		}
 		// Note: Neo4j does NOT send has_more when it's false
 		if err := s.sendSuccessNoFlush(metadata); err != nil {
 			return err
@@ -877,6 +881,7 @@ func (s *Session) handleDiscard(data []byte) error {
 	}
 
 	resultStats := stream.result.Stats
+	rerankReport := stream.result.Metadata["rerank"]
 
 	// Neo4j-style deferred commit: flush pending writes after discard.
 	if err := s.flushPendingExecutorWrites(); err != nil {
@@ -924,6 +929,9 @@ func (s *Session) handleDiscard(data []byte) error {
 		}
 	}
 
+	if rerankReport != nil {
+		metadata["rerank"] = rerankReport
+	}
 	if err := s.sendSuccessNoFlush(metadata); err != nil {
 		return err
 	}

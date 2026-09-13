@@ -3,6 +3,7 @@ package search
 import (
 	"cmp"
 	"context"
+	"errors"
 	"slices"
 )
 
@@ -94,6 +95,14 @@ func SearchTextChunksWithErrorPolicy(
 
 	chunkOpts := *opts
 	chunkOpts.Limit = chunkCandidateLimit(opts.Limit)
+	rerankAfterFusion := opts.RerankEnabled && opts.RerankAfterFusion != nil
+	if rerankAfterFusion {
+		chunkOpts.RerankEnabled = false
+		chunkOpts.Limit = opts.RerankTopK
+		if chunkOpts.Limit <= 0 {
+			chunkOpts.Limit = 100
+		}
+	}
 	var (
 		fusedIndexes map[string]int
 		fused        []fusedResult
@@ -161,7 +170,7 @@ func SearchTextChunksWithErrorPolicy(
 		}
 		return cmp.Compare(searchResultID(*left.best), searchResultID(*right.best))
 	})
-	if opts.Limit > 0 && len(fused) > opts.Limit {
+	if !rerankAfterFusion && opts.Limit > 0 && len(fused) > opts.Limit {
 		fused = fused[:opts.Limit]
 	}
 
@@ -181,6 +190,11 @@ func SearchTextChunksWithErrorPolicy(
 		result.VectorRank = 0
 		result.BM25Rank = 0
 		response.Results = append(response.Results, result)
+	}
+	if rerankAfterFusion {
+		if err := opts.RerankAfterFusion(ctx, query, response, opts); err != nil {
+			return nil, err
+		}
 	}
 	return response, nil
 }
@@ -204,5 +218,9 @@ func searchResultID(result SearchResult) string {
 }
 
 func isFatalChunkedSearchError(predicate func(error) bool, err error) bool {
+	var required *errRequiredRerank
+	if errors.As(err, &required) {
+		return true
+	}
 	return predicate != nil && predicate(err)
 }

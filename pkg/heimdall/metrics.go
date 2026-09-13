@@ -4,6 +4,7 @@ package heimdall
 import (
 	"context"
 	"fmt"
+	"github.com/orneryd/nornicdb/pkg/embed"
 	"runtime"
 	"sync"
 	"time"
@@ -414,7 +415,9 @@ func (e *QueryExecutor) Discover(ctx context.Context, query string, nodeTypes []
 		chunkQuery = func(_ context.Context, text string) ([]string, error) {
 			return e.embedder.ChunkText(text, 512, 50)
 		}
-		embedQuery = e.embedder.Embed
+		embedQuery = func(ctx context.Context, text string) ([]float32, error) {
+			return embed.QueryVector(ctx, e.embedder, text)
+		}
 	}
 
 	response, err := search.SearchTextChunks(

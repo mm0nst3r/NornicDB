@@ -18,6 +18,10 @@ var (
 // Those queries should not be cached.
 func isCacheableReadQuery(cypher string) bool {
 	upper := strings.ToUpper(cypher)
+	// Managed work state must be checked on every call.
+	if strings.Contains(upper, "DB.EMBEDDING.") {
+		return false
+	}
 	if strings.HasPrefix(strings.TrimSpace(upper), "SHOW PROCEDURES") {
 		return false
 	}
