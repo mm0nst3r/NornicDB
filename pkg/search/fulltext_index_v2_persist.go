@@ -12,6 +12,7 @@ import (
 
 type bm25V2Snapshot struct {
 	Version        string                    `msgpack:"v"`
+	Analyzer       string                    `msgpack:"analyzer"`
 	Documents      map[string]string         `msgpack:"docs"`
 	DocIDToNum     map[string]uint32         `msgpack:"doc_id_to_num"`
 	DocNumToID     []string                  `msgpack:"doc_num_to_id"`
@@ -25,6 +26,7 @@ type bm25V2Snapshot struct {
 
 type bm25V1Snapshot struct {
 	Version       string
+	Analyzer      string
 	Documents     map[string]string
 	InvertedIndex map[string]map[string]int
 	DocLengths    map[string]int
@@ -61,6 +63,7 @@ func (f *FulltextIndexV2) Save(path string) error {
 
 	return saveBM25V2Snapshot(path, bm25V2Snapshot{
 		Version:        bm25V2FormatVersion,
+		Analyzer:       f.AnalyzerIdentity(),
 		Documents:      docs,
 		DocIDToNum:     docIDToNum,
 		DocNumToID:     docNumToID,
@@ -80,6 +83,7 @@ func (f *FulltextIndexV2) SaveNoCopy(path string) error {
 	version := f.version
 	snap := bm25V2Snapshot{
 		Version:        bm25V2FormatVersion,
+		Analyzer:       f.AnalyzerIdentity(),
 		Documents:      f.documents,
 		DocIDToNum:     f.docIDToNum,
 		DocNumToID:     f.docNumToID,
@@ -117,13 +121,18 @@ func (f *FulltextIndexV2) Load(path string) error {
 	var v2 bm25V2Snapshot
 	if err := util.DecodeMsgpackFile(file.File, &v2); err == nil && v2.Version != "" &&
 		searchIndexVersionCompatible(v2.Version, bm25V2FormatVersion, "BM25 V2") {
+		if !f.analyzer.compatible(v2.Analyzer) {
+			logSearchPrintf("BM25 V2 analyzer mismatch: saved=%q current=%q; rebuilding", v2.Analyzer, f.AnalyzerIdentity())
+			f.Clear()
+			return nil
+		}
 		f.applyV2Snapshot(v2)
 		return nil
 	} else if err != nil {
 		logSearchPrintf("⚠️ BM25 V2 load: failed decoding %s as v2 snapshot: %v", path, err)
 	}
 
-	// Fallback: try legacy BM25 V1 file format and migrate to V2 in-memory.
+	// Also accept the current BM25 V1 format when it uses the same analyzer.
 	fileLegacy, err := security.OpenRootedFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -139,7 +148,12 @@ func (f *FulltextIndexV2) Load(path string) error {
 		f.Clear()
 		return nil
 	}
-	if !searchIndexVersionCompatible(v1.Version, "1.0.0", "BM25") {
+	if !searchIndexVersionCompatible(v1.Version, fulltextIndexFormatVersion, "BM25") {
+		f.Clear()
+		return nil
+	}
+	if !f.analyzer.compatible(v1.Analyzer) {
+		logSearchPrintf("BM25 V1 migration analyzer mismatch: saved=%q current=%q; rebuilding", v1.Analyzer, f.AnalyzerIdentity())
 		f.Clear()
 		return nil
 	}
