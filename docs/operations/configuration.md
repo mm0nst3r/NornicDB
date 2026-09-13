@@ -228,6 +228,9 @@ index path, while `auto` preserves the existing file-backed build behavior.
 | `db.nornic.search.rerank.provider`           | `NORNICDB_SEARCH_RERANK_PROVIDER`           |
 | `db.nornic.search.rerank.model`              | `NORNICDB_SEARCH_RERANK_MODEL`              |
 | `db.nornic.search.rerank.api.url`            | `NORNICDB_SEARCH_RERANK_API_URL`            |
+| `db.nornic.search.rerank.truncation` | `NORNICDB_SEARCH_RERANK_TRUNCATION` |
+| `db.nornic.search.rerank.failure.policy` | `NORNICDB_SEARCH_RERANK_FAILURE_POLICY` |
+| `db.nornic.embed.auto.chunking` | `NORNICDB_EMBED_AUTO_CHUNKING` |
 | `db.nornic.search.rerank.api.key`            | `NORNICDB_SEARCH_RERANK_API_KEY`            |
 | `db.nornic.search.index.persist.delay.sec`   | `NORNICDB_SEARCH_INDEX_PERSIST_DELAY_SEC`   |
 | `db.nornic.vector.ann.quality`               | `NORNICDB_VECTOR_ANN_QUALITY`               |
@@ -607,7 +610,7 @@ explicit global embedding flags.
 
 ```yaml
 embedding:
-  provider: local # or ollama, openai
+  provider: local # or ollama, openai, voyage-context, voyage-multimodal
   model: bge-m3
   dimensions: 1024
 ```
@@ -1001,12 +1004,14 @@ See [Heimdall AI Assistant](../user-guides/heimdall-ai-assistant.md) for full co
 
 ## Search Rerank (Stage-2 Reranking)
 
-Stage-2 reranking improves vector/hybrid search by re-scoring top candidates with a reranker model. It is **independent of Heimdall** and supports **local** (GGUF, like embeddings) or **external** (ollama/openai/http) providers.
+For native Voyage contextualized/multimodal embeddings and reranking, see [Native Voyage retrieval](../user-guides/voyage.md).
+
+Stage-2 reranking improves vector/hybrid search by re-scoring top candidates with a reranker model. It is **independent of Heimdall** and supports **local** (GGUF, like embeddings) or **external** (ollama/openai/http/voyage) providers.
 
 | Variable                          | Default     | Description                                                                                                                |
 | --------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `NORNICDB_SEARCH_RERANK_ENABLED`  | `false`     | Enable Stage-2 reranking for vector/hybrid search                                                                          |
-| `NORNICDB_SEARCH_RERANK_PROVIDER` | `local`     | Backend: `local` (GGUF), `ollama`, `openai`, or `http`                                                                     |
+| `NORNICDB_SEARCH_RERANK_PROVIDER` | `local`     | Backend: `local` (GGUF), `ollama`, `openai`, `http`, or `voyage`                                                                     |
 | `NORNICDB_SEARCH_RERANK_MODEL`    | (see below) | For **local**: GGUF filename (e.g. `bge-reranker-v2-m3-Q4_K_M.gguf`). For **API**: model name (e.g. `rerank-english-v3.0`) |
 | `NORNICDB_SEARCH_RERANK_API_URL`  | (see below) | Rerank API URL for non-local (default for `ollama`: `http://localhost:11434/rerank`)                                       |
 | `NORNICDB_SEARCH_RERANK_API_KEY`  | (empty)     | API key for Cohere, OpenAI, etc.                                                                                           |
