@@ -9,6 +9,32 @@ import (
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
+func (e *StorageExecutor) parseIndexedNodeOrderSpecs(orderExpr, variable string) ([]nodeOrderSpec, bool) {
+	parts := splitOutsideParens(orderExpr, ',')
+	if len(parts) == 0 || variable == "" {
+		return nil, false
+	}
+	prefix := variable + "."
+	for _, part := range parts {
+		fields := strings.Fields(strings.TrimSpace(part))
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], prefix) {
+			return nil, false
+		}
+	}
+	specs := e.parseNodeOrderSpecs(orderExpr, variable)
+	return specs, len(specs) == len(parts)
+}
+
+func (e *StorageExecutor) indexedOrderRequiresNonNull(variable, property, where string) bool {
+	for _, term := range splitTopLevelAndConjuncts(unwrapOuterParens(strings.TrimSpace(where))) {
+		required, ok := e.parseSimpleIndexedIsNotNull(variable, unwrapOuterParens(strings.TrimSpace(term)))
+		if ok && strings.EqualFold(required, property) {
+			return true
+		}
+	}
+	return false
+}
+
 // indexedOrderHeap retains only the requested window; its root is the worst
 // candidate under the complete ORDER BY comparator.
 type indexedOrderHeap struct {
@@ -32,13 +58,13 @@ func (h *indexedOrderHeap) Pop() interface{} {
 // truncation. A primary-key group may be much larger than the requested page;
 // only the best limit nodes are retained while every boundary tie is examined.
 func (e *StorageExecutor) collectIndexedOrderWindow(ctx context.Context, pattern nodePatternInfo, where string, specs []nodeOrderSpec, label string, limit int) ([]*storage.Node, bool, error) {
-	compare := func(a, b *storage.Node) int {
-		if cmp := e.compareNodeOrderSpecs(a, b, specs); cmp != 0 {
+	compareWithinGroup := func(a, b *storage.Node) int {
+		if cmp := e.compareNodeOrderSpecs(a, b, specs[1:]); cmp != 0 {
 			return cmp
 		}
 		return strings.Compare(string(a.ID), string(b.ID))
 	}
-	top := &indexedOrderHeap{compare: compare}
+	nodes := make([]*storage.Node, 0, limit)
 	var filter func(*storage.Node) bool
 	if strings.TrimSpace(where) != "" {
 		filter = e.compileNodeWhereFilter(ctx, pattern.variable, where)
@@ -47,6 +73,11 @@ func (e *StorageExecutor) collectIndexedOrderWindow(ctx context.Context, pattern
 	visited := false
 	found := e.storage.GetSchema().VisitPropertyIndexGroups(label, specs[0].propName, specs[0].descending, func(ids []storage.NodeID) bool {
 		visited = true
+		remaining := limit - len(nodes)
+		groupTop := &indexedOrderHeap{
+			nodes:   make([]*storage.Node, 0, min(remaining, len(ids))),
+			compare: compareWithinGroup,
+		}
 		for _, id := range ids {
 			if err := ctx.Err(); err != nil {
 				visitErr = err
@@ -62,19 +93,30 @@ func (e *StorageExecutor) collectIndexedOrderWindow(ctx context.Context, pattern
 			if filter != nil && !filter(node) {
 				continue
 			}
-			if top.Len() < limit {
-				heap.Push(top, node)
-			} else if compare(node, top.nodes[0]) < 0 {
-				top.nodes[0] = node
-				heap.Fix(top, 0)
+			if len(specs) == 1 {
+				nodes = append(nodes, node)
+				if len(nodes) == limit {
+					return false
+				}
+				continue
 			}
-			// With a single key the identity-ordered group already supplies the
-			// deterministic tie order; secondary keys require the entire group.
-			if len(specs) == 1 && top.Len() == limit {
+			if groupTop.Len() < remaining {
+				heap.Push(groupTop, node)
+			} else if compareWithinGroup(node, groupTop.nodes[0]) < 0 {
+				groupTop.nodes[0] = node
+				heap.Fix(groupTop, 0)
+			}
+		}
+		if len(specs) > 1 {
+			sort.Slice(groupTop.nodes, func(i, j int) bool {
+				return compareWithinGroup(groupTop.nodes[i], groupTop.nodes[j]) < 0
+			})
+			nodes = append(nodes, groupTop.nodes...)
+			if len(nodes) == limit {
 				return false
 			}
 		}
-		return top.Len() < limit
+		return true
 	})
 	if visitErr != nil {
 		return nil, false, visitErr
@@ -82,6 +124,5 @@ func (e *StorageExecutor) collectIndexedOrderWindow(ctx context.Context, pattern
 	if !found || !visited {
 		return nil, false, nil
 	}
-	sort.Slice(top.nodes, func(i, j int) bool { return compare(top.nodes[i], top.nodes[j]) < 0 })
-	return top.nodes, true, nil
+	return nodes, true, nil
 }

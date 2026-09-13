@@ -50,3 +50,23 @@ func TestVisitPropertyIndexGroups(t *testing.T) {
 	}))
 	require.Equal(t, 1, visits)
 }
+
+func TestVisitPropertyIndexGroupsSnapshotsMembership(t *testing.T) {
+	sm := NewSchemaManager()
+	require.NoError(t, sm.AddPropertyIndex("rank", "Item", []string{"rank"}))
+	require.NoError(t, sm.PropertyIndexInsert("Item", "rank", "x", int64(1)))
+	require.NoError(t, sm.PropertyIndexInsert("Item", "rank", "y", int64(2)))
+
+	var visited []NodeID
+	group := 0
+	require.True(t, sm.VisitPropertyIndexGroups("Item", "rank", false, func(ids []NodeID) bool {
+		visited = append(visited, ids...)
+		if group == 0 {
+			require.NoError(t, sm.PropertyIndexDelete("Item", "rank", "x", int64(1)))
+			require.NoError(t, sm.PropertyIndexInsert("Item", "rank", "x", int64(2)))
+		}
+		group++
+		return true
+	}))
+	require.Equal(t, []NodeID{"x", "y"}, visited)
+}

@@ -854,11 +854,15 @@ func (e *StorageExecutor) tryCollectNodesFromPropertyIndexOrderLimit(
 		return nil, false, nil
 	}
 
-	orderSpecs := e.parseNodeOrderSpecs(orderExpr, nodePattern.variable)
-	if len(orderSpecs) == 0 {
+	orderSpecs, ok := e.parseIndexedNodeOrderSpecs(orderExpr, nodePattern.variable)
+	if !ok {
 		return nil, false, nil
 	}
 	spec := orderSpecs[0]
+	primaryNonNull := e.indexedOrderRequiresNonNull(nodePattern.variable, spec.propName, whereClause)
+	if spec.descending && !primaryNonNull {
+		return nil, false, nil
+	}
 
 	schema := e.storage.GetSchema()
 	if schema == nil {
@@ -873,7 +877,7 @@ func (e *StorageExecutor) tryCollectNodesFromPropertyIndexOrderLimit(
 
 	nodes, used, err := e.collectIndexedOrderWindow(ctx, nodePattern, whereClause, orderSpecs, label, limit)
 	if err == nil && used && len(nodes) < limit {
-		if requiredProp, ok := e.parseSimpleIndexedIsNotNull(nodePattern.variable, whereClause); ok && strings.EqualFold(requiredProp, spec.propName) {
+		if primaryNonNull {
 			return nodes, true, nil
 		}
 		// The property index omits null keys. An exhausted partial window is
@@ -896,7 +900,7 @@ func (e *StorageExecutor) tryCollectNodesFromPropertyIndexNotNullOrderLimit(
 	orderExpr string,
 	limit int,
 ) ([]*storage.Node, bool, error) {
-	if limit <= 0 {
+	if limit <= 0 || len(nodePattern.labels) == 0 {
 		return nil, false, nil
 	}
 
@@ -905,8 +909,8 @@ func (e *StorageExecutor) tryCollectNodesFromPropertyIndexNotNullOrderLimit(
 		return nil, false, nil
 	}
 
-	orderSpecs := e.parseNodeOrderSpecs(orderExpr, nodePattern.variable)
-	if len(orderSpecs) == 0 {
+	orderSpecs, ok := e.parseIndexedNodeOrderSpecs(orderExpr, nodePattern.variable)
+	if !ok {
 		return nil, false, nil
 	}
 	spec := orderSpecs[0]
@@ -937,6 +941,9 @@ func (e *StorageExecutor) tryCollectNodesFromPropertyIndexNotNull(
 	nodePattern nodePatternInfo,
 	whereClause string,
 ) ([]*storage.Node, bool, error) {
+	if len(nodePattern.labels) == 0 {
+		return nil, false, nil
+	}
 	property, ok := e.parseSimpleIndexedIsNotNull(nodePattern.variable, whereClause)
 	if !ok {
 		return nil, false, nil

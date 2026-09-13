@@ -22,31 +22,45 @@ func (sm *SchemaManager) VisitPropertyIndexGroups(label, property string, descen
 	if idx == nil {
 		return false
 	}
-	// sortedKeysLocked may refresh its cache, so acquire the write lock.
+	// Snapshot group membership before invoking callbacks so index mutations
+	// cannot move an ID into a group that has yet to be visited.
 	idx.mu.Lock()
 	keys := idx.sortedKeysLocked()
-	idx.mu.Unlock()
 	if descending {
 		for i, j := 0, len(keys)-1; i < j; i, j = i+1, j-1 {
 			keys[i], keys[j] = keys[j], keys[i]
 		}
 	}
+	totalIDs := 0
+	for _, key := range keys {
+		totalIDs += len(idx.values[key])
+	}
+	ids := make([]NodeID, 0, totalIDs)
+	groupEnds := make([]int, 0, len(keys))
 	for start := 0; start < len(keys); {
 		end := start + 1
 		for end < len(keys) && compareSchemaIndexValues(keys[start], keys[end]) == 0 {
 			end++
 		}
-		var ids []NodeID
-		idx.mu.RLock()
+		groupStart := len(ids)
 		for _, key := range keys[start:end] {
 			ids = append(ids, idx.values[key]...)
 		}
-		idx.mu.RUnlock()
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		if len(ids) > 0 && !visit(ids) {
-			break
+		if len(ids) > groupStart {
+			groupEnds = append(groupEnds, len(ids))
 		}
 		start = end
+	}
+	idx.mu.Unlock()
+
+	groupStart := 0
+	for _, groupEnd := range groupEnds {
+		group := ids[groupStart:groupEnd]
+		sort.Slice(group, func(i, j int) bool { return group[i] < group[j] })
+		if !visit(group) {
+			break
+		}
+		groupStart = groupEnd
 	}
 	return true
 }

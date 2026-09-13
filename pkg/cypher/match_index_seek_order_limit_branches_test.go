@@ -32,7 +32,7 @@ func TestTryCollectNodesFromPropertyIndexOrderLimit_Branches(t *testing.T) {
 	_, err := exec.Execute(ctx, "CREATE INDEX idx_person_rank FOR (n:Person) ON (n.rank)", nil)
 	require.NoError(t, err)
 
-	nodes, ok, err := exec.tryCollectNodesFromPropertyIndexOrderLimit(ctx, nodePatternInfo{variable: "n", labels: []string{"Person"}}, "n.active = true", "n.rank DESC", 5)
+	nodes, ok, err := exec.tryCollectNodesFromPropertyIndexOrderLimit(ctx, nodePatternInfo{variable: "n", labels: []string{"Person"}}, "n.rank IS NOT NULL AND n.active = true", "n.rank DESC", 5)
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Len(t, nodes, 5)
@@ -42,11 +42,8 @@ func TestTryCollectNodesFromPropertyIndexOrderLimit_Branches(t *testing.T) {
 
 	nodes, ok, err = exec.tryCollectNodesFromPropertyIndexOrderLimit(ctx, nodePatternInfo{variable: "n", labels: []string{"Person"}}, "", "n.rank DESC", 3)
 	require.NoError(t, err)
-	require.True(t, ok)
-	require.Len(t, nodes, 3)
-	require.EqualValues(t, 249, nodes[0].Properties["rank"])
-	require.EqualValues(t, 248, nodes[1].Properties["rank"])
-	require.EqualValues(t, 247, nodes[2].Properties["rank"])
+	require.False(t, ok)
+	require.Nil(t, nodes)
 
 	nodes, ok, err = exec.tryCollectNodesFromPropertyIndexOrderLimit(ctx, nodePatternInfo{variable: "n", labels: []string{"Person"}}, "", "n.rank DESC", 0)
 	require.NoError(t, err)

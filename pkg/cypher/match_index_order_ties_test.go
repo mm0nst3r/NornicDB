@@ -152,6 +152,26 @@ func TestIndexedOrderPartialIndexPreservesNullRows(t *testing.T) {
 	}
 }
 
+func TestIndexedOrderDescendingPreservesNullRows(t *testing.T) {
+	store := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "descending-null-order")
+	exec := NewStorageExecutorWithQueryCachePolicy(store, 0, 0)
+	ctx := context.Background()
+	for _, node := range []*storage.Node{
+		{ID: "missing", Labels: []string{"OptionalTitle"}, Properties: map[string]interface{}{"rank": int64(1), "active": true}},
+		{ID: "present", Labels: []string{"OptionalTitle"}, Properties: map[string]interface{}{"title": "a", "rank": int64(2), "active": true}},
+	} {
+		_, err := store.CreateNode(node)
+		require.NoError(t, err)
+	}
+	_, err := exec.Execute(ctx, "CREATE INDEX optional_title FOR (n:OptionalTitle) ON (n.title)", nil)
+	require.NoError(t, err)
+
+	result, err := exec.Execute(ctx, "MATCH (n:OptionalTitle) WHERE n.active = true RETURN n.rank ORDER BY n.title DESC LIMIT 1", nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{int64(1)}}, result.Rows)
+	require.False(t, exec.LastHotPathTrace().OuterIndexTopK)
+}
+
 func TestIndexedOrderTraversalTiedLimit(t *testing.T) {
 	exec := indexedOrderFixture(t, 720)
 	_, err := exec.storage.CreateNode(&storage.Node{ID: "hub", Labels: []string{"Hub"}, Properties: map[string]interface{}{}})
@@ -180,23 +200,48 @@ func TestIndexedOrderTraversalTiedLimit(t *testing.T) {
 	}
 }
 
-type indexedOrderReadCounter struct {
-	storage.Engine
-	reads int
+func TestIndexedOrderTraversalRejectsOtherVariableSortKeys(t *testing.T) {
+	store := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "cross-variable-order")
+	exec := NewStorageExecutorWithQueryCachePolicy(store, 0, 0)
+	ctx := context.Background()
+	for _, node := range []*storage.Node{
+		{ID: "original-a", Labels: []string{"Original"}, Properties: map[string]interface{}{"textKey": "a"}},
+		{ID: "original-z", Labels: []string{"Original"}, Properties: map[string]interface{}{"textKey": "z"}},
+		{ID: "translated-0", Labels: []string{"Translated"}, Properties: map[string]interface{}{"createdAt": "same"}},
+		{ID: "translated-1", Labels: []string{"Translated"}, Properties: map[string]interface{}{"createdAt": "same"}},
+	} {
+		_, err := store.CreateNode(node)
+		require.NoError(t, err)
+	}
+	for _, edge := range []*storage.Edge{
+		{ID: "edge-a", Type: "TRANSLATES_TO", StartNode: "original-a", EndNode: "translated-0"},
+		{ID: "edge-z", Type: "TRANSLATES_TO", StartNode: "original-z", EndNode: "translated-1"},
+	} {
+		require.NoError(t, store.CreateEdge(edge))
+	}
+	_, err := exec.Execute(ctx, "CREATE INDEX translated_created FOR (n:Translated) ON (n.createdAt)", nil)
+	require.NoError(t, err)
+
+	result, err := exec.Execute(ctx, `
+MATCH (o:Original)-[:TRANSLATES_TO]->(t:Translated)
+WHERE t.createdAt IS NOT NULL
+RETURN o.textKey
+ORDER BY t.createdAt ASC, o.textKey DESC
+LIMIT 1`, nil)
+	require.NoError(t, err)
+	require.Equal(t, [][]interface{}{{"z"}}, result.Rows)
+	require.False(t, exec.LastHotPathTrace().TraversalEndSeedTopK)
 }
 
-func (e *indexedOrderReadCounter) GetNode(id storage.NodeID) (*storage.Node, error) {
-	e.reads++
-	return e.Engine.GetNode(id)
-}
-
-func TestIndexedOrderUnlabelledLimitKeepsBoundedReads(t *testing.T) {
+func TestIndexedOrderUnlabelledMatchPreservesOtherLabels(t *testing.T) {
 	exec := indexedOrderFixture(t, 720)
-	counted := &indexedOrderReadCounter{Engine: exec.storage}
-	exec.storage = counted
+	_, err := exec.storage.CreateNode(&storage.Node{
+		ID: "unindexed", Labels: []string{"OtherItem"},
+		Properties: map[string]interface{}{"title": "first title", "payload": "unindexed"},
+	})
+	require.NoError(t, err)
 	result, err := exec.Execute(context.Background(), "MATCH (n) WHERE n.title IS NOT NULL RETURN n.payload ORDER BY n.title ASC LIMIT 1", nil)
 	require.NoError(t, err)
-	require.Equal(t, [][]interface{}{{int64(720)}}, result.Rows)
-	require.Equal(t, 1, counted.reads)
-	require.False(t, exec.LastHotPathTrace().OuterScanFallbackUsed)
+	require.Equal(t, [][]interface{}{{"unindexed"}}, result.Rows)
+	require.False(t, exec.LastHotPathTrace().OuterIndexTopK)
 }
