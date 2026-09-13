@@ -716,7 +716,7 @@ func (e *StorageExecutor) executeMatch(ctx context.Context, cypher string) (*Exe
 			}
 		}
 		if !usedPropertyIndex && !hasAggregation && hasOrderBy && skip == 0 && limit > 0 && orderExprEarly != "" {
-			if candidates, used, idxErr := e.tryCollectNodesFromPropertyIndexNotNullOrderLimit(nodePattern, wherePart, orderExprEarly, limit); idxErr == nil && used {
+			if candidates, used, idxErr := e.tryCollectNodesFromPropertyIndexNotNullOrderLimit(ctx, nodePattern, wherePart, orderExprEarly, limit); idxErr == nil && used {
 				nodes = candidates
 				usedPropertyIndex = true
 				usedIndexTopK = true
@@ -736,8 +736,8 @@ func (e *StorageExecutor) executeMatch(ctx context.Context, cypher string) (*Exe
 			}
 		}
 		// Index-backed top-K for ORDER BY + LIMIT when no other index seek matched.
-		// Over-fetch from the property index (sorted by index key) and apply WHERE
-		// post-filter. This avoids full label scan + sort for common pagination patterns
+		// Filter complete index-key groups into the requested ordered window.
+		// This avoids full label scan + sort for common pagination patterns
 		// like ORDER BY createdAt DESC LIMIT 30.
 		if !usedPropertyIndex && !usedIndexTopK && !hasAggregation && hasOrderBy && limit > 0 && orderExprEarly != "" {
 			if candidates, used, idxErr := e.tryCollectNodesFromPropertyIndexOrderLimit(ctx,

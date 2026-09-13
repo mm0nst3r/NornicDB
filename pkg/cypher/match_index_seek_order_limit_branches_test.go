@@ -34,8 +34,11 @@ func TestTryCollectNodesFromPropertyIndexOrderLimit_Branches(t *testing.T) {
 
 	nodes, ok, err := exec.tryCollectNodesFromPropertyIndexOrderLimit(ctx, nodePatternInfo{variable: "n", labels: []string{"Person"}}, "n.active = true", "n.rank DESC", 5)
 	require.NoError(t, err)
-	require.False(t, ok)
-	require.Nil(t, nodes)
+	require.True(t, ok)
+	require.Len(t, nodes, 5)
+	for i, node := range nodes {
+		require.EqualValues(t, 9-i, node.Properties["rank"])
+	}
 
 	nodes, ok, err = exec.tryCollectNodesFromPropertyIndexOrderLimit(ctx, nodePatternInfo{variable: "n", labels: []string{"Person"}}, "", "n.rank DESC", 3)
 	require.NoError(t, err)
@@ -69,7 +72,7 @@ func TestTryCollectNodesFromPropertyIndexNotNullPaths(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	nodes, ok, err := exec.tryCollectNodesFromPropertyIndexNotNullOrderLimit(nodePatternInfo{variable: "n", labels: []string{"Item"}}, "n.score IS NOT NULL", "n.score DESC", 2)
+	nodes, ok, err := exec.tryCollectNodesFromPropertyIndexNotNullOrderLimit(context.Background(), nodePatternInfo{variable: "n", labels: []string{"Item"}}, "n.score IS NOT NULL", "n.score DESC", 2)
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Len(t, nodes, 2)
@@ -81,7 +84,7 @@ func TestTryCollectNodesFromPropertyIndexNotNullPaths(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, nodes, 3)
 
-	nodes, ok, err = exec.tryCollectNodesFromPropertyIndexNotNullOrderLimit(nodePatternInfo{variable: "n", labels: []string{"Item"}}, "n.score IS NOT NULL", "n.id DESC", 2)
+	nodes, ok, err = exec.tryCollectNodesFromPropertyIndexNotNullOrderLimit(context.Background(), nodePatternInfo{variable: "n", labels: []string{"Item"}}, "n.score IS NOT NULL", "n.id DESC", 2)
 	require.NoError(t, err)
 	require.False(t, ok)
 	require.Nil(t, nodes)

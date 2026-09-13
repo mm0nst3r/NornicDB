@@ -830,9 +830,9 @@ func (e *StorageExecutor) tryCollectNodesFromIDInParam(
 
 // tryCollectNodesFromPropertyIndexOrderLimit attempts to satisfy ORDER BY + LIMIT
 // queries using a property index for sorted iteration, even when the WHERE clause
-// is not a simple IS NOT NULL predicate. It over-fetches from the index (up to 4x
-// the requested limit) and applies any WHERE filter post-hoc. This avoids full
-// label scan + in-memory sort for common pagination patterns like:
+// is not a simple IS NOT NULL predicate. It filters complete index-key groups
+// into a bounded ordered window. This avoids a full label scan and sort when
+// the non-null index can fill common pagination requests like:
 //
 //	MATCH (n:Label) WHERE <filter> ORDER BY n.createdAt DESC LIMIT 30
 //
@@ -842,8 +842,7 @@ func (e *StorageExecutor) tryCollectNodesFromIDInParam(
 //   - limit > 0
 //
 // If the ORDER BY has multiple keys, the indexed property is used to fetch
-// a candidate window and the remaining keys are applied with the in-memory
-// top-K comparator.
+// complete primary-key groups and all keys select the retained top-K window.
 func (e *StorageExecutor) tryCollectNodesFromPropertyIndexOrderLimit(
 	ctx context.Context,
 	nodePattern nodePatternInfo,
@@ -872,61 +871,17 @@ func (e *StorageExecutor) tryCollectNodesFromPropertyIndexOrderLimit(
 	}
 	label := labels[0]
 
-	// Over-fetch: grab more candidates than needed to account for WHERE filtering.
-	// Use 4x multiplier with a reasonable ceiling to avoid loading too much.
-	overFetch, ok := util.SafeIntProduct(limit, 4)
-	if !ok {
-		overFetch = int(^uint(0) >> 1)
-	}
-	if overFetch < 200 {
-		overFetch = 200
-	}
-
-	ids := schema.PropertyIndexTopK(label, spec.propName, overFetch, spec.descending)
-	if len(ids) == 0 {
-		return nil, false, nil // No index data — fall back to generic path
-	}
-
-	hasWhere := strings.TrimSpace(whereClause) != ""
-	var whereFilter func(*storage.Node) bool
-	if hasWhere {
-		whereFilter = e.compileNodeWhereFilter(ctx, nodePattern.variable, whereClause)
-	}
-	nodes := make([]*storage.Node, 0, util.SafePreallocCap(limit, len(ids)))
-	for _, id := range ids {
-		node, err := e.storage.GetNode(id)
-		if err != nil || node == nil {
-			continue
+	nodes, used, err := e.collectIndexedOrderWindow(ctx, nodePattern, whereClause, orderSpecs, label, limit)
+	if err == nil && used && len(nodes) < limit {
+		if requiredProp, ok := e.parseSimpleIndexedIsNotNull(nodePattern.variable, whereClause); ok && strings.EqualFold(requiredProp, spec.propName) {
+			return nodes, true, nil
 		}
-		if len(nodePattern.labels) > 0 && !nodeHasAnyLabel(node, nodePattern.labels) {
-			continue
-		}
-		if len(nodePattern.properties) > 0 && !e.nodeMatchesProps(node, nodePattern.properties) {
-			continue
-		}
-		// Apply WHERE filter if present.
-		if hasWhere && !whereFilter(node) {
-			continue
-		}
-		nodes = append(nodes, node)
-		if len(nodes) >= limit {
-			break
-		}
-	}
-	if len(nodes) > limit {
-		if topK, ok := e.selectTopKNodesByOrder(nodes, nodePattern.variable, orderExpr, limit); ok {
-			nodes = topK
-		}
-	}
-
-	// If we exhausted the over-fetched set without reaching the limit, the index
-	// didn't have enough qualifying rows. Return false to fall back to the generic
-	// path which will scan all candidates.
-	if len(nodes) < limit && len(ids) >= overFetch {
+		// The property index omits null keys. An exhausted partial window is
+		// not a complete general MATCH result: let normal selection include
+		// qualifying nodes whose first sort property is absent.
 		return nil, false, nil
 	}
-
-	return nodes, true, nil
+	return nodes, used, err
 }
 
 // tryCollectNodesFromPropertyIndexNotNullOrderLimit attempts to satisfy:
@@ -935,6 +890,7 @@ func (e *StorageExecutor) tryCollectNodesFromPropertyIndexOrderLimit(
 //
 // using the property index directly (top-K by indexed key) without label scan.
 func (e *StorageExecutor) tryCollectNodesFromPropertyIndexNotNullOrderLimit(
+	ctx context.Context,
 	nodePattern nodePatternInfo,
 	whereClause string,
 	orderExpr string,
@@ -969,31 +925,7 @@ func (e *StorageExecutor) tryCollectNodesFromPropertyIndexNotNullOrderLimit(
 		return nil, false, nil
 	}
 	label := labels[0]
-	ids := schema.PropertyIndexTopK(label, whereProp, limit, spec.descending)
-	if len(ids) == 0 {
-		return []*storage.Node{}, true, nil
-	}
-
-	nodes := make([]*storage.Node, 0, len(ids))
-	for _, id := range ids {
-		node, err := e.storage.GetNode(id)
-		if err != nil || node == nil {
-			continue
-		}
-		if len(nodePattern.labels) > 0 && !nodeHasAnyLabel(node, nodePattern.labels) {
-			continue
-		}
-		nodes = append(nodes, node)
-		if len(nodes) >= limit {
-			break
-		}
-	}
-	if len(nodes) > limit {
-		if topK, ok := e.selectTopKNodesByOrder(nodes, nodePattern.variable, orderExpr, limit); ok {
-			nodes = topK
-		}
-	}
-	return nodes, true, nil
+	return e.collectIndexedOrderWindow(ctx, nodePattern, whereClause, orderSpecs, label, limit)
 }
 
 // tryCollectNodesFromPropertyIndexNotNull attempts to satisfy:

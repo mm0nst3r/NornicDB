@@ -38,7 +38,7 @@ func TestTraversalEndSeedOrderLimit_EarlyExitGuards(t *testing.T) {
 	require.Nil(t, res)
 }
 
-func TestTraversalEndSeedOrderLimit_EmptySeedNodesStillHandled(t *testing.T) {
+func TestTraversalEndSeedOrderLimit_PartialGeneralIndexDeclines(t *testing.T) {
 	base := newTestMemoryEngine(t)
 	store := storage.NewNamespacedEngine(base, "trav_end_seed_empty_cov")
 	exec := NewStorageExecutor(store)
@@ -60,10 +60,8 @@ func TestTraversalEndSeedOrderLimit_EmptySeedNodesStillHandled(t *testing.T) {
 		2,
 	)
 	require.NoError(t, err)
-	require.True(t, used)
-	require.NotNil(t, res)
-	require.Equal(t, []string{"did"}, res.Columns)
-	require.Empty(t, res.Rows)
+	require.False(t, used)
+	require.Nil(t, res)
 }
 
 func TestTraversalEndSeedOrderLimit_FallbackWhenSeedWindowInsufficient(t *testing.T) {

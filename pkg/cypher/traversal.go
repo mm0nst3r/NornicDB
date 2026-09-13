@@ -546,7 +546,7 @@ func (e *StorageExecutor) tryExecuteTraversalEndSeedOrderLimit(ctx context.Conte
 		return nil, true, err
 	}
 	if !used {
-		if seedNodes, used, err = e.tryCollectNodesFromPropertyIndexNotNullOrderLimit(matches.EndNode, seedWhere, orderExpr, seedLimit); err != nil {
+		if seedNodes, used, err = e.tryCollectNodesFromPropertyIndexNotNullOrderLimit(ctx, matches.EndNode, seedWhere, orderExpr, seedLimit); err != nil {
 			return nil, true, err
 		}
 		if !used {

@@ -139,7 +139,8 @@ func TestRelationshipMatchTranslationQueryFamily_EndNodeFilterOrderLimit(t *test
 	_, err := exec.Execute(ctx, "CREATE INDEX idx_translated_created_at FOR (t:TranslatedText) ON (t.createdAt)", nil)
 	require.NoError(t, err)
 
-	eng.forbidLabelScan = true
+	// This filter permits missing createdAt values. A partial non-null index
+	// window must allow normal selection to include those potential matches.
 
 	res, err := exec.Execute(ctx, `
 MATCH (o:OriginalText)-[:TRANSLATES_TO]->(t:TranslatedText)
@@ -151,7 +152,7 @@ LIMIT 10
 	require.NoError(t, err)
 	require.Equal(t, []string{"o", "t", "t.createdAt"}, res.Columns)
 	require.Len(t, res.Rows, 10)
-	require.True(t, exec.LastHotPathTrace().TraversalEndSeedTopK)
+	require.False(t, exec.LastHotPathTrace().TraversalEndSeedTopK)
 
 	for i, row := range res.Rows {
 		require.Len(t, row, 3)
@@ -213,5 +214,5 @@ LIMIT 2
 	require.Len(t, res.Rows, 2)
 	require.Equal(t, []interface{}{"hop-5", "2026-04-06T12:00:00Z"}, res.Rows[0])
 	require.Equal(t, []interface{}{"hop-4", "2026-04-05T12:00:00Z"}, res.Rows[1])
-	require.True(t, exec.LastHotPathTrace().TraversalEndSeedTopK)
+	require.False(t, exec.LastHotPathTrace().TraversalEndSeedTopK)
 }
