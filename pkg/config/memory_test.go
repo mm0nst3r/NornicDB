@@ -92,6 +92,8 @@ func TestLoadFromEnv_RuntimeMemory(t *testing.T) {
 		"NORNICDB_QUERY_CACHE_ENABLED",
 		"NORNICDB_QUERY_CACHE_SIZE",
 		"NORNICDB_QUERY_CACHE_TTL",
+		"NORNICDB_SEARCH_CURSOR_MAX",
+		"NORNICDB_SEARCH_CURSOR_TTL",
 	}
 	for _, v := range envVars {
 		os.Unsetenv(v)
@@ -120,6 +122,12 @@ func TestLoadFromEnv_RuntimeMemory(t *testing.T) {
 		}
 		if cfg.Memory.QueryCacheTTL != 5*time.Minute {
 			t.Errorf("QueryCacheTTL = %v, want 5m", cfg.Memory.QueryCacheTTL)
+		}
+		if cfg.Memory.SearchCursorMax != 0 {
+			t.Errorf("SearchCursorMax = %d, want 0 (disabled)", cfg.Memory.SearchCursorMax)
+		}
+		if cfg.Memory.SearchCursorTTL != 5*time.Minute {
+			t.Errorf("SearchCursorTTL = %v, want 5m", cfg.Memory.SearchCursorTTL)
 		}
 	})
 
@@ -187,6 +195,21 @@ func TestLoadFromEnv_RuntimeMemory(t *testing.T) {
 		}
 	})
 
+	t.Run("search continuation from env", func(t *testing.T) {
+		os.Setenv("NORNICDB_SEARCH_CURSOR_MAX", "128")
+		os.Setenv("NORNICDB_SEARCH_CURSOR_TTL", "600000")
+		defer os.Unsetenv("NORNICDB_SEARCH_CURSOR_MAX")
+		defer os.Unsetenv("NORNICDB_SEARCH_CURSOR_TTL")
+
+		cfg := LoadFromEnv()
+		if cfg.Memory.SearchCursorMax != 128 {
+			t.Errorf("SearchCursorMax = %d, want 128", cfg.Memory.SearchCursorMax)
+		}
+		if cfg.Memory.SearchCursorTTL != 10*time.Minute {
+			t.Errorf("SearchCursorTTL = %v, want 10m", cfg.Memory.SearchCursorTTL)
+		}
+	})
+
 	t.Run("invalid memory limit from env fails fast", func(t *testing.T) {
 		os.Setenv("NORNICDB_MEMORY_LIMIT", "2GB")
 		defer os.Unsetenv("NORNICDB_MEMORY_LIMIT")
@@ -211,6 +234,36 @@ func TestLoadFromFile_InvalidRuntimeLimitFails(t *testing.T) {
 	_, err := LoadFromFile(path)
 	if err == nil {
 		t.Fatal("LoadFromFile should fail for invalid memory.runtime_limit")
+	}
+}
+
+func TestLoadFromFile_SearchCursorSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		max     int64
+		ttl     time.Duration
+	}{
+		{name: "zero disables", content: "memory:\n  search_cursor_max: 0\n  search_cursor_ttl: 300000\n", max: 0, ttl: 5 * time.Minute},
+		{name: "positive enables", content: "memory:\n  search_cursor_max: 128\n  search_cursor_ttl: 600000\n", max: 128, ttl: 10 * time.Minute},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadFromFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Memory.SearchCursorMax != test.max {
+				t.Errorf("SearchCursorMax = %d, want %d", cfg.Memory.SearchCursorMax, test.max)
+			}
+			if cfg.Memory.SearchCursorTTL != test.ttl {
+				t.Errorf("SearchCursorTTL = %v, want %v", cfg.Memory.SearchCursorTTL, test.ttl)
+			}
+		})
 	}
 }
 

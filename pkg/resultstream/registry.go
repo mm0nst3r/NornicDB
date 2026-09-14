@@ -18,7 +18,9 @@ const registryShardCount = 32
 var (
 	ErrInvalidQID   = errors.New("invalid result stream qid")
 	ErrExpiredQID   = errors.New("result stream qid expired")
+	ErrGoneQID      = errors.New("result stream qid no longer exists")
 	ErrCapacity     = errors.New("result stream capacity exceeded")
+	ErrDisabled     = errors.New("result stream continuation is disabled")
 	ErrInvalidScope = errors.New("invalid result stream scope")
 )
 
@@ -30,6 +32,7 @@ type Scope struct {
 
 // Config bounds process-local durable result streams.
 type Config struct {
+	Disabled                 bool
 	TTL                      time.Duration
 	MaxStreams               int64
 	MaxStreamsPerOwner       int64
@@ -60,6 +63,7 @@ type registryShard struct {
 // Registry owns signed qids and sharded process-local stream entries.
 type Registry struct {
 	config      Config
+	disabled    bool
 	secret      [32]byte
 	instance    [8]byte
 	shards      [registryShardCount]registryShard
@@ -67,6 +71,7 @@ type Registry struct {
 	retained    atomic.Int64
 	closed      atomic.Bool
 	scopeMAC    sync.Pool
+	scopeInput  sync.Pool
 	admissionMu sync.Mutex
 	owners      map[[32]byte]ownerUsage
 }
@@ -95,7 +100,7 @@ func NewRegistry(config Config) (*Registry, error) {
 	if config.MaxRetainedBytesPerOwner == 0 {
 		config.MaxRetainedBytesPerOwner = 256 << 20
 	}
-	registry := &Registry{config: config, owners: make(map[[32]byte]ownerUsage)}
+	registry := &Registry{config: config, disabled: config.Disabled, owners: make(map[[32]byte]ownerUsage)}
 	if _, err := io.ReadFull(rand.Reader, registry.secret[:]); err != nil {
 		return nil, err
 	}
@@ -104,6 +109,7 @@ func NewRegistry(config Config) (*Registry, error) {
 	}
 	secret := registry.secret
 	registry.scopeMAC.New = func() any { return hmac.New(sha256.New, secret[:]) }
+	registry.scopeInput.New = func() any { return make([]byte, 0, 128) }
 	for index := range registry.shards {
 		registry.shards[index].entries = make(map[[16]byte]*registryEntry)
 	}
@@ -179,6 +185,9 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 // Pull resolves a signed qid and invokes the stream without holding a registry
 // shard lock.
 func (r *Registry) Pull(ctx context.Context, scope Scope, qid string, n int) (*Page, error) {
+	if r.disabled {
+		return nil, ErrDisabled
+	}
 	if err := r.validate(scope, n); err != nil {
 		return nil, err
 	}
@@ -192,8 +201,10 @@ func (r *Registry) Pull(ctx context.Context, scope Scope, qid string, n int) (*P
 	}
 	entry := r.lookup(token.streamID)
 	wantScope := r.scopeDigest(scope)
-	if entry == nil || entry.released.Load() || entry.expires != token.expires ||
-		!hmac.Equal(entry.scopeHash[:], wantScope[:]) {
+	if entry == nil || entry.released.Load() {
+		return nil, ErrGoneQID
+	}
+	if entry.expires != token.expires || !hmac.Equal(entry.scopeHash[:], wantScope[:]) {
 		return nil, ErrInvalidQID
 	}
 	page, err := entry.stream.Pull(ctx, token.position, n)
@@ -209,6 +220,9 @@ func (r *Registry) Pull(ctx context.Context, scope Scope, qid string, n int) (*P
 
 // Discard releases the complete stream addressed by any of its qids.
 func (r *Registry) Discard(scope Scope, qid string) error {
+	if r.disabled {
+		return ErrDisabled
+	}
 	if scope.Owner == "" || scope.Database == "" {
 		return ErrInvalidScope
 	}
@@ -216,9 +230,16 @@ func (r *Registry) Discard(scope Scope, qid string) error {
 	if err != nil {
 		return err
 	}
+	if time.Now().Unix() >= token.expires {
+		r.remove(token.streamID, nil)
+		return ErrExpiredQID
+	}
 	entry := r.lookup(token.streamID)
 	wantScope := r.scopeDigest(scope)
-	if entry == nil || entry.expires != token.expires || !hmac.Equal(entry.scopeHash[:], wantScope[:]) {
+	if entry == nil || entry.released.Load() {
+		return ErrGoneQID
+	}
+	if entry.expires != token.expires || !hmac.Equal(entry.scopeHash[:], wantScope[:]) {
 		return ErrInvalidQID
 	}
 	r.remove(token.streamID, entry)
@@ -226,6 +247,9 @@ func (r *Registry) Discard(scope Scope, qid string) error {
 }
 
 func (r *Registry) validate(scope Scope, n int) error {
+	if r.disabled {
+		return ErrDisabled
+	}
 	if r.closed.Load() {
 		return ErrClosed
 	}
@@ -309,11 +333,15 @@ func scopeDigest(secret [32]byte, scope Scope) [32]byte {
 func (r *Registry) scopeDigest(scope Scope) [32]byte {
 	digest := r.scopeMAC.Get().(hash.Hash)
 	digest.Reset()
-	_, _ = digest.Write([]byte(scope.Owner))
-	_, _ = digest.Write([]byte{0})
-	_, _ = digest.Write([]byte(scope.Database))
+	input := r.scopeInput.Get().([]byte)[:0]
+	input = append(input, scope.Owner...)
+	input = append(input, 0)
+	input = append(input, scope.Database...)
+	_, _ = digest.Write(input)
 	var out [32]byte
 	digest.Sum(out[:0])
+	clear(input)
+	r.scopeInput.Put(input[:0])
 	r.scopeMAC.Put(digest)
 	return out
 }

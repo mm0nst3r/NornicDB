@@ -12,6 +12,7 @@ import (
 	"time"
 
 	nornicerrors "github.com/orneryd/nornicdb/pkg/errors"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
@@ -2203,6 +2204,18 @@ func TestMapBoltQueryError(t *testing.T) {
 			err:      fmt.Errorf("%w: waiting for transaction lock", nornicerrors.ErrTransactionDeadlock),
 			wantCode: "Neo.TransientError.Transaction.DeadlockDetected",
 			wantMsg:  "transaction deadlock: waiting for transaction lock",
+		},
+		{
+			name:     "continuation saturation is transient",
+			err:      resultstream.ErrCapacity,
+			wantCode: "Neo.TransientError.General.DatabaseUnavailable",
+			wantMsg:  resultstream.ErrCapacity.Error(),
+		},
+		{
+			name:     "gone continuation is terminal",
+			err:      resultstream.ErrGoneQID,
+			wantCode: "Neo.ClientError.Statement.EntityNotFound",
+			wantMsg:  resultstream.ErrGoneQID.Error(),
 		},
 	}
 

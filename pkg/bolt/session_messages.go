@@ -14,6 +14,7 @@ import (
 	"github.com/orneryd/nornicdb/pkg/cypher"
 	nornicerrors "github.com/orneryd/nornicdb/pkg/errors"
 	"github.com/orneryd/nornicdb/pkg/localization"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/storage"
 	"golang.org/x/text/language"
 )
@@ -403,6 +404,15 @@ func mapBoltQueryError(err error) (code, message string) {
 	var permissionDenied *cypher.PermissionDeniedError
 	if errors.As(err, &permissionDenied) {
 		return "Neo.ClientError.Security.Forbidden", permissionDenied.Error()
+	}
+	if errors.Is(err, resultstream.ErrCapacity) || errors.Is(err, resultstream.ErrClosed) {
+		return "Neo.TransientError.General.DatabaseUnavailable", err.Error()
+	}
+	if errors.Is(err, resultstream.ErrDisabled) {
+		return "Neo.ClientError.Statement.UnsupportedOperation", err.Error()
+	}
+	if errors.Is(err, resultstream.ErrExpiredQID) || errors.Is(err, resultstream.ErrGoneQID) || errors.Is(err, resultstream.ErrInvalidated) {
+		return "Neo.ClientError.Statement.EntityNotFound", err.Error()
 	}
 	msg := err.Error()
 	if strings.HasPrefix(msg, "Neo.") {

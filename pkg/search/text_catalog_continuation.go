@@ -142,7 +142,11 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 			rankedByID[searchResultID(result)] = result
 		}
 	}
-	members := make(map[string]*continuationGroup)
+	var members map[string]*continuationGroup
+	var ungroupedChunks [][]SearchResult
+	if request.GroupBy != "" {
+		members = make(map[string]*continuationGroup)
+	}
 	scannedNodes := 0
 	passageCount := 0
 	var retainedBytes int64
@@ -185,6 +189,21 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 		if retainedBytes > policy.MaxBuildBytes {
 			return resultstream.ErrCapacity
 		}
+		if request.GroupBy == "" {
+			if passageCount >= policy.MaxMembers {
+				return resultstream.ErrCapacity
+			}
+			passageCount++
+			if passageCount > policy.MaxPassages {
+				return resultstream.ErrCapacity
+			}
+			if len(ungroupedChunks) == 0 || len(ungroupedChunks[len(ungroupedChunks)-1]) == cap(ungroupedChunks[len(ungroupedChunks)-1]) {
+				ungroupedChunks = append(ungroupedChunks, make([]SearchResult, 0, 1024))
+			}
+			last := len(ungroupedChunks) - 1
+			ungroupedChunks[last] = append(ungroupedChunks[last], candidate)
+			return nil
+		}
 		group := members[logicalID]
 		if group == nil {
 			if len(members) >= policy.MaxMembers {
@@ -214,28 +233,39 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 	if !supported || after != version {
 		return nil, resultstream.ErrInvalidated
 	}
-	if request.MaxResults > 0 && len(members) > request.MaxResults {
+	memberCount := len(members)
+	if request.GroupBy == "" {
+		memberCount = passageCount
+	}
+	if request.MaxResults > 0 && memberCount > request.MaxResults {
 		return nil, resultstream.ErrCapacity
 	}
-	results := make([]SearchResult, 0, len(members))
-	for _, group := range members {
-		passages := group.catalog
-		if len(group.ranked) > 0 {
-			passages = group.ranked
-			sort.Slice(passages, func(i, j int) bool {
-				return betterContinuationRepresentative(passages[i], passages[j])
-			})
-		} else {
-			sort.Slice(passages, func(i, j int) bool { return passages[i].ID < passages[j].ID })
+	var results []SearchResult
+	if request.GroupBy == "" {
+		results = make([]SearchResult, 0, memberCount)
+		for _, chunk := range ungroupedChunks {
+			results = append(results, chunk...)
 		}
-		representative := passages[0]
-		if request.GroupBy != "" {
+	}
+	if request.GroupBy != "" {
+		results = make([]SearchResult, 0, len(members))
+		for _, group := range members {
+			passages := group.catalog
+			if len(group.ranked) > 0 {
+				passages = group.ranked
+				sort.Slice(passages, func(i, j int) bool {
+					return betterContinuationRepresentative(passages[i], passages[j])
+				})
+			} else {
+				sort.Slice(passages, func(i, j int) bool { return passages[i].ID < passages[j].ID })
+			}
+			representative := passages[0]
 			representative.Passages = make([]SearchPassage, len(passages))
 			for index := range passages {
 				representative.Passages[index] = searchPassageFromResult(passages[index])
 			}
+			results = append(results, representative)
 		}
-		results = append(results, representative)
 	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Phase != results[j].Phase {

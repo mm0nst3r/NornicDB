@@ -396,7 +396,17 @@ func (db *DB) getOrCreateSearchContinuationRegistry() (*resultstream.Registry, e
 	if db.searchContinuation != nil {
 		return db.searchContinuation, nil
 	}
-	registry, err := resultstream.NewRegistry(resultstream.Config{})
+	maxStreams := int64(0)
+	ttl := 5 * time.Minute
+	if db.config != nil {
+		maxStreams = db.config.Memory.SearchCursorMax
+		if db.config.Memory.SearchCursorTTL > 0 {
+			ttl = db.config.Memory.SearchCursorTTL
+		}
+	}
+	registry, err := resultstream.NewRegistry(resultstream.Config{
+		Disabled: maxStreams == 0, MaxStreams: maxStreams, TTL: ttl,
+	})
 	if err != nil {
 		return nil, err
 	}

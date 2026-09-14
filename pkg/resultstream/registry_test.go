@@ -79,7 +79,22 @@ func TestRegistryBindsScopeAndDiscardsStream(t *testing.T) {
 
 	require.NoError(t, registry.Discard(scope, first.QID))
 	_, err = registry.Pull(context.Background(), scope, first.QID, 1)
-	require.True(t, errors.Is(err, ErrInvalidQID) || errors.Is(err, ErrExpiredQID))
+	require.ErrorIs(t, err, ErrGoneQID)
+}
+
+func TestRegistryDisabled(t *testing.T) {
+	registry, err := NewRegistry(Config{Disabled: true})
+	require.NoError(t, err)
+	t.Cleanup(registry.Close)
+	stream, err := NewProgressive([][]any{{"one"}, {"two"}}, true, 2, nil)
+	require.NoError(t, err)
+
+	scope := Scope{Owner: "owner", Database: "neo4j"}
+	_, err = registry.Start(context.Background(), scope, stream, 1)
+	require.ErrorIs(t, err, ErrDisabled)
+	_, err = registry.Pull(context.Background(), scope, "qid", 1)
+	require.ErrorIs(t, err, ErrDisabled)
+	require.ErrorIs(t, registry.Discard(scope, "qid"), ErrDisabled)
 }
 
 func TestRegistryDoesNotPublishExhaustedFirstPage(t *testing.T) {

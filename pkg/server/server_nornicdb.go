@@ -15,6 +15,7 @@ import (
 	"github.com/orneryd/nornicdb/pkg/localization"
 	"github.com/orneryd/nornicdb/pkg/math/vector"
 	"github.com/orneryd/nornicdb/pkg/nornicdb"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/search"
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
@@ -456,7 +457,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if req.QID != "" {
 		page, continuationErr := searchSvc.SearchTextContinuation(ctx, "", nil, continuationRequest, nil, nil, nil, search.ChunkedSearchErrorPolicy{})
 		if continuationErr != nil {
-			s.writeBoundaryError(w, r, http.StatusBadRequest, continuationErr, ErrBadRequest)
+			s.writeSearchContinuationError(w, r, continuationErr)
 			return
 		}
 		s.writeSearchContinuationPage(w, page)
@@ -587,6 +588,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.writeBoundaryError(w, r, http.StatusServiceUnavailable, err, ErrServiceUnavailable)
 			return
 		}
+		if continuationRequested {
+			s.writeSearchContinuationError(w, r, err)
+			return
+		}
 		s.writeBoundaryError(w, r, http.StatusInternalServerError, err, ErrInternalError)
 		return
 	}
@@ -636,6 +641,29 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, results)
+}
+
+func (s *Server) writeSearchContinuationError(w http.ResponseWriter, _ *http.Request, err error) {
+	status := http.StatusBadRequest
+	retryable := false
+	requestStatus := "continuation_invalid"
+	switch {
+	case errors.Is(err, resultstream.ErrDisabled):
+		status = http.StatusConflict
+		requestStatus = "continuation_disabled"
+	case errors.Is(err, resultstream.ErrCapacity), errors.Is(err, resultstream.ErrClosed):
+		status = http.StatusServiceUnavailable
+		retryable = true
+		requestStatus = "continuation_saturated"
+		w.Header().Set("Retry-After", "1")
+	case errors.Is(err, resultstream.ErrExpiredQID), errors.Is(err, resultstream.ErrGoneQID), errors.Is(err, resultstream.ErrInvalidated):
+		status = http.StatusGone
+		requestStatus = "continuation_gone"
+	}
+	s.writeJSON(w, status, map[string]any{
+		"error": err.Error(), "retryable": retryable,
+		"http_code": status, "request_status": requestStatus,
+	})
 }
 
 func (s *Server) writeSearchContinuationPage(w http.ResponseWriter, page *search.SearchContinuationPage) {

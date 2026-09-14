@@ -479,6 +479,10 @@ paths:
         array to a `SearchContinuationPage` object. Durable qids are bound to
         the authenticated principal and canonical database and expire after a
         fixed server-configured TTL.
+
+        Durable continuation is disabled by default. Operators enable it with
+        a positive `memory.search_cursor_max`; zero leaves normal
+        non-continuation search behavior unchanged.
       operationId: hybridSearch
       security:
         - bearerAuth: []
@@ -555,13 +559,18 @@ paths:
                       $ref: "#/components/schemas/SearchResult"
                   - $ref: "#/components/schemas/SearchContinuationPage"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: Invalid request or malformed/wrong-scope continuation qid (`continuation_invalid`)
+        "409":
+          description: Durable continuation is disabled (`continuation_disabled`, non-retryable)
+        "410":
+          description: Continuation qid expired, was released, or was invalidated (`continuation_gone`, non-retryable)
         "503":
           description: |
             Search is unavailable for this database. Distinguish the cases via `request_status`:
 
             - `search_disabled_for_database` — both BM25 and vector are disabled for the database (per-DB master switches). Permanent; `retryable: false`. Clients should not retry.
             - `search_not_ready` — an eager build is mid-flight at the moment of the request. `retryable: true`. Clients should back off and retry.
+            - `continuation_saturated` — continuation cursor admission is full. Retry after the delay in `Retry-After`.
 
             Lazy-warmed databases (`*_warming=lazy`) do NOT emit a 503 on the first request — `Service.EnsureWarm` blocks the handler synchronously until the build completes, then returns 200 with the same shape as an eager database.
 
@@ -588,6 +597,7 @@ paths:
                     enum:
                       - search_disabled_for_database
                       - search_not_ready
+                      - continuation_saturated
 
   /nornicdb/similar:
     post:

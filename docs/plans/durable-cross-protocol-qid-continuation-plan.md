@@ -720,7 +720,7 @@ release, pull outcomes, and wrong-instance tokens.
 - [x] Add continuation metadata to the existing HTTP response.
 - [x] Append protobuf fields and regenerate checked-in Go bindings.
 - [x] Add native gRPC principal/database context integration.
-- [ ] Map common continuation errors consistently to HTTP and gRPC statuses.
+- [x] Map common continuation errors consistently to HTTP, native gRPC, and Bolt statuses.
 - [x] Add cross-protocol tests that start in one protocol and pull or discard in
       another.
 
@@ -735,7 +735,8 @@ release, pull outcomes, and wrong-instance tokens.
 
 ### Phase 6: Operations And Cluster Readiness
 
-- [ ] Add configuration, metrics, structured events, and localized errors.
+- [ ] Add metrics and structured continuation lifecycle events.
+- [x] Add operator configuration and protocol-specific continuation errors.
 - [x] Add shutdown and reconfiguration behavior.
 - [x] Document process-local durability and load-balancer affinity requirements.
 - [ ] Design, but do not require, a shared-registry provider interface for a
@@ -747,16 +748,19 @@ release, pull outcomes, and wrong-instance tokens.
 
 Measured on Apple M3 Max (`darwin/arm64`, five runs, steady-state median):
 
-| Operation                    |                     Before |                     After |                       Allocation change |
-| ---------------------------- | -------------------------: | ------------------------: | --------------------------------------: |
-| Signed token encode + verify |   710 ns/op (~1.41M ops/s) |  432 ns/op (~2.31M ops/s) | 1,472 B / 18 allocs to 224 B / 2 allocs |
-| Buffered registry pull       | 1,150 ns/op (~0.87M ops/s) |  689 ns/op (~1.45M ops/s) | 2,168 B / 30 allocs to 408 B / 8 allocs |
-| Buffered stream page         |  31.7 ns/op (~31.5M ops/s) | 31.7 ns/op (~31.5M ops/s) |           unchanged at 120 B / 2 allocs |
+| Operation                    |                     Before |                     After |                              Allocation change |
+| ---------------------------- | -------------------------: | ------------------------: | ---------------------------------------------: |
+| Signed token encode + verify |   710 ns/op (~1.41M ops/s) |  432 ns/op (~2.31M ops/s) |        1,472 B / 18 allocs to 224 B / 2 allocs |
+| Buffered registry pull       | 1,150 ns/op (~0.87M ops/s) |  703 ns/op (~1.42M ops/s) |        2,168 B / 30 allocs to 400 B / 6 allocs |
+| Buffered stream page         |  31.7 ns/op (~31.5M ops/s) | 31.7 ns/op (~31.5M ops/s) |                  unchanged at 120 B / 2 allocs |
+| Complete ID build, 20k nodes |                    30.0 ms |                   20.2 ms | 30.0 MB / 305k allocs to 26.9 MB / 245k allocs |
 
 The tuned path keeps HMAC-SHA-256 and constant-time comparison. It uses
 fixed-size token buffers and fixed-size HMAC computation for the known token
-layout, plus a per-registry pool of keyed scope hashers. Registry locks still
-cover lookup only; stream paging and expansion execute outside shard locks.
+layout, plus per-registry pools for keyed scope hashers and cleared scope-input
+buffers. Ungrouped complete builds collect compact descriptors in fixed chunks
+before one exact flattening allocation. Registry locks still cover lookup only;
+stream paging and expansion execute outside shard locks.
 
 Reproduce with:
 

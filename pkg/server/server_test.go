@@ -28,6 +28,7 @@ import (
 	"github.com/orneryd/nornicdb/pkg/heimdall"
 	"github.com/orneryd/nornicdb/pkg/multidb"
 	"github.com/orneryd/nornicdb/pkg/nornicdb"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/storage"
 	"github.com/orneryd/nornicdb/pkg/textchunk"
 	"github.com/orneryd/nornicdb/pkg/txsession"
@@ -56,6 +57,7 @@ func setupTestServerWithConfig(t *testing.T, configure func(*Config)) (*Server, 
 	config := nornicdb.DefaultConfig()
 	config.Memory.DecayEnabled = false
 	config.Memory.AutoLinksEnabled = false
+	config.Memory.SearchCursorMax = 128
 	config.Database.AsyncWritesEnabled = false // Disable async writes for predictable test behavior (200 OK vs 202 Accepted)
 	// The server test suite exercises temporal reads (graph/temporal, graph/
 	// diff) that require historical MVCC versions to still be resolvable at
@@ -1524,6 +1526,40 @@ func TestHandleSearchContinuationBeyondInitialLimit(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(release.Body).Decode(&released))
 	require.True(t, released.Released)
+}
+
+func TestWriteSearchContinuationError(t *testing.T) {
+	testCases := []struct {
+		name          string
+		err           error
+		status        int
+		retryable     bool
+		requestStatus string
+	}{
+		{name: "saturated", err: resultstream.ErrCapacity, status: http.StatusServiceUnavailable, retryable: true, requestStatus: "continuation_saturated"},
+		{name: "expired", err: resultstream.ErrExpiredQID, status: http.StatusGone, retryable: false, requestStatus: "continuation_gone"},
+		{name: "gone", err: resultstream.ErrGoneQID, status: http.StatusGone, retryable: false, requestStatus: "continuation_gone"},
+		{name: "invalid", err: resultstream.ErrInvalidQID, status: http.StatusBadRequest, retryable: false, requestStatus: "continuation_invalid"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := &Server{}
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/nornicdb/search", nil)
+			server.writeSearchContinuationError(response, request, testCase.err)
+			require.Equal(t, testCase.status, response.Code)
+			var body struct {
+				Retryable     bool   `json:"retryable"`
+				RequestStatus string `json:"request_status"`
+			}
+			require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
+			require.Equal(t, testCase.retryable, body.Retryable)
+			require.Equal(t, testCase.requestStatus, body.RequestStatus)
+			if testCase.retryable {
+				require.NotEmpty(t, response.Header().Get("Retry-After"))
+			}
+		})
+	}
 }
 
 func TestHandleSearchIDContinuationGroupsAllPassages(t *testing.T) {

@@ -100,6 +100,14 @@ Bolt's `RUN` `SUCCESS` message when more results exist.
 
 ## Security, consistency, and lifetime
 
+Durable continuation is disabled by default. Operators enable it by setting
+`memory.search_cursor_max` to a positive process-wide cursor limit, or by
+setting `NORNICDB_SEARCH_CURSOR_MAX`. Zero means disabled.
+`memory.search_cursor_ttl` (or `NORNICDB_SEARCH_CURSOR_TTL`) sets the fixed
+lifetime in milliseconds and defaults to `300000` (five minutes). Ordinary
+searches without continuation fields are unaffected when the feature is
+disabled.
+
 Qids are signed, fixed-expiry, process-local tokens. Registry state stores a
 keyed owner/database digest, not credentials. Pull and discard require the same
 validated principal and canonical database. A different server instance cannot
@@ -117,8 +125,22 @@ and reported retained-byte limits. Complete streams report their compact
 descriptor bytes to this admission layer; streams that do not implement byte
 reporting are still governed by stream-count limits.
 
+Continuation errors have stable protocol mappings:
+
+| Condition                             | HTTP                                                   | Native gRPC          | Bolt/Cypher over Bolt                            |
+| ------------------------------------- | ------------------------------------------------------ | -------------------- | ------------------------------------------------ |
+| Disabled                              | `409 continuation_disabled`                            | `FailedPrecondition` | `Neo.ClientError.Statement.UnsupportedOperation` |
+| Capacity saturated                    | `503 continuation_saturated`, `Retry-After`, retryable | `ResourceExhausted`  | `Neo.TransientError.General.DatabaseUnavailable` |
+| Expired, released, or invalidated qid | `410 continuation_gone`                                | `NotFound`           | `Neo.ClientError.Statement.EntityNotFound`       |
+| Malformed or wrong-scope qid          | `400 continuation_invalid`                             | `InvalidArgument`    | client error                                     |
+
+Wrong-scope qids are deliberately indistinguishable from malformed qids; the
+server does not reveal whether another owner or database has a matching cursor.
+
 Complete builds prefer the storage streaming interface. Engines without it use
 `AllNodes` fallback, whose temporary full node slice is outside retained
 descriptor admission. On the 20,000-node benchmark fixture (Apple M3 Max), the
-native path used about 29.9 MB/op versus 37.6 MB/op for fallback; operators
+optimized ungrouped native build takes about 20.2 ms and 26.9 MB/op. The
+pre-optimization native build took about 30.0 ms and 30.0 MB/op; the measured
+optimized `AllNodes` fallback uses about 34.6 MB/op. Operators
 using a fallback engine must budget for that additional build-time memory.

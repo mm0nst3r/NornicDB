@@ -679,6 +679,11 @@ type MemoryConfig struct {
 	QueryCacheSize int
 	// QueryCacheTTL is the default lifetime of cached query results per database.
 	QueryCacheTTL time.Duration
+	// SearchCursorMax is the process-wide retained cursor limit.
+	// Zero disables durable search continuation.
+	SearchCursorMax int64
+	// SearchCursorTTL is the fixed lifetime assigned when a cursor starts.
+	SearchCursorTTL time.Duration
 }
 
 // ComplianceConfig holds settings for GDPR/HIPAA/FISMA/SOC2 compliance.
@@ -1549,6 +1554,8 @@ type YAMLConfig struct {
 		QueryCacheEnabled            bool    `yaml:"query_cache_enabled"`
 		QueryCacheSize               int     `yaml:"query_cache_size"`
 		QueryCacheTTL                int64   `yaml:"query_cache_ttl"`
+		SearchCursorMax              int64   `yaml:"search_cursor_max"`
+		SearchCursorTTL              int64   `yaml:"search_cursor_ttl"`
 	} `yaml:"memory"`
 
 	// Embedding worker configuration
@@ -1912,6 +1919,8 @@ func LoadDefaults() *Config {
 	config.Memory.QueryCacheEnabled = true
 	config.Memory.QueryCacheSize = 1000
 	config.Memory.QueryCacheTTL = 5 * time.Minute
+	config.Memory.SearchCursorMax = 0
+	config.Memory.SearchCursorTTL = 5 * time.Minute
 
 	// Embedding worker defaults
 	config.EmbeddingWorker.NumWorkers = 1
@@ -2543,6 +2552,14 @@ func applyEnvVars(config *Config) error {
 	}
 	if milliseconds := getEnvInt("NORNICDB_QUERY_CACHE_TTL", 0); milliseconds > 0 {
 		config.Memory.QueryCacheTTL = time.Duration(milliseconds) * time.Millisecond
+	}
+	if raw := strings.TrimSpace(getEnv("NORNICDB_SEARCH_CURSOR_MAX", "")); raw != "" {
+		if value, err := strconv.ParseInt(raw, 10, 64); err == nil && value >= 0 {
+			config.Memory.SearchCursorMax = value
+		}
+	}
+	if milliseconds := getEnvInt("NORNICDB_SEARCH_CURSOR_TTL", 0); milliseconds > 0 {
+		config.Memory.SearchCursorTTL = time.Duration(milliseconds) * time.Millisecond
 	}
 
 	// Embedding worker settings
@@ -3397,6 +3414,12 @@ func LoadFromFile(configPath string) (*Config, error) {
 	}
 	if yamlCfg.Memory.QueryCacheTTL > 0 {
 		config.Memory.QueryCacheTTL = time.Duration(yamlCfg.Memory.QueryCacheTTL) * time.Millisecond
+	}
+	if yamlCfg.Memory.SearchCursorMax >= 0 {
+		config.Memory.SearchCursorMax = yamlCfg.Memory.SearchCursorMax
+	}
+	if yamlCfg.Memory.SearchCursorTTL > 0 {
+		config.Memory.SearchCursorTTL = time.Duration(yamlCfg.Memory.SearchCursorTTL) * time.Millisecond
 	}
 
 	// === Embedding Worker ===

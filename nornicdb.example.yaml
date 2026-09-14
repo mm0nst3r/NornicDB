@@ -434,6 +434,15 @@ memory:
   # Env: NORNICDB_QUERY_CACHE_TTL
   query_cache_ttl: 300000 # milliseconds
 
+  # Maximum process-wide retained search continuation cursors.
+  # Zero disables durable continuation (default).
+  # Env: NORNICDB_SEARCH_CURSOR_MAX
+  search_cursor_max: 0
+
+  # Fixed lifetime in milliseconds assigned to each cursor at START.
+  # Env: NORNICDB_SEARCH_CURSOR_TTL
+  search_cursor_ttl: 300000
+
 # =============================================================================
 # EMBEDDING WORKER CONFIGURATION
 # Docs: https://github.com/orneryd/nornicdb/docs/features/embeddings.md#worker

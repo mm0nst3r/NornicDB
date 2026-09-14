@@ -265,6 +265,12 @@ index path, while `auto` preserves the existing file-backed build behavior.
 `db.nornic.query_cache.ttl` is an integer number of milliseconds. For example,
 use `300000` for five minutes. Duration strings such as `5m` are rejected.
 
+Durable search continuation is process-local and disabled by default. Set
+`memory.search_cursor_max` in YAML or `NORNICDB_SEARCH_CURSOR_MAX` to a positive
+cursor count to enable it. Set `memory.search_cursor_ttl` or
+`NORNICDB_SEARCH_CURSOR_TTL` to an integer number of milliseconds; the default
+is `300000`.
+
 #### Activation summary
 
 The key metadata endpoint reports the activation contract for every setting:

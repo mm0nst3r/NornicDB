@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	gen "github.com/orneryd/nornicdb/pkg/nornicgrpc/gen"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/search"
 	"github.com/orneryd/nornicdb/pkg/storage"
 	"github.com/orneryd/nornicdb/pkg/textchunk"
@@ -49,6 +50,7 @@ type continuationStubSearcher struct {
 	requests  []search.SearchContinuationRequest
 	queries   []string
 	responses []*search.SearchContinuationPage
+	err       error
 }
 
 func (s *continuationStubSearcher) SearchTextContinuation(
@@ -63,6 +65,9 @@ func (s *continuationStubSearcher) SearchTextContinuation(
 ) (*search.SearchContinuationPage, error) {
 	s.queries = append(s.queries, query)
 	s.requests = append(s.requests, request)
+	if s.err != nil {
+		return nil, s.err
+	}
 	response := s.responses[0]
 	s.responses = s.responses[1:]
 	return response, nil
@@ -276,6 +281,27 @@ func TestService_SearchText_IDContinuationGroupsPassages(t *testing.T) {
 }
 
 func TestService_SearchText_ErrorHandling(t *testing.T) {
+	t.Run("maps continuation saturation and gone qids", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name string
+			err  error
+			code codes.Code
+		}{
+			{name: "saturated", err: resultstream.ErrCapacity, code: codes.ResourceExhausted},
+			{name: "expired", err: resultstream.ErrExpiredQID, code: codes.NotFound},
+			{name: "gone", err: resultstream.ErrGoneQID, code: codes.NotFound},
+			{name: "invalid", err: resultstream.ErrInvalidQID, code: codes.InvalidArgument},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				searcher := &continuationStubSearcher{err: testCase.err}
+				svc, err := NewService(Config{}, nil, nil, searcher)
+				require.NoError(t, err)
+				_, err = svc.SearchText(context.Background(), &gen.SearchTextRequest{Qid: "qid", N: 1})
+				require.Equal(t, testCase.code, status.Code(err))
+			})
+		}
+	})
+
 	t.Run("returns internal error when fallback search fails", func(t *testing.T) {
 		searcher := &stubSearcher{err: fmt.Errorf("search backend failed")}
 		svc, err := NewService(Config{}, nil, nil, searcher)

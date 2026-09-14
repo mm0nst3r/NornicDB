@@ -2,11 +2,13 @@ package nornicgrpc
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/orneryd/nornicdb/pkg/localization"
 	gen "github.com/orneryd/nornicdb/pkg/nornicgrpc/gen"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/search"
 	"golang.org/x/text/language"
 	"google.golang.org/grpc/codes"
@@ -131,7 +133,7 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 			search.ChunkQueryFunc(s.chunkQuery), search.EmbedQueryFunc(s.embedQuery), s.searcher.Search, search.ChunkedSearchErrorPolicy{},
 		)
 		if err != nil {
-			return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.SearchFailed(err))
+			return nil, s.continuationStatus(ctx, err)
 		}
 		return grpcContinuationResponse(page, time.Since(start)), nil
 	}
@@ -194,6 +196,21 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		Message:           resp.Message,
 		TimeSeconds:       time.Since(start).Seconds(),
 	}, nil
+}
+
+func (s *Service) continuationStatus(ctx context.Context, err error) error {
+	code := codes.InvalidArgument
+	switch {
+	case errors.Is(err, resultstream.ErrDisabled):
+		code = codes.FailedPrecondition
+	case errors.Is(err, resultstream.ErrCapacity):
+		code = codes.ResourceExhausted
+	case errors.Is(err, resultstream.ErrExpiredQID), errors.Is(err, resultstream.ErrGoneQID), errors.Is(err, resultstream.ErrInvalidated):
+		code = codes.NotFound
+	case errors.Is(err, resultstream.ErrClosed):
+		code = codes.Unavailable
+	}
+	return s.localizedStatus(ctx, code, localization.SearchFailed(err))
 }
 
 func searchOptions(req *gen.SearchTextRequest, maxLimit int, rerank bool) *search.SearchOptions {
