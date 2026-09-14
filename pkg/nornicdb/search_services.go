@@ -414,6 +414,16 @@ func (db *DB) getOrCreateSearchContinuationRegistry() (*resultstream.Registry, e
 	return registry, nil
 }
 
+// ResolveSearchContinuationDatabase validates a qid's owner and optional
+// requested database before returning its canonical database binding.
+func (db *DB) ResolveSearchContinuationDatabase(owner, qid, requested string) (string, error) {
+	registry, err := db.getOrCreateSearchContinuationRegistry()
+	if err != nil {
+		return "", err
+	}
+	return registry.ResolveDatabase(owner, qid, requested)
+}
+
 // SetSearchResultCachePolicy applies a dynamic cache policy to an existing database service.
 func (db *DB) SetSearchResultCachePolicy(dbName string, maxEntries int, ttl time.Duration) {
 	db.searchServicesMu.RLock()

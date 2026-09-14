@@ -38,3 +38,9 @@ type Stream interface {
 type RetainedBytesReporter interface {
 	RetainedBytes() int64
 }
+
+// RetainedBytesGrowthGuard allows a registry to approve retained growth before
+// an expanding stream publishes its new replayable population.
+type RetainedBytesGrowthGuard interface {
+	SetRetainedBytesGrowthGuard(func() bool)
+}

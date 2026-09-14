@@ -36,6 +36,16 @@ func (i *IVFPQIndex) SearchApprox(ctx context.Context, query []float32, k int, m
 	if totalLimit <= 0 {
 		return []Candidate{}, nil
 	}
+	probedCount := 0
+	for _, lid := range centroidIDs {
+		if lid >= 0 && lid < len(i.lists) {
+			probedCount += len(i.lists[lid].IDs)
+		}
+	}
+	totalLimit = min(totalLimit, probedCount)
+	if totalLimit == 0 {
+		return []Candidate{}, nil
+	}
 	scratch := i.getScratch(totalLimit)
 	defer i.putScratch(scratch)
 	ivfpqQueryLUTInto(scratch.lut, queryNorm, i.codebooks)

@@ -52,6 +52,7 @@ type Config struct {
 type registryEntry struct {
 	scopeHash     [32]byte
 	ownerHash     [32]byte
+	database      string
 	expires       int64
 	retainedBytes int64
 	stream        Stream
@@ -83,6 +84,8 @@ type Registry struct {
 	admissionMu sync.Mutex
 	owners      map[[32]byte]ownerUsage
 	observer    atomic.Pointer[observerHolder]
+	stop        chan struct{}
+	workers     sync.WaitGroup
 }
 
 // SetObserver replaces the optional lifecycle observer.
@@ -119,7 +122,10 @@ func NewRegistry(config Config) (*Registry, error) {
 	if config.MaxRetainedBytesPerOwner == 0 {
 		config.MaxRetainedBytesPerOwner = 256 << 20
 	}
-	registry := &Registry{config: config, disabled: config.Disabled, owners: make(map[[32]byte]ownerUsage)}
+	registry := &Registry{
+		config: config, disabled: config.Disabled, owners: make(map[[32]byte]ownerUsage),
+		stop: make(chan struct{}),
+	}
 	if _, err := io.ReadFull(rand.Reader, registry.secret[:]); err != nil {
 		return nil, err
 	}
@@ -132,6 +138,8 @@ func NewRegistry(config Config) (*Registry, error) {
 	for index := range registry.shards {
 		registry.shards[index].entries = make(map[[16]byte]*registryEntry)
 	}
+	registry.workers.Add(1)
+	go registry.reapExpired()
 	return registry, nil
 }
 
@@ -169,6 +177,7 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 	entry := &registryEntry{
 		scopeHash:     r.scopeDigest(scope),
 		ownerHash:     ownerHash,
+		database:      scope.Database,
 		expires:       time.Now().Add(r.config.TTL).Unix(),
 		retainedBytes: retainedBytes,
 		stream:        stream,
@@ -200,11 +209,51 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 		r.observe("capacity")
 		return nil, ErrCapacity
 	}
+	if guarded, ok := stream.(RetainedBytesGrowthGuard); ok {
+		guarded.SetRetainedBytesGrowthGuard(func() bool {
+			reporter, reportsBytes := stream.(RetainedBytesReporter)
+			return reportsBytes && r.resize(entry, reporter.RetainedBytes())
+		})
+	}
 	r.observe("start")
 	r.observeUsage()
 	page.QID = encodeToken(r.secret, r.instance, streamID, page.Next, entry.expires)
 	page.ExpiresAt = time.Unix(entry.expires, 0).UTC()
 	return page, nil
+}
+
+// ResolveDatabase returns the database bound to a signed qid after validating
+// its authenticated owner. A nonempty requested database must match exactly.
+func (r *Registry) ResolveDatabase(owner, qid, requested string) (string, error) {
+	if r.disabled {
+		return "", ErrDisabled
+	}
+	if r.closed.Load() {
+		return "", ErrClosed
+	}
+	if owner == "" {
+		return "", ErrInvalidScope
+	}
+	token, err := decodeToken(r.secret, r.instance, qid)
+	if err != nil {
+		return "", err
+	}
+	if time.Now().Unix() >= token.expires {
+		r.remove(token.streamID, nil)
+		return "", ErrExpiredQID
+	}
+	entry := r.lookup(token.streamID)
+	if entry == nil || entry.released.Load() {
+		return "", ErrGoneQID
+	}
+	wantOwner := r.ownerDigest(owner)
+	if entry.expires != token.expires || !hmac.Equal(entry.ownerHash[:], wantOwner[:]) {
+		return "", ErrInvalidQID
+	}
+	if requested != "" && requested != entry.database {
+		return "", ErrInvalidQID
+	}
+	return entry.database, nil
 }
 
 // Pull resolves a signed qid and invokes the stream without holding a registry
@@ -240,8 +289,19 @@ func (r *Registry) Pull(ctx context.Context, scope Scope, qid string, n int) (*P
 	}
 	page, err := entry.stream.Pull(ctx, token.position, n)
 	if err != nil {
+		if errors.Is(err, ErrCapacity) {
+			r.remove(token.streamID, entry)
+		}
 		r.observeError(err)
 		return nil, err
+	}
+	if reporter, ok := entry.stream.(RetainedBytesReporter); ok {
+		retainedBytes := reporter.RetainedBytes()
+		if retainedBytes < 0 || !r.resize(entry, retainedBytes) {
+			r.remove(token.streamID, entry)
+			r.observe("capacity")
+			return nil, ErrCapacity
+		}
 	}
 	if page.HasMore {
 		page.QID = encodeToken(r.secret, r.instance, token.streamID, page.Next, entry.expires)
@@ -369,6 +429,32 @@ func (r *Registry) reserve(owner [32]byte, bytes int64) bool {
 	return true
 }
 
+func (r *Registry) resize(entry *registryEntry, bytes int64) bool {
+	r.admissionMu.Lock()
+	defer r.admissionMu.Unlock()
+	if entry.released.Load() {
+		return false
+	}
+	delta := bytes - entry.retainedBytes
+	if delta <= 0 {
+		usage := r.owners[entry.ownerHash]
+		usage.bytes += delta
+		r.owners[entry.ownerHash] = usage
+		entry.retainedBytes = bytes
+		r.retained.Add(delta)
+		return true
+	}
+	usage := r.owners[entry.ownerHash]
+	if r.retained.Load()+delta > r.config.MaxRetainedBytes || usage.bytes+delta > r.config.MaxRetainedBytesPerOwner {
+		return false
+	}
+	usage.bytes += delta
+	r.owners[entry.ownerHash] = usage
+	entry.retainedBytes = bytes
+	r.retained.Add(delta)
+	return true
+}
+
 func (r *Registry) release(entry *registryEntry) {
 	r.admissionMu.Lock()
 	usage := r.owners[entry.ownerHash]
@@ -419,11 +505,55 @@ func (r *Registry) ownerDigest(owner string) [32]byte {
 	return scopeDigest(r.secret, Scope{Owner: owner})
 }
 
+func (r *Registry) reapExpired() {
+	defer r.workers.Done()
+	interval := r.config.TTL / 2
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			r.sweepExpired(time.Now().Unix())
+		case <-r.stop:
+			return
+		}
+	}
+}
+
+func (r *Registry) sweepExpired(now int64) {
+	for index := range r.shards {
+		shard := &r.shards[index]
+		var expired []*registryEntry
+		shard.mu.Lock()
+		for id, entry := range shard.entries {
+			if now >= entry.expires {
+				delete(shard.entries, id)
+				entry.released.Store(true)
+				expired = append(expired, entry)
+			}
+		}
+		shard.mu.Unlock()
+		for _, entry := range expired {
+			r.release(entry)
+			_ = entry.stream.Close()
+			r.observe("expiry")
+		}
+	}
+}
+
 // Close releases every retained stream and rejects future operations.
 func (r *Registry) Close() {
 	if !r.closed.CompareAndSwap(false, true) {
 		return
 	}
+	close(r.stop)
+	r.workers.Wait()
 	for index := range r.shards {
 		shard := &r.shards[index]
 		shard.mu.Lock()

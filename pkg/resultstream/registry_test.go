@@ -102,6 +102,24 @@ func TestRegistryBindsScopeAndDiscardsStream(t *testing.T) {
 	require.ErrorIs(t, err, ErrGoneQID)
 }
 
+func TestRegistryResolveDatabaseValidatesOwnerAndRequestedBinding(t *testing.T) {
+	stream, err := NewProgressive([][]any{{"first"}, {"second"}}, true, 2, nil)
+	require.NoError(t, err)
+	registry, err := NewRegistry(Config{TTL: time.Minute, MaxStreams: 1, MaxPageSize: 1})
+	require.NoError(t, err)
+	t.Cleanup(registry.Close)
+	page, err := registry.Start(context.Background(), Scope{Owner: "alice", Database: "tenant"}, stream, 1)
+	require.NoError(t, err)
+
+	database, err := registry.ResolveDatabase("alice", page.QID, "")
+	require.NoError(t, err)
+	require.Equal(t, "tenant", database)
+	_, err = registry.ResolveDatabase("alice", page.QID, "other")
+	require.ErrorIs(t, err, ErrInvalidQID)
+	_, err = registry.ResolveDatabase("bob", page.QID, "")
+	require.ErrorIs(t, err, ErrInvalidQID)
+}
+
 func TestRegistryDisabled(t *testing.T) {
 	registry, err := NewRegistry(Config{Disabled: true})
 	require.NoError(t, err)
@@ -176,6 +194,23 @@ func TestRegistryExpiryIsFixedAndRemovesExpiredStream(t *testing.T) {
 	require.Zero(t, registry.count.Load())
 }
 
+func TestRegistryReapsAbandonedExpiredStream(t *testing.T) {
+	stream, err := NewProgressive([][]any{{0}, {1}}, true, 2, nil)
+	require.NoError(t, err)
+	registry, err := NewRegistry(Config{TTL: 100 * time.Millisecond, MaxStreams: 1, MaxPageSize: 1})
+	require.NoError(t, err)
+	t.Cleanup(registry.Close)
+
+	_, err = registry.Start(context.Background(), Scope{Owner: "alice", Database: "nornic"}, stream, 1)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return registry.count.Load() == 0 }, 2*time.Second, 10*time.Millisecond)
+
+	replacement, err := NewProgressive([][]any{{2}, {3}}, true, 2, nil)
+	require.NoError(t, err)
+	_, err = registry.Start(context.Background(), Scope{Owner: "bob", Database: "nornic"}, replacement, 1)
+	require.NoError(t, err)
+}
+
 func TestRegistryCloseReleasesStreamsAndRejectsOperations(t *testing.T) {
 	stream, err := NewProgressive([][]any{{0}, {1}}, true, 2, nil)
 	require.NoError(t, err)
@@ -246,6 +281,13 @@ type sizedTestStream struct {
 
 func (s sizedTestStream) RetainedBytes() int64 { return s.bytes }
 
+type growingSizedTestStream struct {
+	*Progressive
+	bytes atomic.Int64
+}
+
+func (s *growingSizedTestStream) RetainedBytes() int64 { return s.bytes.Load() }
+
 func TestRegistryEnforcesPerOwnerRetainedByteLimit(t *testing.T) {
 	registry, err := NewRegistry(Config{
 		TTL: time.Minute, MaxStreams: 3, MaxStreamsPerOwner: 3, MaxPageSize: 1,
@@ -266,6 +308,32 @@ func TestRegistryEnforcesPerOwnerRetainedByteLimit(t *testing.T) {
 	require.NoError(t, registry.Discard(Scope{Owner: "alice", Database: "one"}, first.QID))
 	_, err = registry.Start(context.Background(), Scope{Owner: "alice", Database: "two"}, newStream(60), 1)
 	require.NoError(t, err)
+}
+
+func TestRegistryRejectsProgressiveRetainedByteGrowth(t *testing.T) {
+	var stream *growingSizedTestStream
+	progressive, err := NewProgressive([][]any{{0}, {1}}, false, 2, func(_ context.Context, _ int) ([][]any, bool, error) {
+		stream.bytes.Store(80)
+		return [][]any{{0}, {1}, {2}}, true, nil
+	})
+	require.NoError(t, err)
+	stream = &growingSizedTestStream{Progressive: progressive}
+	stream.bytes.Store(40)
+
+	registry, err := NewRegistry(Config{
+		TTL: time.Minute, MaxStreams: 2, MaxStreamsPerOwner: 2, MaxPageSize: 2,
+		MaxRetainedBytes: 70, MaxRetainedBytesPerOwner: 70,
+	})
+	require.NoError(t, err)
+	t.Cleanup(registry.Close)
+	scope := Scope{Owner: "alice", Database: "nornic"}
+	page, err := registry.Start(context.Background(), scope, stream, 1)
+	require.NoError(t, err)
+
+	_, err = registry.Pull(context.Background(), scope, page.QID, 2)
+	require.ErrorIs(t, err, ErrCapacity)
+	require.Zero(t, registry.retained.Load())
+	require.Zero(t, registry.count.Load())
 }
 
 func TestScopeDigestIsKeyedAndBindsOwnerAndDatabase(t *testing.T) {

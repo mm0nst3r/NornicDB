@@ -35,6 +35,13 @@ type continuationSearcher interface {
 	SearchTextContinuation(context.Context, string, *search.SearchOptions, search.SearchContinuationRequest, search.ChunkQueryFunc, search.EmbedQueryFunc, search.SearchQueryFunc, search.ChunkedSearchErrorPolicy) (*search.SearchContinuationPage, error)
 }
 
+// DatabaseDependencies binds native search operations to one canonical database.
+type DatabaseDependencies struct {
+	Searcher   Searcher
+	EmbedQuery EmbedQueryFunc
+	ChunkQuery ChunkQueryFunc
+}
+
 // Service implements the NornicDB-native gRPC search API.
 type Service struct {
 	gen.UnimplementedNornicSearchServer
@@ -48,6 +55,9 @@ type Service struct {
 	searcher         Searcher
 	localizer        *localization.Manager
 	ownerFromContext func(context.Context) string
+	allowDatabase    func(context.Context, string) error
+	resolveDatabase  func(context.Context, string) (DatabaseDependencies, error)
+	resolveQID       func(owner, qid, requestedDatabase string) (string, error)
 }
 
 type Config struct {
@@ -59,6 +69,12 @@ type Config struct {
 	Localizer *localization.Manager
 	// OwnerFromContext returns a trusted authenticated principal identifier.
 	OwnerFromContext func(context.Context) string
+	// AllowDatabase enforces read access before search dependencies are resolved.
+	AllowDatabase func(context.Context, string) error
+	// ResolveDatabase returns search dependencies bound to a canonical database.
+	ResolveDatabase func(context.Context, string) (DatabaseDependencies, error)
+	// ResolveContinuationDatabase validates a qid and returns its database binding.
+	ResolveContinuationDatabase func(owner, qid, requestedDatabase string) (string, error)
 }
 
 // NewService creates a NornicDB-native search service.
@@ -89,6 +105,9 @@ func NewService(cfg Config, embedQuery EmbedQueryFunc, chunkQuery ChunkQueryFunc
 		searcher:         searcher,
 		localizer:        cfg.Localizer,
 		ownerFromContext: cfg.OwnerFromContext,
+		allowDatabase:    cfg.AllowDatabase,
+		resolveDatabase:  cfg.ResolveDatabase,
+		resolveQID:       cfg.ResolveContinuationDatabase,
 	}, nil
 }
 
@@ -102,22 +121,47 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 	if req.Query == "" && req.Qid == "" && req.Mode != string(search.SearchContinuationID) {
 		return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.QueryRequired())
 	}
+	owner := "anonymous"
+	if s.ownerFromContext != nil {
+		owner = s.ownerFromContext(ctx)
+	}
+	database := req.Database
+	if req.Qid != "" && s.resolveQID != nil {
+		var err error
+		database, err = s.resolveQID(owner, req.Qid, database)
+		if err != nil {
+			return nil, s.continuationStatus(ctx, err)
+		}
+	}
+	if database == "" {
+		database = s.defaultDatabase
+	}
+	if s.allowDatabase != nil {
+		if err := s.allowDatabase(ctx, database); err != nil {
+			return nil, err
+		}
+	}
+	dependencies := DatabaseDependencies{Searcher: s.searcher, EmbedQuery: s.embedQuery, ChunkQuery: s.chunkQuery}
+	if s.resolveDatabase != nil {
+		var err error
+		dependencies, err = s.resolveDatabase(ctx, database)
+		if err != nil {
+			return nil, s.localizedStatus(ctx, codes.NotFound, localization.SearchFailed(err))
+		}
+	} else if database != s.defaultDatabase {
+		return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.SearchFailed(errors.New("database-specific search is unavailable")))
+	}
+	if dependencies.Searcher == nil {
+		return nil, s.localizedStatus(ctx, codes.Unavailable, localization.SearcherRequired())
+	}
 	if continuationRequested {
-		continuable, ok := s.searcher.(continuationSearcher)
+		continuable, ok := dependencies.Searcher.(continuationSearcher)
 		if !ok {
 			return nil, status.Error(codes.Unimplemented, "search continuation is unavailable")
 		}
 		n := int(req.N)
 		if req.Qid != "" && n == 0 {
 			n = 50
-		}
-		owner := "anonymous"
-		if s.ownerFromContext != nil {
-			owner = s.ownerFromContext(ctx)
-		}
-		database := req.Database
-		if database == "" {
-			database = s.defaultDatabase
 		}
 		continuation := search.SearchContinuationRequest{
 			Owner: owner, Database: database, QID: req.Qid, N: n, Discard: req.Discard,
@@ -131,7 +175,7 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		}
 		page, err := continuable.SearchTextContinuation(
 			ctx, req.Query, searchOptions(req, s.maxLimit, s.rerankEnabled), continuation,
-			search.ChunkQueryFunc(s.chunkQuery), search.EmbedQueryFunc(s.embedQuery), s.searcher.Search, search.ChunkedSearchErrorPolicy{},
+			search.ChunkQueryFunc(dependencies.ChunkQuery), search.EmbedQueryFunc(dependencies.EmbedQuery), dependencies.Searcher.Search, search.ChunkedSearchErrorPolicy{},
 		)
 		if err != nil {
 			return nil, s.continuationStatus(ctx, err)
@@ -164,16 +208,16 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 	}
 
 	chunkQuery := search.ChunkQueryFunc(nil)
-	if s.chunkQuery != nil {
+	if dependencies.ChunkQuery != nil {
 		chunkQuery = func(ctx context.Context, query string) ([]string, error) {
-			chunks, err := s.chunkQuery(ctx, query)
+			chunks, err := dependencies.ChunkQuery(ctx, query)
 			if err != nil {
 				return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.QueryChunkFailed(err))
 			}
 			return chunks, nil
 		}
 	}
-	resp, err := search.SearchTextChunks(ctx, req.Query, opts, chunkQuery, search.EmbedQueryFunc(s.embedQuery), s.searcher.Search)
+	resp, err := search.SearchTextChunks(ctx, req.Query, opts, chunkQuery, search.EmbedQueryFunc(dependencies.EmbedQuery), dependencies.Searcher.Search)
 	if err != nil {
 		if status.Code(err) != codes.Unknown {
 			return nil, err

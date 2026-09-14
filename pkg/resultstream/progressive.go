@@ -19,6 +19,7 @@ type Progressive struct {
 	closed    bool
 	expanding chan struct{}
 	expand    ExpandFunc
+	growthOK  func() bool
 }
 
 // NewProgressive constructs a progressively expandable stream.
@@ -90,6 +91,8 @@ func (s *Progressive) Pull(ctx context.Context, position uint64, n int) (*Page, 
 		if err == nil {
 			if len(rows) < len(s.rows) {
 				err = ErrInvalidPosition
+			} else if s.growthOK != nil && !s.growthOK() {
+				err = ErrCapacity
 			} else {
 				s.rows = rows
 				s.depth = target
@@ -103,6 +106,14 @@ func (s *Progressive) Pull(ctx context.Context, position uint64, n int) (*Page, 
 			return nil, err
 		}
 	}
+}
+
+// SetRetainedBytesGrowthGuard installs admission checked before expansion is
+// published. It is intended for the owning registry.
+func (s *Progressive) SetRetainedBytesGrowthGuard(growthOK func() bool) {
+	s.mu.Lock()
+	s.growthOK = growthOK
+	s.mu.Unlock()
 }
 
 func (s *Progressive) pageLocked(position, end uint64) *Page {
@@ -126,6 +137,7 @@ func (s *Progressive) Close() error {
 	s.closed = true
 	s.rows = nil
 	s.expand = nil
+	s.growthOK = nil
 	s.mu.Unlock()
 	return nil
 }

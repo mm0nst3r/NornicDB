@@ -136,6 +136,29 @@ func (s *Server) startQdrantGRPC() error {
 			RerankEnabled:    rerankEnabled,
 			Localizer:        s.localizer,
 			OwnerFromContext: qdrantgrpc.AuthenticatedPrincipalID,
+			AllowDatabase: func(ctx context.Context, database string) error {
+				return grpcServer.AllowDatabaseAccess(ctx, database, false)
+			},
+			ResolveContinuationDatabase: s.db.ResolveSearchContinuationDatabase,
+			ResolveDatabase: func(ctx context.Context, database string) (nornicgrpc.DatabaseDependencies, error) {
+				store, err := s.dbManager.GetStorage(database)
+				if err != nil {
+					return nornicgrpc.DatabaseDependencies{}, err
+				}
+				svc, err := s.db.GetOrCreateSearchService(database, store)
+				if err != nil {
+					return nornicgrpc.DatabaseDependencies{}, err
+				}
+				return nornicgrpc.DatabaseDependencies{
+					Searcher: svc,
+					EmbedQuery: func(ctx context.Context, query string) ([]float32, error) {
+						return s.db.EmbedQueryForDB(ctx, database, query)
+					},
+					ChunkQuery: func(ctx context.Context, query string) ([]string, error) {
+						return s.db.ChunkQueryForDB(ctx, database, query)
+					},
+				}, nil
+			},
 		},
 		func(ctx context.Context, query string) ([]float32, error) {
 			return s.db.EmbedQuery(ctx, query)

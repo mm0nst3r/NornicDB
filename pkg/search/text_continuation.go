@@ -163,23 +163,31 @@ func (s *Service) SearchTextContinuation(
 		}
 		ownedOptions := cloneContinuationSearchOptions(opts)
 		rankedLimit := request.RankedLimit
-		if rankedLimit <= 0 {
-			rankedLimit = ownedOptions.MaxCandidateLimit
-			if rankedLimit <= 0 {
-				rankedLimit = DefaultSearchOptions().MaxCandidateLimit
-			}
+		if ownedOptions.Limit <= 0 {
+			ownedOptions.Limit = 50
 		}
-		ownedOptions.Limit = rankedLimit
 		preparation := &cachedTextPreparation{embeds: make(map[string]cachedEmbedding)}
-		ranked, err := SearchTextChunksWithErrorPolicy(
-			ctx,
-			query,
-			&ownedOptions,
-			preparation.chunker(chunkQuery),
-			preparation.embedder(embedQuery),
-			searchQuery,
-			errorPolicy,
-		)
+		cachedChunks := preparation.chunker(chunkQuery)
+		cachedEmbeds := preparation.embedder(embedQuery)
+		if rankedLimit > 0 {
+			ownedOptions.Limit = rankedLimit
+		}
+		ranked, err := SearchTextChunksWithErrorPolicy(ctx, query, &ownedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
+		for err == nil && rankedLimit <= 0 && !ranked.RetrievalExhausted {
+			depthLimit := ownedOptions.MaxCandidateLimit
+			if depthLimit > 0 && ownedOptions.Limit >= depthLimit {
+				return nil, fmt.Errorf("continuation retrieval depth limit reached: %w", resultstream.ErrCapacity)
+			}
+			nextLimit := ownedOptions.Limit * 2
+			if nextLimit <= ownedOptions.Limit {
+				return nil, fmt.Errorf("continuation retrieval depth overflow: %w", resultstream.ErrCapacity)
+			}
+			if depthLimit > 0 && nextLimit > depthLimit {
+				nextLimit = depthLimit
+			}
+			ownedOptions.Limit = nextLimit
+			ranked, err = SearchTextChunksWithErrorPolicy(ctx, query, &ownedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -221,9 +229,13 @@ func (s *Service) SearchTextContinuation(
 	if maxResults > 0 && len(initial.Results) > maxResults {
 		initial.Results = initial.Results[:maxResults]
 	}
+	compactResults := make([]SearchResult, len(initial.Results))
+	for index := range initial.Results {
+		compactResults[index] = compactContinuationResult(initial.Results[index])
+	}
 	state := &searchContinuationState{
 		response:          searchResponseMetadata(initial),
-		results:           append([]SearchResult(nil), initial.Results...),
+		results:           compactResults,
 		seen:              make(map[string]struct{}, len(initial.Results)),
 		searchMethod:      initial.SearchMethod,
 		fallbackTriggered: initial.FallbackTriggered,
@@ -266,7 +278,7 @@ func (s *Service) SearchTextContinuation(
 				continue
 			}
 			state.seen[id] = struct{}{}
-			state.results = append(state.results, result)
+			state.results = append(state.results, compactContinuationResult(result))
 		}
 		exhausted := response.RetrievalExhausted ||
 			(maxResults > 0 && len(state.results) >= maxResults)
@@ -279,7 +291,9 @@ func (s *Service) SearchTextContinuation(
 	if err != nil {
 		return nil, err
 	}
-	page, err := registry.Start(ctx, scope, &searchMetadataStream{Stream: stream, state: state}, request.N)
+	page, err := registry.Start(ctx, scope, &searchMetadataStream{
+		Stream: stream, state: state, engine: s.engine, authorizeNode: request.AuthorizeNode,
+	}, request.N)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +371,9 @@ func (p *cachedTextPreparation) embedder(embedQuery EmbedQueryFunc) EmbedQueryFu
 
 type searchMetadataStream struct {
 	resultstream.Stream
-	state *searchContinuationState
+	state         *searchContinuationState
+	engine        storage.Engine
+	authorizeNode NodeAuthorizationFunc
 }
 
 func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int) (*resultstream.Page, error) {
@@ -365,6 +381,22 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 	if err != nil {
 		return nil, err
 	}
+	compact := make([]SearchResult, len(page.Rows))
+	for index := range page.Rows {
+		if len(page.Rows[index]) != 1 {
+			return nil, resultstream.ErrInvalidPosition
+		}
+		result, ok := page.Rows[index][0].(SearchResult)
+		if !ok {
+			return nil, resultstream.ErrInvalidPosition
+		}
+		compact[index] = result
+	}
+	results, err := hydrateContinuationResults(s.engine, compact, s.authorizeNode)
+	if err != nil {
+		return nil, err
+	}
+	page.Rows = continuationRows(results)
 	s.state.mu.RLock()
 	page.Metadata = map[string]any{
 		"search_method":      s.state.searchMethod,
@@ -374,6 +406,22 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 	}
 	s.state.mu.RUnlock()
 	return page, nil
+}
+
+func (s *searchMetadataStream) RetainedBytes() int64 {
+	s.state.mu.RLock()
+	defer s.state.mu.RUnlock()
+	var retainedBytes int64
+	for index := range s.state.results {
+		retainedBytes += compactContinuationResultBytes(s.state.results[index])
+	}
+	return retainedBytes
+}
+
+func (s *searchMetadataStream) SetRetainedBytesGrowthGuard(growthOK func() bool) {
+	if guarded, ok := s.Stream.(resultstream.RetainedBytesGrowthGuard); ok {
+		guarded.SetRetainedBytesGrowthGuard(growthOK)
+	}
 }
 
 func continuationRows(results []SearchResult) [][]any {

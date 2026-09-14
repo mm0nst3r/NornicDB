@@ -229,7 +229,6 @@ func (s *Server) handleSearchRebuild(w http.ResponseWriter, r *http.Request) {
 		req.Database = ""
 	}
 
-	// Get database name (default to default database if not specified)
 	dbName := req.Database
 	if dbName == "" {
 		dbName = s.dbManager.DefaultDatabaseName()
@@ -328,9 +327,18 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		req.N = 50
 	}
 
-	// Get database name (default to default database if not specified)
+	owner := transactionOwnerKey(r, getClaims(r))
+	// A qid selects its signed database binding. An explicit database is only
+	// accepted when it matches that binding.
 	dbName := req.Database
-	if dbName == "" {
+	if req.QID != "" {
+		var err error
+		dbName, err = s.db.ResolveSearchContinuationDatabase(owner, req.QID, dbName)
+		if err != nil {
+			s.writeSearchContinuationError(w, r, err)
+			return
+		}
+	} else if dbName == "" {
 		dbName = s.dbManager.DefaultDatabaseName()
 	}
 	s.logEvent(r.Context(), slog.LevelInfo, localization.ServerSearchRequestEvent(dbName, req.Query))
@@ -377,8 +385,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// procedures), not just HTTP.
 	mode := search.SearchContinuationMode(req.Mode)
 	idStart := req.QID == "" && mode == search.SearchContinuationID
+	continuationResume := req.QID != ""
 	searchStatus := s.db.GetDatabaseSearchStatus(dbName)
-	if !idStart && !searchStatus.BM25Enabled && !searchStatus.VectorEnabled {
+	if !continuationResume && !idStart && !searchStatus.BM25Enabled && !searchStatus.VectorEnabled {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"error":          "search is disabled for this database",
 			"database":       dbName,
@@ -397,7 +406,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// the build and blocks until ready. That preserves correctness for
 	// the first lazy request: by the time we reach EmbeddingCount() and
 	// the embedding decision, the in-memory ANN substrate is populated.
-	if !idStart && !searchStatus.Ready && !searchStatus.LazyTriggerNeeded {
+	if !continuationResume && !idStart && !searchStatus.Ready && !searchStatus.LazyTriggerNeeded {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"error":          search.ErrSearchIndexBuilding.Error(),
 			"database":       dbName,
@@ -427,7 +436,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// and return BM25-only results — even though vector search is enabled
 	// and embeddings exist. EnsureWarm is a fast no-op for already-warm
 	// services, so this is free for the steady-state hot path.
-	if !idStart {
+	if !continuationResume && !idStart {
 		if err := searchSvc.EnsureWarm(ctx); err != nil {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 				"error":          "search index warming did not complete: " + err.Error(),
@@ -444,7 +453,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	continuationRequested := req.N != 0 || req.QID != "" || req.Discard || req.Mode != "" || req.GroupBy != "" || req.RankedLimit != 0
 	continuationRequest := search.SearchContinuationRequest{
-		Owner:       transactionOwnerKey(r, getClaims(r)),
+		Owner:       owner,
 		Database:    dbName,
 		QID:         req.QID,
 		N:           req.N,

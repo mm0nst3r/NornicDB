@@ -238,9 +238,6 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 	if request.GroupBy == "" {
 		memberCount = passageCount
 	}
-	if request.MaxResults > 0 && memberCount > request.MaxResults {
-		return nil, resultstream.ErrCapacity
-	}
 	var results []SearchResult
 	if request.GroupBy == "" {
 		results = make([]SearchResult, 0, memberCount)
@@ -285,6 +282,9 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 		return results[i].ID < results[j].ID
 	})
 	eligibleCount := len(results)
+	if request.MaxResults > 0 && len(results) > request.MaxResults {
+		results = results[:request.MaxResults]
+	}
 	rankedCount := 0
 	for index := range results {
 		if results[index].Phase == SearchContinuationRankedPhase {
@@ -435,23 +435,27 @@ func (s *catalogContinuationStream) Pull(ctx context.Context, position uint64, n
 		return nil, resultstream.ErrInvalidated
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if s.closed {
+		s.mu.RUnlock()
 		return nil, resultstream.ErrClosed
 	}
 	if position > uint64(len(s.results)) {
+		s.mu.RUnlock()
 		return nil, resultstream.ErrInvalidPosition
 	}
 	end := min(position+uint64(n), uint64(len(s.results)))
 	hasMore := end < uint64(len(s.results))
 	total := uint64(len(s.results))
-	results, err := hydrateContinuationResults(s.engine, s.results[position:end], s.authorizeNode)
-	if err != nil {
-		return nil, err
-	}
+	compact := append([]SearchResult(nil), s.results[position:end]...)
 	metadata := make(map[string]any, len(s.metadata)+2)
 	for key, value := range s.metadata {
 		metadata[key] = value
+	}
+	s.mu.RUnlock()
+
+	results, err := hydrateContinuationResults(s.engine, compact, s.authorizeNode)
+	if err != nil {
+		return nil, err
 	}
 	metadata["collection_exhausted"] = !hasMore
 	if hasMore {
