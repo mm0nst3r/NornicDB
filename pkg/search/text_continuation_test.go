@@ -284,6 +284,130 @@ func TestSearchTextContinuationRankedThenIDUsesBranchLimitWhenRankedLimitOmitted
 	require.Len(t, page.Results, 1)
 }
 
+func TestSearchTextContinuationRankedThenIDDeepensMultiChunkRankedPrefix(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 101; index++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%03d", index))
+		_, err := engine.CreateNode(&storage.Node{
+			ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "library transcript"},
+		})
+		require.NoError(t, err)
+	}
+
+	var requestedDepths []int
+	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		require.True(t, opts.continuation, "ranked_then_id preparation must deepen multi-chunk retrieval")
+		requestedDepths = append(requestedDepths, opts.Limit)
+		resultCount := min(opts.Limit, 101)
+		results := make([]SearchResult, resultCount)
+		for index := range results {
+			id := fmt.Sprintf("doc-%03d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(101 - index)}
+		}
+		return &SearchResponse{
+			Results:            results,
+			SearchMethod:       "chunk-test",
+			RetrievalExhausted: opts.Limit >= 101,
+		}, nil
+	}
+
+	options := DefaultSearchOptions()
+	options.Limit = 1
+	options.MaxCandidateLimit = 256
+	page, err := service.SearchTextContinuation(
+		context.Background(),
+		"library transcript",
+		options,
+		SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: SearchContinuationRankedThenID, N: 1},
+		func(context.Context, string) ([]string, error) { return []string{"library", "transcript"}, nil },
+		func(context.Context, string) ([]float32, error) { return []float32{1}, nil },
+		searchQuery,
+		ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+	maxRequestedDepth := 0
+	for _, depth := range requestedDepths {
+		maxRequestedDepth = max(maxRequestedDepth, depth)
+	}
+	require.Equal(t, 128, maxRequestedDepth)
+	require.Len(t, requestedDepths, 16, "both chunks should be searched at each preparation depth")
+	require.Len(t, page.Results, 1)
+	require.Equal(t, "doc-000", page.Results[0].ID)
+	require.Equal(t, SearchContinuationRankedPhase, page.Results[0].Phase)
+	require.Equal(t, 101, page.RankedCount)
+	require.NotNil(t, page.EligibleCount)
+	require.Equal(t, 101, *page.EligibleCount)
+	require.True(t, page.RankedPoolExhausted)
+	require.True(t, page.HasMore)
+}
+
+func TestSearchTextContinuationRankedThenIDStopsAtBoundedRankedPrefix(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 101; index++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%03d", index))
+		_, err := engine.CreateNode(&storage.Node{
+			ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "library transcript"},
+		})
+		require.NoError(t, err)
+	}
+
+	requestedLimits := []int{}
+	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		requestedLimits = append(requestedLimits, opts.Limit)
+		resultCount := min(opts.Limit, 100)
+		results := make([]SearchResult, resultCount)
+		for index := range results {
+			id := fmt.Sprintf("doc-%03d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(100 - index)}
+		}
+		return &SearchResponse{
+			Results:            results,
+			SearchMethod:       "bounded-rerank-test",
+			RetrievalExhausted: false,
+		}, nil
+	}
+
+	request := SearchContinuationRequest{
+		Owner: "alice", Database: "nornic", Mode: SearchContinuationRankedThenID, N: 1,
+	}
+	options := DefaultSearchOptions()
+	options.Limit = 1
+	options.MaxCandidateLimit = 1024
+	first, err := service.SearchTextContinuation(
+		context.Background(), "library transcript", options, request,
+		nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []int{1, 2, 4, 8, 16, 32, 64, 128}, requestedLimits)
+	require.Len(t, first.Results, 1)
+	require.Equal(t, "doc-000", first.Results[0].ID)
+	require.Equal(t, SearchContinuationRankedPhase, first.Results[0].Phase)
+	require.Equal(t, 100, first.RankedCount)
+	require.NotNil(t, first.EligibleCount)
+	require.Equal(t, 101, *first.EligibleCount)
+	require.False(t, first.RankedPoolExhausted, "bounded ranked prefix must not masquerade as full retrieval exhaustion")
+	require.False(t, first.CollectionExhausted)
+	require.Equal(t, SearchContinuationMoreResults, first.Completion)
+	require.True(t, first.HasMore)
+
+	request.QID = first.QID
+	request.N = 200
+	second, err := service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+	require.NoError(t, err)
+	require.Len(t, second.Results, 100)
+	require.Equal(t, "doc-001", second.Results[0].ID)
+	require.Equal(t, SearchContinuationRankedPhase, second.Results[0].Phase)
+	require.Equal(t, "doc-100", second.Results[len(second.Results)-1].ID)
+	require.Equal(t, SearchContinuationCatalogPhase, second.Results[len(second.Results)-1].Phase)
+	require.True(t, second.CollectionExhausted)
+	require.Equal(t, SearchContinuationCollectionComplete, second.Completion)
+	require.False(t, second.HasMore)
+}
+
 func TestSearchTextContinuationRankedPullRehydratesAndAuthorizes(t *testing.T) {
 	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
 	service := NewService(engine)

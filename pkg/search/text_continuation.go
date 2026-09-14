@@ -162,6 +162,7 @@ func (s *Service) SearchTextContinuation(
 			opts = DefaultSearchOptions()
 		}
 		ownedOptions := cloneContinuationSearchOptions(opts)
+		ownedOptions.continuation = true
 		rankedLimit := request.RankedLimit
 		if ownedOptions.Limit <= 0 {
 			ownedOptions.Limit = 50
@@ -174,6 +175,9 @@ func (s *Service) SearchTextContinuation(
 		}
 		ranked, err := SearchTextChunksWithErrorPolicy(ctx, query, &ownedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
 		for err == nil && rankedLimit <= 0 && !ranked.RetrievalExhausted {
+			if rankedPrefixProducerBounded(ownedOptions, ranked) {
+				break
+			}
 			depthLimit := ownedOptions.MaxCandidateLimit
 			if depthLimit > 0 && ownedOptions.Limit >= depthLimit {
 				return nil, fmt.Errorf("continuation retrieval depth limit reached: %w", resultstream.ErrCapacity)
@@ -298,6 +302,13 @@ func (s *Service) SearchTextContinuation(
 		return nil, err
 	}
 	return searchPageFromResultStream(page)
+}
+
+func rankedPrefixProducerBounded(options SearchOptions, response *SearchResponse) bool {
+	return response != nil &&
+		!response.RetrievalExhausted &&
+		options.Limit > 0 &&
+		len(response.Results) < options.Limit
 }
 
 func (s *Service) searchContinuationRegistry() (continuationRegistry, error) {
