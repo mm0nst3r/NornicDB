@@ -310,16 +310,10 @@ func grpcSearchHit(r search.SearchResult) *gen.SearchHit {
 	}
 }
 
-func grpcSearchPassages(passages []search.SearchPassage) []*gen.SearchPassage {
-	out := make([]*gen.SearchPassage, len(passages))
+func grpcSearchPassages(passages []search.SearchPassage) []*gen.SearchHit {
+	out := make([]*gen.SearchHit, len(passages))
 	for index, passage := range passages {
-		properties, _ := structpb.NewStruct(passage.Properties)
-		out[index] = &gen.SearchPassage{
-			NodeId: string(passage.NodeID), Labels: passage.Labels, Properties: properties,
-			Score: float32(passage.Score), RrfScore: float32(passage.RRFScore),
-			VectorRank: int32(passage.VectorRank), Bm25Rank: int32(passage.BM25Rank),
-			Phase: passage.Phase,
-		}
+		out[index] = grpcSearchHit(passage)
 	}
 	return out
 }

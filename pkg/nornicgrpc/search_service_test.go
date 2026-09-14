@@ -249,7 +249,7 @@ func TestService_SearchText_IDContinuationGroupsPassages(t *testing.T) {
 			ID: "frame-a", NodeID: "frame-a", GroupKey: "asset-a", Phase: search.SearchContinuationCatalogPhase,
 			Passages: []search.SearchPassage{
 				{ID: "frame-a", NodeID: "frame-a", Phase: search.SearchContinuationCatalogPhase},
-				{ID: "frame-b", NodeID: "frame-b", Phase: search.SearchContinuationCatalogPhase},
+				{ID: "frame-b", NodeID: "frame-b", GroupKey: "child-b-key", Phase: search.SearchContinuationCatalogPhase},
 			},
 		}},
 		QID: "qid-id", HasMore: true, Returned: 1,
@@ -273,6 +273,7 @@ func TestService_SearchText_IDContinuationGroupsPassages(t *testing.T) {
 	require.Len(t, response.Hits[0].Passages, 2)
 	require.Equal(t, "frame-a", response.Hits[0].Passages[0].NodeId)
 	require.Equal(t, "frame-b", response.Hits[0].Passages[1].NodeId)
+	require.Equal(t, "child-b-key", response.Hits[0].Passages[1].GroupKey)
 	require.Equal(t, "id", response.Mode)
 	require.NotNil(t, response.EligibleCount)
 	require.Equal(t, int64(2), *response.EligibleCount)

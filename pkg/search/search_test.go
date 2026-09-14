@@ -91,6 +91,27 @@ func newNamespacedEngine(tb testing.TB) storage.Engine {
 	return storage.NewNamespacedEngine(base, "nornic")
 }
 
+func newHybridRerankBudgetService(tb testing.TB, count int) *Service {
+	engine := newNamespacedEngine(tb)
+	service := NewServiceWithDimensions(engine, 2)
+	tb.Cleanup(func() { require.NoError(tb, service.Close()) })
+	for index := 0; index < count; index++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%03d", index))
+		node := &storage.Node{
+			ID:              id,
+			Labels:          []string{"Document"},
+			Properties:      map[string]any{"content": "library transcript"},
+			ChunkEmbeddings: [][]float32{{1, float32(index) / 100}},
+		}
+		_, err := engine.CreateNode(node)
+		require.NoError(tb, err)
+		require.NoError(tb, service.IndexNode(node))
+	}
+	service.vectorPipeline = NewVectorSearchPipeline(NewBruteForceCandidateGen(service.vectorIndex), NewCPUExactScorer(service.vectorIndex))
+	service.SetReranker(&testReranker{enabled: true})
+	return service
+}
+
 // TestVectorIndex_Basic tests basic vector index operations.
 func TestVectorIndex_Basic(t *testing.T) {
 	idx := NewVectorIndex(4)
@@ -3509,6 +3530,34 @@ func TestService_RerankTopKBudgetDoesNotReportRetrievalExhausted(t *testing.T) {
 	require.True(t, response.CandidateBudgetReached)
 	require.False(t, response.RetrievalExhausted)
 	require.Equal(t, "rrf_hybrid+rerank", response.SearchMethod)
+}
+
+func TestService_RerankTopKBudgetIsDeclaredOnlyAtRequestedDepth(t *testing.T) {
+	svc := newHybridRerankBudgetService(t, 30)
+	ctx := context.Background()
+	opts := DefaultSearchOptions()
+	opts.RerankEnabled = true
+	opts.RerankTopK = 10
+
+	for _, testCase := range []struct {
+		limit       int
+		wantResults int
+		wantBudget  bool
+	}{
+		{limit: 1, wantResults: 1, wantBudget: false},
+		{limit: 5, wantResults: 5, wantBudget: false},
+		{limit: 10, wantResults: 10, wantBudget: true},
+		{limit: 20, wantResults: 10, wantBudget: true},
+	} {
+		t.Run(fmt.Sprintf("limit_%d", testCase.limit), func(t *testing.T) {
+			opts.Limit = testCase.limit
+			response, err := svc.Search(ctx, "library transcript", []float32{1, 0}, opts)
+			require.NoError(t, err)
+			require.Len(t, response.Results, testCase.wantResults)
+			require.Equal(t, testCase.wantBudget, response.CandidateBudgetReached)
+			require.False(t, response.RetrievalExhausted)
+		})
+	}
 }
 
 func TestService_RerankCandidatesBranches(t *testing.T) {

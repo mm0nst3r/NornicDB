@@ -34,7 +34,9 @@ You do **not** need to fork Qdrant drivers.
 ```bash
 protoc \
   --go_out=. \
+  --go_opt=module=github.com/orneryd/nornicdb \
   --go-grpc_out=. \
+  --go-grpc_opt=module=github.com/orneryd/nornicdb \
   pkg/nornicgrpc/proto/nornicdb_search.proto
 ```
 
@@ -109,8 +111,10 @@ _, err = nornicClient.SearchText(ctx, &nornicpb.SearchTextRequest{
 ```
 
 Import `google.golang.org/protobuf/proto` for `proto.Uint64`. Grouped hits use
-one page slot and expose child matches through `SearchHit.passages`. See
-[Search Continuation](search-continuation.md) for all modes and metadata.
+one page slot and expose child matches through `SearchHit.passages`; each child
+passage is also a `SearchHit`, so hit metadata has the same shape at both
+levels. See [Search Continuation](search-continuation.md) for all modes and
+metadata.
 
 Import `google.golang.org/grpc/credentials` for this TLS configuration. Use
 `insecure.NewCredentials()` only for local development or a loopback-only hop

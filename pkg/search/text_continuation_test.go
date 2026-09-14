@@ -662,6 +662,64 @@ func TestSearchTextContinuationRerankBudgetBoundary(t *testing.T) {
 	}
 }
 
+func TestSearchTextContinuationRerankBudgetDeepensShallowStartsToTopK(t *testing.T) {
+	embed := func(context.Context, string) ([]float32, error) { return []float32{1, 0}, nil }
+	for _, mode := range []SearchContinuationMode{SearchContinuationRanked, SearchContinuationRankedThenID} {
+		t.Run(string(mode), func(t *testing.T) {
+			service := newHybridRerankBudgetService(t, 30)
+			options := DefaultSearchOptions()
+			options.Limit = 1
+			options.RerankEnabled = true
+			options.RerankTopK = 10
+			options.MaxCandidateLimit = 64
+
+			request := SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: mode, N: 5}
+			if mode == SearchContinuationRankedThenID {
+				request.N = 12
+			}
+			page, err := service.SearchTextContinuation(
+				context.Background(), "library transcript", options, request,
+				nil, embed, service.Search, ChunkedSearchErrorPolicy{},
+			)
+			require.NoError(t, err)
+			require.Equal(t, "rrf_hybrid+rerank", page.SearchMethod)
+			require.False(t, page.RankedPoolExhausted)
+
+			if mode == SearchContinuationRankedThenID {
+				require.Equal(t, 10, page.RankedCount)
+				require.NotNil(t, page.EligibleCount)
+				require.Equal(t, 30, *page.EligibleCount)
+				require.Len(t, page.Results, 12)
+				require.Equal(t, SearchContinuationRankedPhase, page.Results[0].Phase)
+				require.Equal(t, SearchContinuationRankedPhase, page.Results[9].Phase)
+				require.Equal(t, SearchContinuationCatalogPhase, page.Results[10].Phase)
+				require.True(t, page.HasMore)
+				return
+			}
+
+			seen := map[string]struct{}{}
+			for _, result := range page.Results {
+				seen[result.ID] = struct{}{}
+			}
+			require.Len(t, page.Results, 5)
+			require.True(t, page.HasMore)
+
+			request.QID = page.QID
+			request.N = 10
+			page, err = service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+			require.NoError(t, err)
+			for _, result := range page.Results {
+				seen[result.ID] = struct{}{}
+			}
+			require.Len(t, page.Results, 5)
+			require.Len(t, seen, 10)
+			require.False(t, page.HasMore)
+			require.Equal(t, SearchContinuationCandidateComplete, page.Completion)
+			require.False(t, page.RankedPoolExhausted)
+		})
+	}
+}
+
 func TestSearchTextContinuationRankedPullRehydratesAndAuthorizes(t *testing.T) {
 	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
 	service := NewService(engine)

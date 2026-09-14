@@ -38,7 +38,10 @@ establish exhaustion. `ranked_limit` still selects a fixed ranked prefix; it
 does not prove that further ranked candidates do not exist. When a producer
 reaches an explicit candidate budget, such as a Stage-2 rerank top-K boundary,
 the stream ends with `completion: "candidate_pool_exhausted"` and
-`ranked_pool_exhausted: false`.
+`ranked_pool_exhausted: false`. Rerank producers declare that boundary only
+after the requested retrieval depth reaches the configured top-K and the
+pre-rerank candidate list still contains more rows. A shallow `limit` below the
+top-K can continue deepening inside the same rerank budget.
 
 Progressive ranked continuation deepens short batches using the prepared query
 embeddings, including each chunk of a multi-chunk query. Short batches are not
@@ -96,7 +99,9 @@ response. A continuation request returns an object containing `results`, `qid`,
 Set `SearchTextRequest.n` to start. Send `SearchTextResponse.qid` in a later
 request with a new `n`, or set `discard`. The additive request fields are
 `qid`, `n`, `discard`, `max_results`, `mode`, `group_by`, and `ranked_limit`.
-`SearchHit` adds `phase`, `group_key`, and repeated `passages`.
+`SearchHit` adds `phase`, `group_key`, and repeated `passages`. Native gRPC
+uses the same `SearchHit` message for grouped child passages, so per-hit
+metadata is preserved on both parent and child results.
 
 ## Cypher and Bolt drivers
 

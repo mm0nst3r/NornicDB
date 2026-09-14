@@ -4270,7 +4270,8 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 
 	// Step 6: Stage-2 reranking (optional)
 	if opts.RerankEnabled && reranker != nil && reranker.Enabled() {
-		candidateBudgetReached = len(fusedResults) > effectiveRerankTopK(opts)
+		rerankTopK := effectiveRerankTopK(opts)
+		candidateBudgetReached = opts.Limit >= rerankTopK && len(fusedResults) > rerankTopK
 		fusedResults = s.applyStage2Rerank(ctx, query, fusedResults, opts, seenOrphans, reranker)
 		if searchMethod == "rrf_hybrid" {
 			searchMethod = "rrf_hybrid+rerank"
