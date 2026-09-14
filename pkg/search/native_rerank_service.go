@@ -124,6 +124,9 @@ func (s *Service) RerankSearchResponse(ctx context.Context, query string, respon
 	}
 	ranked, report, err := s.applyReportingRerank(ctx, query, fused, opts, make(map[string]bool), native)
 	response.Rerank = report
+	if report != nil && !report.CandidatesCovered {
+		response.RetrievalExhausted = false
+	}
 	if err != nil {
 		return err
 	}
