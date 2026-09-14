@@ -735,7 +735,7 @@ release, pull outcomes, and wrong-instance tokens.
 
 ### Phase 6: Operations And Cluster Readiness
 
-- [ ] Add metrics and structured continuation lifecycle events.
+- [x] Add bounded-label metrics and privacy-safe structured continuation lifecycle events.
 - [x] Add operator configuration and protocol-specific continuation errors.
 - [x] Add shutdown and reconfiguration behavior.
 - [x] Document process-local durability and load-balancer affinity requirements.
@@ -751,7 +751,7 @@ Measured on Apple M3 Max (`darwin/arm64`, five runs, steady-state median):
 | Operation                    |                     Before |                     After |                              Allocation change |
 | ---------------------------- | -------------------------: | ------------------------: | ---------------------------------------------: |
 | Signed token encode + verify |   710 ns/op (~1.41M ops/s) |  432 ns/op (~2.31M ops/s) |        1,472 B / 18 allocs to 224 B / 2 allocs |
-| Buffered registry pull       | 1,150 ns/op (~0.87M ops/s) |  703 ns/op (~1.42M ops/s) |        2,168 B / 30 allocs to 400 B / 6 allocs |
+| Buffered registry pull       | 1,150 ns/op (~0.87M ops/s) |  721 ns/op (~1.39M ops/s) |        2,168 B / 30 allocs to 400 B / 6 allocs |
 | Buffered stream page         |  31.7 ns/op (~31.5M ops/s) | 31.7 ns/op (~31.5M ops/s) |                  unchanged at 120 B / 2 allocs |
 | Complete ID build, 20k nodes |                    30.0 ms |                   20.2 ms | 30.0 MB / 305k allocs to 26.9 MB / 245k allocs |
 

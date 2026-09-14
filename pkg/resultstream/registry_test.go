@@ -5,12 +5,32 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+type recordingObserver struct {
+	mu       sync.Mutex
+	outcomes []string
+	active   int64
+	bytes    int64
+}
+
+func (o *recordingObserver) CursorEvent(outcome string) {
+	o.mu.Lock()
+	o.outcomes = append(o.outcomes, outcome)
+	o.mu.Unlock()
+}
+
+func (o *recordingObserver) CursorUsage(active, retainedBytes int64) {
+	o.mu.Lock()
+	o.active, o.bytes = active, retainedBytes
+	o.mu.Unlock()
+}
 
 func TestRegistryProgressesBeyondInitialPopulation(t *testing.T) {
 	var expansions atomic.Int32
@@ -95,6 +115,27 @@ func TestRegistryDisabled(t *testing.T) {
 	_, err = registry.Pull(context.Background(), scope, "qid", 1)
 	require.ErrorIs(t, err, ErrDisabled)
 	require.ErrorIs(t, registry.Discard(scope, "qid"), ErrDisabled)
+}
+
+func TestRegistryObserverTracksLifecycleAndUsage(t *testing.T) {
+	registry, err := NewRegistry(Config{TTL: time.Minute, MaxStreams: 2, MaxPageSize: 1})
+	require.NoError(t, err)
+	t.Cleanup(registry.Close)
+	observer := &recordingObserver{}
+	registry.SetObserver(observer)
+	stream, err := NewProgressive([][]any{{"one"}, {"two"}}, true, 2, nil)
+	require.NoError(t, err)
+	scope := Scope{Owner: "owner", Database: "neo4j"}
+
+	page, err := registry.Start(context.Background(), scope, stream, 1)
+	require.NoError(t, err)
+	require.NoError(t, registry.Discard(scope, page.QID))
+
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	require.Equal(t, []string{"start", "discard"}, observer.outcomes)
+	require.Zero(t, observer.active)
+	require.Zero(t, observer.bytes)
 }
 
 func TestRegistryDoesNotPublishExhaustedFirstPage(t *testing.T) {
