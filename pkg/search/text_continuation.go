@@ -47,6 +47,7 @@ type SearchContinuationRequest struct {
 
 // SearchContinuationPage is the protocol-neutral continued-search response.
 type SearchContinuationPage struct {
+	response            *SearchResponse
 	Results             []SearchResult
 	QID                 string
 	HasMore             bool
@@ -88,6 +89,7 @@ type cachedEmbedding struct {
 }
 
 type searchContinuationState struct {
+	response          *SearchResponse
 	mu                sync.RWMutex
 	results           []SearchResult
 	seen              map[string]struct{}
@@ -216,6 +218,7 @@ func (s *Service) SearchTextContinuation(
 		return nil, err
 	}
 	state := &searchContinuationState{
+		response:          searchResponseMetadata(initial),
 		results:           append([]SearchResult(nil), initial.Results...),
 		seen:              make(map[string]struct{}, len(initial.Results)),
 		searchMethod:      initial.SearchMethod,
@@ -250,6 +253,9 @@ func (s *Service) SearchTextContinuation(
 		lastDepth = depth
 		state.mu.Lock()
 		defer state.mu.Unlock()
+		state.response = searchResponseMetadata(response)
+		state.searchMethod = response.SearchMethod
+		state.fallbackTriggered = response.FallbackTriggered
 		for index := range response.Results {
 			result := response.Results[index]
 			id := searchResultID(result)
@@ -353,6 +359,7 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 	s.state.mu.RLock()
 	page.Metadata = map[string]any{
 		"search_method":      s.state.searchMethod,
+		"response":           s.state.response,
 		"fallback_triggered": s.state.fallbackTriggered,
 		"discovered":         len(s.state.results),
 	}
@@ -390,6 +397,7 @@ func searchPageFromResultStream(page *resultstream.Page) (*SearchContinuationPag
 		ExpiresAt: page.ExpiresAt,
 	}
 	if page.Metadata != nil {
+		out.response, _ = page.Metadata["response"].(*SearchResponse)
 		out.SearchMethod, _ = page.Metadata["search_method"].(string)
 		out.FallbackTriggered, _ = page.Metadata["fallback_triggered"].(bool)
 		out.Discovered, _ = page.Metadata["discovered"].(int)
@@ -425,4 +433,23 @@ func cloneContinuationSearchOptions(options *SearchOptions) SearchOptions {
 		}
 	}
 	return clone
+}
+
+// SearchResponse restores the canonical search response with this page's rows.
+func (p *SearchContinuationPage) SearchResponse() *SearchResponse {
+	response := searchResponseMetadata(p.response)
+	response.Results = p.Results
+	response.Returned = p.Returned
+	response.SearchMethod = p.SearchMethod
+	response.FallbackTriggered = p.FallbackTriggered
+	return response
+}
+
+func searchResponseMetadata(response *SearchResponse) *SearchResponse {
+	if response == nil {
+		return &SearchResponse{}
+	}
+	clone := *response
+	clone.Results = nil
+	return &clone
 }

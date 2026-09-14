@@ -239,6 +239,33 @@ func TestSearchTextContinuationRankedThenIDUsesBranchLimitWhenRankedLimitOmitted
 	require.Len(t, page.Results, 1)
 }
 
+func TestSearchTextContinuationPreservesCanonicalResponseMetadata(t *testing.T) {
+	for _, mode := range []SearchContinuationMode{SearchContinuationRanked, SearchContinuationRankedThenID} {
+		t.Run(string(mode), func(t *testing.T) {
+			engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+			service := NewService(engine)
+			t.Cleanup(func() { require.NoError(t, service.Close()) })
+			for _, id := range []storage.NodeID{"a", "b"} {
+				_, err := engine.CreateNode(&storage.Node{ID: id, Properties: map[string]any{"content": "query"}})
+				require.NoError(t, err)
+			}
+			retrieve := func(context.Context, string, []float32, *SearchOptions) (*SearchResponse, error) {
+				return &SearchResponse{Results: []SearchResult{{ID: "a", NodeID: "a"}, {ID: "b", NodeID: "b"}}, Message: "provider outcome", RetrievalExhausted: true}, nil
+			}
+			request := SearchContinuationRequest{Owner: "alice", Mode: mode, N: 1, RankedLimit: 2}
+			page, err := service.SearchTextContinuation(context.Background(), "query", DefaultSearchOptions(), request, nil, nil, retrieve, ChunkedSearchErrorPolicy{})
+			require.NoError(t, err)
+			require.Equal(t, "provider outcome", page.SearchResponse().Message)
+			require.Len(t, page.SearchResponse().Results, 1)
+			request.QID = page.QID
+			page, err = service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+			require.NoError(t, err)
+			require.Equal(t, "provider outcome", page.SearchResponse().Message)
+			require.Len(t, page.SearchResponse().Results, 1)
+		})
+	}
+}
+
 func TestSearchTextContinuationIDModeCountsRejectedNodesAgainstScanLimit(t *testing.T) {
 	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
 	service := NewService(engine)

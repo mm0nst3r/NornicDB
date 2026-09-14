@@ -921,11 +921,7 @@ func mapSingleSearchResult(r search.SearchResult) *SearchResult {
 		result.Passages = make([]*SearchResult, len(r.Passages))
 		for index := range r.Passages {
 			passage := r.Passages[index]
-			result.Passages[index] = &SearchResult{
-				Node:  &Node{ID: passage.ID, Labels: passage.Labels, Properties: passage.Properties},
-				Phase: passage.Phase, Score: passage.Score, RRFScore: passage.RRFScore,
-				VectorRank: passage.VectorRank, BM25Rank: passage.BM25Rank,
-			}
+			result.Passages[index] = mapSingleSearchResult(passage)
 		}
 	}
 	return result

@@ -248,22 +248,7 @@ type SearchResult struct {
 }
 
 // SearchPassage is one matching child retained within a grouped search result.
-type SearchPassage struct {
-	ID             string         `json:"id"`
-	NodeID         storage.NodeID `json:"nodeId"`
-	Phase          string         `json:"phase,omitempty"`
-	Type           string         `json:"type,omitempty"`
-	Labels         []string       `json:"labels,omitempty"`
-	Title          string         `json:"title,omitempty"`
-	Description    string         `json:"description,omitempty"`
-	ContentPreview string         `json:"content_preview,omitempty"`
-	Properties     map[string]any `json:"properties,omitempty"`
-	Score          float64        `json:"score"`
-	Similarity     float64        `json:"similarity,omitempty"`
-	RRFScore       float64        `json:"rrf_score,omitempty"`
-	VectorRank     int            `json:"vector_rank"`
-	BM25Rank       int            `json:"bm25_rank"`
-}
+type SearchPassage = SearchResult
 
 // SearchResponse is the response from a search operation.
 type SearchResponse struct {
