@@ -65,7 +65,9 @@ The optional `mode` selects the declared population:
   logical-ID order.
 
 `group_by` optionally collapses eligible child nodes into logical parents
-before pagination. `ranked_limit` is an explicit boundary for the ranked phase;
+before pagination while retaining the matching children in each parent's
+`passages` collection. One parent consumes one page slot, but callers still
+receive every matching passage for that parent. `ranked_limit` is an explicit boundary for the ranked phase;
 it is distinct from `limit`, `n`, and `max_results`. When `ranked_limit` is
 omitted, a ranked phase ends only when every retrieval branch reports
 exhaustion. This preserves the rule that the initial `limit` is never a silent
@@ -235,7 +237,9 @@ type entry struct {
 ```
 
 `compactHit` stores offsets and lengths into one string arena plus only the
-numeric ranking fields needed to reproduce the search row. `compactSearchState`
+numeric ranking fields needed to reproduce the search row. Grouped hits also
+store a compact range into the retained child-passage descriptors; they do not
+retain full child nodes or property maps. `compactSearchState`
 stores normalized filters/options, query chunks, and their embeddings so later
 pulls do not call the chunker or embedding provider again. It does not retain:
 
@@ -336,7 +340,8 @@ The initial complete-mode build:
 3. streams storage once with `storage.StreamNodesWithFallback`;
 4. applies canonical type, property, visibility, temporal, decay, and
    result-authorization eligibility;
-5. records only compact IDs, group keys, phase, and ranking diagnostics;
+5. records only compact IDs, group keys, phase, ranking diagnostics, and the
+   ordered child-passage descriptors needed by grouped results;
 6. verifies the mutation revision is unchanged;
 7. sorts and publishes one immutable population through the shared registry.
 
@@ -361,12 +366,21 @@ Grouping occurs after eligibility and ranked-phase selection but before paging:
   string on every eligible node;
 - filters and authorization apply to child nodes, not an implicit parent join;
 - a ranked group uses its highest-scoring ranked child; equal scores choose the
-  lowest child ID;
-- an unranked group uses its lowest eligible child ID;
+  lowest child ID, and its `passages` collection contains every ranked matching
+  child in score-descending, child-ID order;
+- an unranked group uses its lowest eligible child ID, and its `passages`
+  collection contains every metadata-eligible child in child-ID order;
 - ranked groups sort by score descending, then group key and representative ID;
 - catalogue groups sort by group key, then representative ID;
-- counts refer to distinct groups, while each row returns the representative
-  node ID and `group_key`.
+- counts and `n` refer to distinct groups, while each row returns the
+  representative node ID, `group_key`, and nested `passages` descriptors.
+
+The top-level representative controls parent ordering and preserves the best
+ranked diagnostics. It is not the complete grouped payload. For example, a
+video asset appears once in a page while `passages` contains all relevant
+moments selected for that video. Catalogue passages remain explicitly
+unscored. Passage descriptors count toward per-build and retained-byte limits;
+they are never silently dropped to admit a group.
 
 Missing, empty, non-string, or invalid grouping values fail the build instead of
 being skipped. Because a later ranked discovery can replace a group's best
@@ -375,7 +389,8 @@ eligible scan before returning the first page. This is the deliberate latency
 tradeoff required for deterministic grouping and replay.
 
 Complete/grouped pages add protocol-neutral metadata without changing the qid
-operations: `mode`, per-row `phase`, optional `group_key`, `ranked_count`,
+operations: `mode`, per-row `phase`, optional `group_key`, optional nested
+`passages`, `ranked_count`,
 `eligible_count`, `ranked_pool_exhausted`, `collection_exhausted`, and
 `completion`. `completion` is one of `more_results`,
 `candidate_pool_exhausted`, or `eligible_population_exhausted`. A short ANN
@@ -479,6 +494,7 @@ Discard request:
 
 The response adds `qid`, `has_more`, `position`, `returned`, `discovered`,
 `exhausted`, `expires_at`, `mode`, per-row `phase`, optional `group_key`,
+optional per-row `passages`,
 `ranked_count`, `eligible_count`, `ranked_pool_exhausted`,
 `collection_exhausted`, and `completion`. `total` is omitted until exhaustion
 for progressive `ranked` mode because the eventual searchable result count is
@@ -523,7 +539,9 @@ message SearchTextResponse {
 }
 ```
 
-Each returned search result also gains additive `phase` and `group_key` fields.
+Each returned search result also gains additive `phase`, `group_key`, and
+repeated `passages` fields. A passage carries its child ID and ranking
+diagnostics; catalogue passages have `phase: "catalog"` and unscored values.
 
 Before enabling durable qids, native gRPC must expose an authenticated
 principal and canonical database through request context using the same server
@@ -553,7 +571,9 @@ select one additive Cypher shape and add compatibility tests before changing
 
 ```text
 page = {
-  results: [{node, score, rrf_score, vector_rank, bm25_rank}],
+  results: [{node, score, rrf_score, vector_rank, bm25_rank,
+             group_key, phase, passages: [{node, score, rrf_score,
+                                            vector_rank, bm25_rank, phase}]}],
   search_method: ...,
   fallback_triggered: ...,
   qid: ...,
@@ -675,6 +695,8 @@ release, pull outcomes, and wrong-instance tokens.
       reject unsupported engines and invalidate changed populations.
 - [ ] Implement deterministic representative selection and grouping before
       pagination.
+- [ ] Preserve every matching child passage under its grouped asset, with
+      deterministic passage ordering and byte accounting.
 - [ ] Add ranked-pool and eligible-population exhaustion metadata consistently
       to HTTP, gRPC, Cypher, and extension-aware Bolt.
 - [ ] Prove scan-order-independent grouping and exact 20,000-member enumeration
@@ -761,6 +783,7 @@ Required microbenchmarks:
   10%, and 100%;
 - representative replacement and final sort cost for high- and low-cardinality
   group keys;
+- grouped passage fan-out at 1, 10, 100, and 1,000 passages per logical asset;
 - native `StreamingEngine` versus `AllNodes` fallback peak heap and build time.
 
 Required load tests:
@@ -796,6 +819,8 @@ Acceptance criteria:
 - Memory remains bounded under abandoned-cursor and adversarial admission tests.
 - HTTP, gRPC, Cypher, and extension-aware Bolt return identical IDs and rank
   order when reading the same retained population.
+- Grouped protocol responses return the same ordered passage IDs for each
+  logical asset without consuming additional page slots.
 - Replaying one durable qid returns the same position and result IDs.
 - `go test -race` passes concurrent pull, release, expiry, shutdown, and
   reconfiguration tests.
