@@ -162,6 +162,8 @@ func (s *Service) SearchTextContinuation(
 			opts = DefaultSearchOptions()
 		}
 		ownedOptions := cloneContinuationSearchOptions(opts)
+		// Deepening the outer limit must also deepen every query chunk.
+		ownedOptions.continuation = true
 		rankedLimit := request.RankedLimit
 		if ownedOptions.Limit <= 0 {
 			ownedOptions.Limit = 50
@@ -174,6 +176,9 @@ func (s *Service) SearchTextContinuation(
 		}
 		ranked, err := SearchTextChunksWithErrorPolicy(ctx, query, &ownedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
 		for err == nil && rankedLimit <= 0 && !ranked.RetrievalExhausted {
+			if ranked.CandidateBudgetReached {
+				return nil, fmt.Errorf("continuation retrieval candidate budget reached: %w", resultstream.ErrCapacity)
+			}
 			depthLimit := ownedOptions.MaxCandidateLimit
 			if depthLimit > 0 && ownedOptions.Limit >= depthLimit {
 				return nil, fmt.Errorf("continuation retrieval depth limit reached: %w", resultstream.ErrCapacity)
@@ -251,10 +256,14 @@ func (s *Service) SearchTextContinuation(
 		depthLimit = int(^uint(0) >> 1)
 	}
 	lastDepth := ownedOptions.Limit
+	budgetReached := initial.CandidateBudgetReached
 	expand := func(expandCtx context.Context, depth int) ([][]any, bool, error) {
 		// A candidate budget is not evidence that retrieval is exhausted. Fail
 		// explicitly when no deeper supported request can be made. max_results
 		// limits emitted members, not how deeply we may search to find them.
+		if budgetReached {
+			return nil, false, fmt.Errorf("continuation retrieval candidate budget reached: %w", resultstream.ErrCapacity)
+		}
 		if lastDepth >= depthLimit {
 			return nil, false, fmt.Errorf("continuation retrieval depth limit reached: %w", resultstream.ErrCapacity)
 		}
@@ -266,6 +275,7 @@ func (s *Service) SearchTextContinuation(
 			return nil, false, expandErr
 		}
 		lastDepth = depth
+		budgetReached = response.CandidateBudgetReached
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		state.response = searchResponseMetadata(response)

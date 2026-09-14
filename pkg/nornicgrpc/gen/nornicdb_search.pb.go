@@ -174,107 +174,6 @@ func (x *SearchTextRequest) GetRankedLimit() uint64 {
 	return 0
 }
 
-type SearchPassage struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	NodeId     string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Labels     []string               `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty"`
-	Properties *structpb.Struct       `protobuf:"bytes,3,opt,name=properties,proto3" json:"properties,omitempty"`
-	Score      float32                `protobuf:"fixed32,4,opt,name=score,proto3" json:"score,omitempty"`
-	RrfScore   float32                `protobuf:"fixed32,5,opt,name=rrf_score,json=rrfScore,proto3" json:"rrf_score,omitempty"`
-	VectorRank int32                  `protobuf:"varint,6,opt,name=vector_rank,json=vectorRank,proto3" json:"vector_rank,omitempty"`
-	Bm25Rank   int32                  `protobuf:"varint,7,opt,name=bm25_rank,json=bm25Rank,proto3" json:"bm25_rank,omitempty"`
-	// ranked for a ranked child or catalog for an unscored catalogue child.
-	Phase         string `protobuf:"bytes,8,opt,name=phase,proto3" json:"phase,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SearchPassage) Reset() {
-	*x = SearchPassage{}
-	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SearchPassage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SearchPassage) ProtoMessage() {}
-
-func (x *SearchPassage) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SearchPassage.ProtoReflect.Descriptor instead.
-func (*SearchPassage) Descriptor() ([]byte, []int) {
-	return file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *SearchPassage) GetNodeId() string {
-	if x != nil {
-		return x.NodeId
-	}
-	return ""
-}
-
-func (x *SearchPassage) GetLabels() []string {
-	if x != nil {
-		return x.Labels
-	}
-	return nil
-}
-
-func (x *SearchPassage) GetProperties() *structpb.Struct {
-	if x != nil {
-		return x.Properties
-	}
-	return nil
-}
-
-func (x *SearchPassage) GetScore() float32 {
-	if x != nil {
-		return x.Score
-	}
-	return 0
-}
-
-func (x *SearchPassage) GetRrfScore() float32 {
-	if x != nil {
-		return x.RrfScore
-	}
-	return 0
-}
-
-func (x *SearchPassage) GetVectorRank() int32 {
-	if x != nil {
-		return x.VectorRank
-	}
-	return 0
-}
-
-func (x *SearchPassage) GetBm25Rank() int32 {
-	if x != nil {
-		return x.Bm25Rank
-	}
-	return 0
-}
-
-func (x *SearchPassage) GetPhase() string {
-	if x != nil {
-		return x.Phase
-	}
-	return ""
-}
-
 type SearchHit struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	NodeId     string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -286,19 +185,21 @@ type SearchHit struct {
 	RrfScore   float32 `protobuf:"fixed32,5,opt,name=rrf_score,json=rrfScore,proto3" json:"rrf_score,omitempty"`
 	VectorRank int32   `protobuf:"varint,6,opt,name=vector_rank,json=vectorRank,proto3" json:"vector_rank,omitempty"`
 	Bm25Rank   int32   `protobuf:"varint,7,opt,name=bm25_rank,json=bm25Rank,proto3" json:"bm25_rank,omitempty"`
-	Phase      string  `protobuf:"bytes,8,opt,name=phase,proto3" json:"phase,omitempty"`
+	// ranked for a ranked result or catalog for an unscored catalogue result.
+	Phase string `protobuf:"bytes,8,opt,name=phase,proto3" json:"phase,omitempty"`
 	// Logical property value when group_by was requested.
 	GroupKey string `protobuf:"bytes,9,opt,name=group_key,json=groupKey,proto3" json:"group_key,omitempty"`
 	// Matching child results. One parent hit consumes one page slot regardless
-	// of the number of passages.
-	Passages      []*SearchPassage `protobuf:"bytes,10,rep,name=passages,proto3" json:"passages,omitempty"`
+	// of the number of passages. Children carry every per-hit field; group_key
+	// and passages are empty on a child.
+	Passages      []*SearchHit `protobuf:"bytes,10,rep,name=passages,proto3" json:"passages,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SearchHit) Reset() {
 	*x = SearchHit{}
-	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[2]
+	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -310,7 +211,7 @@ func (x *SearchHit) String() string {
 func (*SearchHit) ProtoMessage() {}
 
 func (x *SearchHit) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[2]
+	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -323,7 +224,7 @@ func (x *SearchHit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchHit.ProtoReflect.Descriptor instead.
 func (*SearchHit) Descriptor() ([]byte, []int) {
-	return file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDescGZIP(), []int{2}
+	return file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *SearchHit) GetNodeId() string {
@@ -389,7 +290,7 @@ func (x *SearchHit) GetGroupKey() string {
 	return ""
 }
 
-func (x *SearchHit) GetPassages() []*SearchPassage {
+func (x *SearchHit) GetPassages() []*SearchHit {
 	if x != nil {
 		return x.Passages
 	}
@@ -426,7 +327,7 @@ type SearchTextResponse struct {
 
 func (x *SearchTextResponse) Reset() {
 	*x = SearchTextResponse{}
-	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[3]
+	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -438,7 +339,7 @@ func (x *SearchTextResponse) String() string {
 func (*SearchTextResponse) ProtoMessage() {}
 
 func (x *SearchTextResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[3]
+	mi := &file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -451,7 +352,7 @@ func (x *SearchTextResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchTextResponse.ProtoReflect.Descriptor instead.
 func (*SearchTextResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDescGZIP(), []int{3}
+	return file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SearchTextResponse) GetSearchMethod() string {
@@ -602,19 +503,7 @@ const file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDesc = "" +
 	"\franked_limit\x18\f \x01(\x04H\x02R\vrankedLimit\x88\x01\x01B\x11\n" +
 	"\x0f_min_similarityB\x0e\n" +
 	"\f_max_resultsB\x0f\n" +
-	"\r_ranked_limit\"\x80\x02\n" +
-	"\rSearchPassage\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x16\n" +
-	"\x06labels\x18\x02 \x03(\tR\x06labels\x127\n" +
-	"\n" +
-	"properties\x18\x03 \x01(\v2\x17.google.protobuf.StructR\n" +
-	"properties\x12\x14\n" +
-	"\x05score\x18\x04 \x01(\x02R\x05score\x12\x1b\n" +
-	"\trrf_score\x18\x05 \x01(\x02R\brrfScore\x12\x1f\n" +
-	"\vvector_rank\x18\x06 \x01(\x05R\n" +
-	"vectorRank\x12\x1b\n" +
-	"\tbm25_rank\x18\a \x01(\x05R\bbm25Rank\x12\x14\n" +
-	"\x05phase\x18\b \x01(\tR\x05phase\"\xd6\x02\n" +
+	"\r_ranked_limit\"\xd2\x02\n" +
 	"\tSearchHit\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x16\n" +
 	"\x06labels\x18\x02 \x03(\tR\x06labels\x127\n" +
@@ -627,9 +516,9 @@ const file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDesc = "" +
 	"vectorRank\x12\x1b\n" +
 	"\tbm25_rank\x18\a \x01(\x05R\bbm25Rank\x12\x14\n" +
 	"\x05phase\x18\b \x01(\tR\x05phase\x12\x1b\n" +
-	"\tgroup_key\x18\t \x01(\tR\bgroupKey\x12;\n" +
+	"\tgroup_key\x18\t \x01(\tR\bgroupKey\x127\n" +
 	"\bpassages\x18\n" +
-	" \x03(\v2\x1f.nornicdb.grpc.v1.SearchPassageR\bpassages\"\xb4\x05\n" +
+	" \x03(\v2\x1b.nornicdb.grpc.v1.SearchHitR\bpassages\"\xb4\x05\n" +
 	"\x12SearchTextResponse\x12#\n" +
 	"\rsearch_method\x18\x01 \x01(\tR\fsearchMethod\x12/\n" +
 	"\x04hits\x18\x02 \x03(\v2\x1b.nornicdb.grpc.v1.SearchHitR\x04hits\x12-\n" +
@@ -671,28 +560,26 @@ func file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDescGZIP() []byte {
 	return file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDescData
 }
 
-var file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_pkg_nornicgrpc_proto_nornicdb_search_proto_goTypes = []any{
 	(*SearchTextRequest)(nil),     // 0: nornicdb.grpc.v1.SearchTextRequest
-	(*SearchPassage)(nil),         // 1: nornicdb.grpc.v1.SearchPassage
-	(*SearchHit)(nil),             // 2: nornicdb.grpc.v1.SearchHit
-	(*SearchTextResponse)(nil),    // 3: nornicdb.grpc.v1.SearchTextResponse
-	(*structpb.Struct)(nil),       // 4: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil), // 5: google.protobuf.Timestamp
+	(*SearchHit)(nil),             // 1: nornicdb.grpc.v1.SearchHit
+	(*SearchTextResponse)(nil),    // 2: nornicdb.grpc.v1.SearchTextResponse
+	(*structpb.Struct)(nil),       // 3: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil), // 4: google.protobuf.Timestamp
 }
 var file_pkg_nornicgrpc_proto_nornicdb_search_proto_depIdxs = []int32{
-	4, // 0: nornicdb.grpc.v1.SearchPassage.properties:type_name -> google.protobuf.Struct
-	4, // 1: nornicdb.grpc.v1.SearchHit.properties:type_name -> google.protobuf.Struct
-	1, // 2: nornicdb.grpc.v1.SearchHit.passages:type_name -> nornicdb.grpc.v1.SearchPassage
-	2, // 3: nornicdb.grpc.v1.SearchTextResponse.hits:type_name -> nornicdb.grpc.v1.SearchHit
-	5, // 4: nornicdb.grpc.v1.SearchTextResponse.expires_at:type_name -> google.protobuf.Timestamp
-	0, // 5: nornicdb.grpc.v1.NornicSearch.SearchText:input_type -> nornicdb.grpc.v1.SearchTextRequest
-	3, // 6: nornicdb.grpc.v1.NornicSearch.SearchText:output_type -> nornicdb.grpc.v1.SearchTextResponse
-	6, // [6:7] is the sub-list for method output_type
-	5, // [5:6] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	3, // 0: nornicdb.grpc.v1.SearchHit.properties:type_name -> google.protobuf.Struct
+	1, // 1: nornicdb.grpc.v1.SearchHit.passages:type_name -> nornicdb.grpc.v1.SearchHit
+	1, // 2: nornicdb.grpc.v1.SearchTextResponse.hits:type_name -> nornicdb.grpc.v1.SearchHit
+	4, // 3: nornicdb.grpc.v1.SearchTextResponse.expires_at:type_name -> google.protobuf.Timestamp
+	0, // 4: nornicdb.grpc.v1.NornicSearch.SearchText:input_type -> nornicdb.grpc.v1.SearchTextRequest
+	2, // 5: nornicdb.grpc.v1.NornicSearch.SearchText:output_type -> nornicdb.grpc.v1.SearchTextResponse
+	5, // [5:6] is the sub-list for method output_type
+	4, // [4:5] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_pkg_nornicgrpc_proto_nornicdb_search_proto_init() }
@@ -701,14 +588,14 @@ func file_pkg_nornicgrpc_proto_nornicdb_search_proto_init() {
 		return
 	}
 	file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[0].OneofWrappers = []any{}
-	file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[3].OneofWrappers = []any{}
+	file_pkg_nornicgrpc_proto_nornicdb_search_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDesc), len(file_pkg_nornicgrpc_proto_nornicdb_search_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

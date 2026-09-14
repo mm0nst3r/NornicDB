@@ -255,16 +255,21 @@ type SearchResponse struct {
 	// RetrievalExhausted is internal continuation evidence: every participating
 	// retrieval branch is exhausted and no candidate prefix was truncated.
 	// A short filtered or approximate result alone must never set this flag.
-	RetrievalExhausted bool           `json:"-"`
-	Status             string         `json:"status"`
-	Query              string         `json:"query"`
-	Results            []SearchResult `json:"results"`
-	TotalCandidates    int            `json:"total_candidates"`
-	Returned           int            `json:"returned"`
-	SearchMethod       string         `json:"search_method"`
-	FallbackTriggered  bool           `json:"fallback_triggered"`
-	Message            string         `json:"message,omitempty"`
-	Metrics            *SearchMetrics `json:"metrics,omitempty"`
+	RetrievalExhausted bool `json:"-"`
+	// CandidateBudgetReached is internal continuation evidence that a fixed
+	// candidate budget, such as the Stage-2 rerank pool, truncated this response.
+	// A deeper Limit cannot expose more candidates, so continuation must stop
+	// with a bounded capacity error instead of repeating equivalent work.
+	CandidateBudgetReached bool           `json:"-"`
+	Status                 string         `json:"status"`
+	Query                  string         `json:"query"`
+	Results                []SearchResult `json:"results"`
+	TotalCandidates        int            `json:"total_candidates"`
+	Returned               int            `json:"returned"`
+	SearchMethod           string         `json:"search_method"`
+	FallbackTriggered      bool           `json:"fallback_triggered"`
+	Message                string         `json:"message,omitempty"`
+	Metrics                *SearchMetrics `json:"metrics,omitempty"`
 }
 
 // SearchMetrics contains timing and statistics.
@@ -4264,7 +4269,14 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	}
 
 	// Step 6: Stage-2 reranking (optional)
+	candidateBudgetReached := false
 	if opts.RerankEnabled && reranker != nil && reranker.Enabled() {
+		if len(fusedResults) > stage2RerankBudget(opts) {
+			// Stage-2 keeps only its leading pool regardless of Limit, so the
+			// truncated tail is neither exhausted nor reachable by deepening.
+			retrievalExhausted = false
+			candidateBudgetReached = true
+		}
 		fusedResults = s.applyStage2Rerank(ctx, query, fusedResults, opts, seenOrphans, reranker)
 		if searchMethod == "rrf_hybrid" {
 			searchMethod = "rrf_hybrid+rerank"
@@ -4285,14 +4297,15 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	s.observeSearchStage(ctx, "hybrid", "fuse", time.Since(fusionStart))
 
 	return &SearchResponse{
-		Status:             "success",
-		Query:              query,
-		Results:            results,
-		RetrievalExhausted: retrievalExhausted,
-		TotalCandidates:    len(fusedResults),
-		Returned:           len(results),
-		SearchMethod:       searchMethod,
-		Message:            message,
+		Status:                 "success",
+		Query:                  query,
+		Results:                results,
+		RetrievalExhausted:     retrievalExhausted,
+		CandidateBudgetReached: candidateBudgetReached,
+		TotalCandidates:        len(fusedResults),
+		Returned:               len(results),
+		SearchMethod:           searchMethod,
+		Message:                message,
 		Metrics: &SearchMetrics{
 			VectorSearchTimeMs:     vectorMs,
 			BM25SearchTimeMs:       bm25Ms,
@@ -5982,6 +5995,14 @@ func (s *Service) applyMMR(ctx context.Context, results []rrfResult, queryEmbedd
 //   - Stage 2 (accurate): Optional reranking of top candidates (LLM or cross-encoder)
 //
 // Reranking is slower than Stage 1, so it should be used on a bounded TopK.
+func stage2RerankBudget(opts *SearchOptions) int {
+	if opts.RerankTopK <= 0 {
+		return 100
+	}
+	return opts.RerankTopK
+}
+
+// applyStage2Rerank keeps only the leading stage2RerankBudget candidates.
 func (s *Service) applyStage2Rerank(ctx context.Context, query string, results []rrfResult, opts *SearchOptions, seenOrphans map[string]bool, reranker Reranker) []rrfResult {
 	if len(results) == 0 {
 		return results
@@ -5991,10 +6012,7 @@ func (s *Service) applyStage2Rerank(ctx context.Context, query string, results [
 	}
 
 	// Limit to top-K (optional; keeps prompt/service bounded).
-	topK := opts.RerankTopK
-	if topK <= 0 {
-		topK = 100
-	}
+	topK := stage2RerankBudget(opts)
 	if len(results) > topK {
 		results = results[:topK]
 	}

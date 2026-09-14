@@ -300,28 +300,23 @@ func grpcContinuationResponse(page *search.SearchContinuationPage, elapsed time.
 	return response
 }
 
+// grpcSearchHit is the single wire mapping for search results. Grouped
+// children reuse it so per-hit fields cannot diverge between parent and child.
 func grpcSearchHit(r search.SearchResult) *gen.SearchHit {
 	props, _ := structpb.NewStruct(r.Properties)
-	return &gen.SearchHit{
+	hit := &gen.SearchHit{
 		NodeId: string(r.NodeID), Labels: r.Labels, Properties: props,
 		Score: float32(r.Score), RrfScore: float32(r.RRFScore),
 		VectorRank: int32(r.VectorRank), Bm25Rank: int32(r.BM25Rank),
-		Phase: r.Phase, GroupKey: r.GroupKey, Passages: grpcSearchPassages(r.Passages),
+		Phase: r.Phase, GroupKey: r.GroupKey,
 	}
-}
-
-func grpcSearchPassages(passages []search.SearchPassage) []*gen.SearchPassage {
-	out := make([]*gen.SearchPassage, len(passages))
-	for index, passage := range passages {
-		properties, _ := structpb.NewStruct(passage.Properties)
-		out[index] = &gen.SearchPassage{
-			NodeId: string(passage.NodeID), Labels: passage.Labels, Properties: properties,
-			Score: float32(passage.Score), RrfScore: float32(passage.RRFScore),
-			VectorRank: int32(passage.VectorRank), Bm25Rank: int32(passage.BM25Rank),
-			Phase: passage.Phase,
+	if len(r.Passages) > 0 {
+		hit.Passages = make([]*gen.SearchHit, len(r.Passages))
+		for index := range r.Passages {
+			hit.Passages[index] = grpcSearchHit(r.Passages[index])
 		}
 	}
-	return out
+	return hit
 }
 
 func (s *Service) localizedStatus(ctx context.Context, code codes.Code, message localization.Message) error {

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func countTestTokens(text string) (int, error) {
@@ -249,7 +250,7 @@ func TestService_SearchText_IDContinuationGroupsPassages(t *testing.T) {
 			ID: "frame-a", NodeID: "frame-a", GroupKey: "asset-a", Phase: search.SearchContinuationCatalogPhase,
 			Passages: []search.SearchPassage{
 				{ID: "frame-a", NodeID: "frame-a", Phase: search.SearchContinuationCatalogPhase},
-				{ID: "frame-b", NodeID: "frame-b", Phase: search.SearchContinuationCatalogPhase},
+				{ID: "frame-b", NodeID: "frame-b", Phase: search.SearchContinuationCatalogPhase, Labels: []string{"Frame"}, Properties: map[string]any{"caption": "second child evidence"}, RRFScore: 0.25},
 			},
 		}},
 		QID: "qid-id", HasMore: true, Returned: 1,
@@ -273,6 +274,15 @@ func TestService_SearchText_IDContinuationGroupsPassages(t *testing.T) {
 	require.Len(t, response.Hits[0].Passages, 2)
 	require.Equal(t, "frame-a", response.Hits[0].Passages[0].NodeId)
 	require.Equal(t, "frame-b", response.Hits[0].Passages[1].NodeId)
+	// Children use the same wire message and mapper as top-level hits, so
+	// every per-hit field survives for each child, not only the representative.
+	wire, err := protojson.Marshal(response)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), "second child evidence")
+	require.Equal(t, []string{"Frame"}, response.Hits[0].Passages[1].Labels)
+	require.Equal(t, float32(0.25), response.Hits[0].Passages[1].RrfScore)
+	require.Empty(t, response.Hits[0].Passages[1].GroupKey)
+	require.Empty(t, response.Hits[0].Passages[1].Passages)
 	require.Equal(t, "id", response.Mode)
 	require.NotNil(t, response.EligibleCount)
 	require.Equal(t, int64(2), *response.EligibleCount)

@@ -379,3 +379,97 @@ func TestContinuationChunkDepthIsNotCappedAtOneShotLimit(t *testing.T) {
 	require.False(t, page.HasMore)
 	require.Equal(t, 2, embeds)
 }
+
+func TestContinuationRankedThenIDDeepensEveryChunk(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for i := 0; i < 101; i++ {
+		node := &storage.Node{ID: storage.NodeID(fmt.Sprintf("doc-%03d", i)), Properties: map[string]any{"content": "library transcript"}}
+		_, err := engine.CreateNode(node)
+		require.NoError(t, err)
+		require.NoError(t, service.IndexNode(node))
+	}
+	maxChunkDepth := 0
+	search := func(ctx context.Context, query string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		maxChunkDepth = max(maxChunkDepth, opts.Limit)
+		return service.Search(ctx, query, nil, opts)
+	}
+	chunk := func(context.Context, string) ([]string, error) { return []string{"library", "transcript"}, nil }
+	embed := func(context.Context, string) ([]float32, error) { return []float32{1}, nil }
+	opts := DefaultSearchOptions()
+	opts.Limit = 1
+	opts.MaxCandidateLimit = 1024
+	request := SearchContinuationRequest{Owner: "alice", N: 1, Mode: SearchContinuationRankedThenID}
+	page, err := service.SearchTextContinuation(context.Background(), "library transcript", opts, request, chunk, embed, search, ChunkedSearchErrorPolicy{})
+	require.NoError(t, err)
+	require.Len(t, page.Results, 1)
+	require.Greater(t, maxChunkDepth, 100, "chunks must deepen past the one-shot cap")
+	require.Equal(t, 101, page.RankedCount)
+	require.True(t, page.RankedPoolExhausted)
+}
+
+func TestContinuationCandidateBudgetStopsWithoutRepeatedWork(t *testing.T) {
+	for _, mode := range []SearchContinuationMode{SearchContinuationRanked, SearchContinuationRankedThenID} {
+		t.Run(string(mode), func(t *testing.T) {
+			engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+			service := NewService(engine)
+			t.Cleanup(func() { require.NoError(t, service.Close()) })
+			for i := 0; i < 3; i++ {
+				_, err := engine.CreateNode(&storage.Node{ID: storage.NodeID(fmt.Sprintf("doc-%d", i))})
+				require.NoError(t, err)
+			}
+			var depths []int
+			search := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+				depths = append(depths, opts.Limit)
+				return &SearchResponse{
+					Results:                []SearchResult{{ID: "doc-0", NodeID: "doc-0"}, {ID: "doc-1", NodeID: "doc-1"}},
+					CandidateBudgetReached: true,
+				}, nil
+			}
+			request := SearchContinuationRequest{Owner: "alice", N: 2, Mode: mode}
+			page, err := service.SearchTextContinuation(context.Background(), "query", &SearchOptions{Limit: 2}, request, nil, nil, search, ChunkedSearchErrorPolicy{})
+			require.ErrorIs(t, err, resultstream.ErrCapacity)
+			require.ErrorContains(t, err, "candidate budget")
+			require.Nil(t, page, "a fixed candidate budget must not be reported as exhaustion")
+			require.Equal(t, []int{2}, depths, "a budget that cannot deepen must not be retried")
+		})
+	}
+}
+
+func TestHybridRerankBudgetIsNotExhaustion(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewServiceWithDimensions(engine, 2)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for i := 0; i < 3; i++ {
+		node := &storage.Node{
+			ID:              storage.NodeID(fmt.Sprintf("doc-%d", i)),
+			Properties:      map[string]any{"content": "library transcript"},
+			ChunkEmbeddings: [][]float32{{1, float32(i) / 10}},
+		}
+		_, err := engine.CreateNode(node)
+		require.NoError(t, err)
+		require.NoError(t, service.IndexNode(node))
+	}
+	service.SetReranker(&testReranker{enabled: true})
+	for _, tc := range []struct {
+		topK   int
+		budget bool
+	}{{topK: 2, budget: true}, {topK: 10, budget: false}} {
+		t.Run(fmt.Sprintf("topK=%d", tc.topK), func(t *testing.T) {
+			opts := DefaultSearchOptions()
+			opts.Limit = 10
+			opts.RerankEnabled = true
+			opts.RerankTopK = tc.topK
+			response, err := service.Search(context.Background(), "transcript", []float32{1, 0}, opts)
+			require.NoError(t, err)
+			require.Equal(t, tc.budget, response.CandidateBudgetReached)
+			if tc.budget {
+				require.Len(t, response.Results, 2)
+				require.False(t, response.RetrievalExhausted, "the truncated rerank tail was not retrieved")
+			} else {
+				require.Len(t, response.Results, 3)
+			}
+		})
+	}
+}
