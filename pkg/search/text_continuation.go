@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/orneryd/nornicdb/pkg/resultstream"
+	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
 type SearchContinuationMode string
@@ -25,18 +26,23 @@ const (
 	SearchContinuationCollectionComplete = "eligible_population_exhausted"
 )
 
+// NodeAuthorizationFunc decides whether the current caller may read a node.
+// Adapters supply this trusted predicate; it is never accepted from the wire.
+type NodeAuthorizationFunc func(*storage.Node) (bool, error)
+
 // SearchContinuationRequest controls one start, pull, or discard operation.
 // Limit belongs to SearchOptions and is only the initial retrieval depth.
 type SearchContinuationRequest struct {
-	Owner       string
-	Database    string
-	QID         string
-	N           int
-	Discard     bool
-	MaxResults  int
-	Mode        SearchContinuationMode
-	GroupBy     string
-	RankedLimit int
+	Owner         string
+	Database      string
+	QID           string
+	N             int
+	Discard       bool
+	MaxResults    int
+	Mode          SearchContinuationMode
+	GroupBy       string
+	RankedLimit   int
+	AuthorizeNode NodeAuthorizationFunc
 }
 
 // SearchContinuationPage is the protocol-neutral continued-search response.

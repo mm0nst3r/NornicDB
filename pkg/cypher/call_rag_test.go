@@ -187,6 +187,7 @@ func TestCallDbRetrieveIDContinuationGroupsAllPassages(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"page"}, first.Columns)
 	page := first.Rows[0][0].(map[string]interface{})
+	require.Equal(t, page["qid"], first.Metadata["durable_qid"])
 	require.Equal(t, "id", page["mode"])
 	require.Equal(t, int64(2), page["eligible_count"])
 	require.True(t, page["ranked_pool_exhausted"].(bool))

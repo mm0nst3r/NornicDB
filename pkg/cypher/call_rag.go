@@ -421,7 +421,7 @@ func executeSearchContinuationPage(page *search.SearchContinuationPage) *Execute
 	if page.EligibleCount != nil {
 		eligibleCount = int64(*page.EligibleCount)
 	}
-	return &ExecuteResult{
+	result := &ExecuteResult{
 		Columns: []string{"page"},
 		Rows: [][]interface{}{{map[string]interface{}{
 			"results": results, "qid": page.QID, "has_more": page.HasMore,
@@ -435,6 +435,10 @@ func executeSearchContinuationPage(page *search.SearchContinuationPage) *Execute
 			"collection_exhausted": page.CollectionExhausted, "completion": page.Completion,
 		}}},
 	}
+	if page.QID != "" {
+		result.Metadata = map[string]interface{}{"durable_qid": page.QID}
+	}
+	return result
 }
 
 func searchContinuationOwner(ctx context.Context) string {

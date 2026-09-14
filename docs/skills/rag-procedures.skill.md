@@ -56,6 +56,29 @@ Behavior:
 - `search_method` reports the winning path: `rrf_hybrid`, `rrf_hybrid+rerank`, `vector_only`, or `bm25_only`.
 - `fallback_triggered: true` means one strategy returned nothing and the engine fell back.
 
+### Durable continuation
+
+Supplying `n`, `qid`, `discard`, `mode`, `groupBy`/`group_by`, or
+`rankedLimit`/`ranked_limit` enables the continuation shape. The procedure then
+returns one column named `page`; ordinary calls without those fields retain the
+legacy `YIELD node, score, ...` columns.
+
+```cypher
+CALL db.retrieve({query: 'authentication patterns', mode: 'ranked', limit: 50, n: 10})
+YIELD page
+RETURN page
+
+CALL db.retrieve({qid: $qid, n: 10}) YIELD page RETURN page
+CALL db.retrieve({qid: $qid, discard: true}) YIELD page RETURN page
+```
+
+`page.results` contains result maps. Grouped results include `group_key` and a
+`passages` list. Page metadata includes `qid`, `has_more`, `position`,
+`returned`, `discovered`, `total`, `expires_at`, `released`, `mode`,
+`ranked_count`, `eligible_count`, `ranked_pool_exhausted`,
+`collection_exhausted`, and `completion`. See
+[Search Continuation](../user-guides/search-continuation.md).
+
 ## `db.rretrieve` — retrieve + auto-rerank
 
 Same input shape as `db.retrieve`, but reranks when the reranker is available. Use this when you want "always rerank if you can":
@@ -170,6 +193,13 @@ This shortcut is not available on `db.rerank` or `db.infer`, both of which requi
 | Knob                              | Where                                        | Effect                                                                          |
 | --------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------- |
 | `limit`                           | `db.retrieve` request                        | Number of results returned                                                      |
+| `n`                               | `db.retrieve` continuation                   | Maximum logical results in one page                                             |
+| `qid`                             | `db.retrieve` continuation                   | Opaque token returned by a previous partial page                                |
+| `discard`                         | `db.retrieve` continuation                   | Releases the qid without returning results                                      |
+| `maxResults` / `max_results`      | `db.retrieve` continuation                   | Optional cumulative stream ceiling                                              |
+| `mode`                            | `db.retrieve` continuation                   | `ranked`, `ranked_then_id`, or `id`                                             |
+| `groupBy` / `group_by`            | `db.retrieve` continuation                   | Groups children by one flat string property                                     |
+| `rankedLimit` / `ranked_limit`    | `db.retrieve` continuation                   | Explicit ranked boundary before the complete catalogue tail                     |
 | `minSimilarity`                   | `db.retrieve` request                        | Drops vector results below this cosine score                                    |
 | `types` / `labels`                | `db.retrieve` request                        | Restricts to specific labels                                                    |
 | `filters` / `propertyFilters`     | `db.retrieve` request                        | Restricts by node property values                                               |

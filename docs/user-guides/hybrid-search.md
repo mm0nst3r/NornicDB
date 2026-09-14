@@ -4,6 +4,10 @@
 
 Last Updated: December 2025
 
+For durable START/PULL/DISCARD pagination, complete `id` and
+`ranked_then_id` populations, and grouped child passages, see
+[Search Continuation](search-continuation.md).
+
 ---
 
 ## Overview
@@ -134,7 +138,7 @@ Results include RRF metadata so you can see how each ranking strategy contribute
       "vector_rank": 2,
       "bm25_rank": 1,
       "labels": ["Document"],
-      "properties": { "title": "Introduction to ML Algorithms", "..." : "..." }
+      "properties": { "title": "Introduction to ML Algorithms", "...": "..." }
     }
   ]
 }
@@ -142,13 +146,13 @@ Results include RRF metadata so you can see how each ranking strategy contribute
 
 ### HTTP Search Request Fields
 
-| Field      | Default | Description                                            |
-| ---------- | ------- | ------------------------------------------------------ |
-| `query`    | —       | The search text (required)                             |
-| `limit`    | 10      | Maximum number of results                              |
-| `labels`   | all     | Restrict results to nodes with any of these labels     |
-| `filters`  | none    | Property filters as `{"key": ["value1", "value2"]}`    |
-| `database` | default | Logical database name to search                        |
+| Field      | Default | Description                                         |
+| ---------- | ------- | --------------------------------------------------- |
+| `query`    | —       | The search text (required)                          |
+| `limit`    | 10      | Maximum number of results                           |
+| `labels`   | all     | Restrict results to nodes with any of these labels  |
+| `filters`  | none    | Property filters as `{"key": ["value1", "value2"]}` |
+| `database` | default | Logical database name to search                     |
 
 RRF tuning constants (`k`, vector/BM25 weights) are applied internally by the search service and are not exposed as HTTP request fields. For programmatic control over fusion weights or k, use the embedded Go API or the MCP `discover` tool. Internal RRF defaults are `k = 60` with adaptive vector/BM25 weights driven by query length (see the table above).
 
@@ -204,10 +208,10 @@ Each database has two orthogonal master switches and two warming triggers. The d
 | ------------ | ------------ | ----------------------------------------------------------------------------------- |
 | on / startup | on / startup | Hybrid (this guide's default).                                                      |
 | on / startup | on / lazy    | Synchronous wait while vector warms; first response includes vector results.        |
-| on / lazy    | on / lazy    | Synchronous wait while both warm; first response is fully ranked.                    |
+| on / lazy    | on / lazy    | Synchronous wait while both warm; first response is fully ranked.                   |
 | on / startup | off / —      | Lexical-only 200, response carries `vector_enabled: false`.                         |
 | off / —      | on / startup | Vector-only 200 (HNSW falls back to random insertion order; recall slightly lower). |
-| off / —      | off / —      | 503 `search_disabled_for_database`, `retryable: false` — permanent.                |
+| off / —      | off / —      | 503 `search_disabled_for_database`, `retryable: false` — permanent.                 |
 
 Search response shapes:
 

@@ -75,6 +75,43 @@ if err != nil {
 _ = resp
 ```
 
+## Durable continuation
+
+Start a continued search by setting `N`. The returned qid is opaque and must be
+sent unchanged on later calls:
+
+```go
+page, err := nornicClient.SearchText(ctx, &nornicpb.SearchTextRequest{
+    Database: "nornic",
+    Query: "sunset beach",
+    Limit: 500,
+    N: 50,
+    Mode: "ranked_then_id",
+    GroupBy: "asset_id",
+    RankedLimit: proto.Uint64(5000),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+next, err := nornicClient.SearchText(ctx, &nornicpb.SearchTextRequest{
+    Qid: page.Qid,
+    N: 50,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+_, err = nornicClient.SearchText(ctx, &nornicpb.SearchTextRequest{
+    Qid: next.Qid,
+    Discard: true,
+})
+```
+
+Import `google.golang.org/protobuf/proto` for `proto.Uint64`. Grouped hits use
+one page slot and expose child matches through `SearchHit.passages`. See
+[Search Continuation](search-continuation.md) for all modes and metadata.
+
 Import `google.golang.org/grpc/credentials` for this TLS configuration. Use
 `insecure.NewCredentials()` only for local development or a loopback-only hop
 behind a same-host TLS proxy. For mTLS, construct `credentials.NewTLS` with a

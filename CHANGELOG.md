@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add signed, authorization-bound search continuation across HTTP, native gRPC,
+  Cypher, and Bolt metadata, including progressive ranked retrieval, complete
+  ID populations, deterministic grouped passages, bounded per-owner registry
+  admission, and page-only hydration.
+
 ## [v1.3.3] - 9/13/2026
 
 ### Added

@@ -648,38 +648,38 @@ release, pull outcomes, and wrong-instance tokens.
 
 ### Phase 0: Contract Tests And Baselines
 
-- [ ] Add black-box contract tests for START, repeated PULL, replay, exhaustion,
+- [x] Add black-box contract tests for START, repeated PULL, replay, exhaustion,
       and DISCARD independent of any transport.
 - [ ] Capture ordinary search and current Bolt PULL latency, allocations, and
       retained heap before adding the registry.
 - [ ] Add benchmark fixtures that consume 10, 100, 1,000, 5,000, and more than
       5,000 ranked hits from one stream.
-- [ ] Verify a stream can return more results than its initial `limit` without
+- [x] Verify a stream can return more results than its initial `limit` without
       duplicates or repeated embedding calls.
 
 ### Phase 1: Shared Stream And Compact Registry
 
-- [ ] Add the shared stream interface and materialized adapter.
+- [x] Add the shared stream interface and materialized adapter.
 - [ ] Add compact search descriptors, normalized resumable search state, and a
       contiguous string arena.
-- [ ] Add signed position-bearing durable qids.
-- [ ] Add sharded immutable registry entries and bounded admission accounting.
-- [ ] Add fixed expiry and bounded cleanup.
-- [ ] Add owner/database binding and error taxonomy.
+- [x] Add signed position-bearing durable qids.
+- [x] Add sharded immutable registry entries and bounded admission accounting.
+- [x] Add fixed expiry and bounded cleanup.
+- [x] Add owner/database binding and error taxonomy.
 - [ ] Prove with tests that no transaction or storage/search lock survives
       publication.
 
 ### Phase 2: Search Integration
 
-- [ ] Buffer the initial final `SearchTextChunks` outer-RRF population and
+- [x] Buffer the initial final `SearchTextChunks` outer-RRF population and
       progressively deepen it when unseen rows run low.
 - [ ] Preserve explicit-vector single-search behavior.
-- [ ] Hydrate and authorize only the requested page.
-- [ ] Avoid registry insertion for one-page populations.
-- [ ] Ensure pulls never call the chunker or embedder.
+- [x] Hydrate and authorize only the requested page.
+- [x] Avoid registry insertion for one-page populations.
+- [x] Ensure pulls never call the chunker or embedder.
 - [ ] Add branch exhaustion reporting and continuation-specific retrieval depth
       beyond one-shot candidate caps.
-- [ ] Preserve emitted-prefix stability while deduplicating expanded results.
+- [x] Preserve emitted-prefix stability while deduplicating expanded results.
 
 ### Phase 2B: Complete And Grouped Populations
 
@@ -689,7 +689,7 @@ release, pull outcomes, and wrong-instance tokens.
       admission.
 - [x] Implement compact `ranked_then_id` and `id` catalogue builders behind the
       shared stream interface.
-- [ ] Apply canonical eligibility and trusted result authorization during the
+- [x] Apply canonical eligibility and trusted result authorization during the
       scan; never expose unauthorized IDs through results or counts.
 - [x] Bind complete populations to database mutation and policy generations;
       reject unsupported engines and invalidate changed populations.
@@ -701,43 +701,43 @@ release, pull outcomes, and wrong-instance tokens.
       to HTTP, gRPC, Cypher, and extension-aware Bolt.
 - [x] Prove scan-order-independent grouping and exact 20,000-member enumeration
       without duplicates.
-- [ ] Benchmark native streaming and `AllNodes` fallback separately; document
+- [x] Benchmark native streaming and `AllNodes` fallback separately; document
       that fallback memory is not bounded by descriptor admission alone.
 
 ### Phase 3: Bolt Adapter
 
 - [ ] Wrap current materialized results in the shared stream interface.
 - [ ] Map each numeric transaction-local qid to a stream handle.
-- [ ] Preserve latest-qid fallback and existing invalid-qid failures.
-- [ ] Preserve bounded `PULL` and `DISCARD` behavior for multiple active streams.
-- [ ] Emit `durable_qid` only when durable continuation was requested.
+- [x] Preserve latest-qid fallback and existing invalid-qid failures.
+- [x] Preserve bounded `PULL` and `DISCARD` behavior for multiple active streams.
+- [x] Emit `durable_qid` only when durable continuation was requested.
 - [ ] Cover commit, rollback, reset, timeout, disconnect, and reconnect paths.
-- [ ] Confirm ordinary Bolt compatibility tests pass unchanged.
+- [x] Confirm ordinary Bolt compatibility tests pass unchanged.
 
 ### Phase 4: HTTP And Native gRPC
 
-- [ ] Add `qid`, `n`, and `discard` to the existing HTTP search request.
-- [ ] Add continuation metadata to the existing HTTP response.
-- [ ] Append protobuf fields and regenerate checked-in Go bindings.
-- [ ] Add native gRPC principal/database context integration.
+- [x] Add `qid`, `n`, and `discard` to the existing HTTP search request.
+- [x] Add continuation metadata to the existing HTTP response.
+- [x] Append protobuf fields and regenerate checked-in Go bindings.
+- [x] Add native gRPC principal/database context integration.
 - [ ] Map common continuation errors consistently to HTTP and gRPC statuses.
-- [ ] Add cross-protocol tests that start in one protocol and pull or discard in
+- [x] Add cross-protocol tests that start in one protocol and pull or discard in
       another.
 
 ### Phase 5: Existing Cypher Procedure
 
-- [ ] Extend `db.retrieve` request parsing with `qid`, `n`, and `discard`.
-- [ ] Add the continuation-only page envelope without changing ordinary columns.
-- [ ] Derive owner and canonical database from trusted execution context.
+- [x] Extend `db.retrieve` request parsing with `qid`, `n`, and `discard`.
+- [x] Add the continuation-only page envelope without changing ordinary columns.
+- [x] Derive owner and canonical database from trusted execution context.
 - [ ] Verify standard Neo4j drivers can resume a durable qid after reconnect by
       calling the existing procedure.
-- [ ] Verify empty and exhausted pages retain continuation metadata.
+- [x] Verify empty and exhausted pages retain continuation metadata.
 
 ### Phase 6: Operations And Cluster Readiness
 
 - [ ] Add configuration, metrics, structured events, and localized errors.
-- [ ] Add shutdown and reconfiguration behavior.
-- [ ] Document process-local durability and load-balancer affinity requirements.
+- [x] Add shutdown and reconfiguration behavior.
+- [x] Document process-local durability and load-balancer affinity requirements.
 - [ ] Design, but do not require, a shared-registry provider interface for a
       later cluster-durable implementation.
 

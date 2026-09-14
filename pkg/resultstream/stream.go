@@ -33,3 +33,8 @@ type Stream interface {
 	Pull(ctx context.Context, position uint64, n int) (*Page, error)
 	Close() error
 }
+
+// RetainedBytesReporter optionally reports memory retained for future pulls.
+type RetainedBytesReporter interface {
+	RetainedBytes() int64
+}

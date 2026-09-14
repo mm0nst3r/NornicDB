@@ -111,23 +111,49 @@ service NornicSearch {
 }
 
 message SearchTextRequest {
-  string database = 1;        // optional; empty uses default
+  string database = 1;
   string query = 2;
   uint32 limit = 3;
-  repeated string labels = 4; // optional label/edge-type filter
+  repeated string labels = 4;
   optional float min_similarity = 5;
+  string qid = 6;
+  uint32 n = 7;
+  bool discard = 8;
+  optional uint64 max_results = 9;
+  string mode = 10;           // ranked | ranked_then_id | id
+  string group_by = 11;
+  optional uint64 ranked_limit = 12;
 }
 
 message SearchTextResponse {
-  string search_method = 1;        // "rrf_hybrid" | "vector_only" | "bm25_only"
-  repeated SearchHit hits = 2;     // node_id, labels, properties, score, rrf_score, vector_rank, bm25_rank
+  string search_method = 1;
+  repeated SearchHit hits = 2;     // includes phase, group_key, and passages
   bool fallback_triggered = 3;
   string message = 4;
   double time_seconds = 5;
+  string qid = 6;
+  bool has_more = 7;
+  uint64 position = 8;
+  uint32 returned = 9;
+  optional uint64 total = 10;
+  google.protobuf.Timestamp expires_at = 11;
+  bool released = 12;
+  string mode = 13;
+  int64 ranked_count = 14;
+  optional int64 eligible_count = 15;
+  bool ranked_pool_exhausted = 16;
+  bool collection_exhausted = 17;
+  string completion = 18;
 }
 ```
 
 `SearchText` runs the same hybrid pipeline as the `db.retrieve` Cypher procedure: vector + BM25, fused with RRF, with adaptive weights based on query length. If embeddings are disabled, falls back to BM25-only and sets `fallback_triggered=true`.
+
+Supplying `n` or another continuation field starts a durable stream. Reuse the
+returned `qid` with `n` to pull another page, or with `discard=true` to release
+it. `limit` is the initial ranked depth; `n` is the page size. See
+[Search Continuation](../user-guides/search-continuation.md) for mode, grouping,
+expiry, and cross-protocol rules.
 
 ## Minimum-viable clients
 

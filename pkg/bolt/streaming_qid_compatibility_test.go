@@ -91,6 +91,37 @@ func TestStreamingOptionsRejectInvalidLimits(t *testing.T) {
 	}
 }
 
+func TestAddDurableQIDMetadataPreservesNumericQID(t *testing.T) {
+	metadata := map[string]any{"qid": int64(7)}
+	addDurableQIDMetadata(metadata, &QueryResult{Metadata: map[string]any{"durable_qid": "signed-token"}})
+	require.Equal(t, int64(7), metadata["qid"])
+	require.Equal(t, "signed-token", metadata["durable_qid"])
+
+	metadata = map[string]any{"qid": int64(8)}
+	addDurableQIDMetadata(metadata, &QueryResult{Metadata: map[string]any{"durable_qid": 42}})
+	require.NotContains(t, metadata, "durable_qid")
+}
+
+func TestBoltRunEmitsDurableQIDForContinuation(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := storage.NewNamespacedEngine(base, "nornic")
+	for _, id := range []string{"bolt-a", "bolt-b"} {
+		_, err := store.CreateNode(&storage.Node{ID: storage.NodeID(id), Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
+	_, port := startBoltIntegrationServer(t, store)
+	conn := openBoltTestConn(t, port)
+
+	require.NoError(t, SendRun(t, conn, "CALL db.retrieve({mode: 'id', n: 1})", nil, nil))
+	metadata, err := AssertSuccess(t, conn)
+	require.NoError(t, err)
+	durableQID, ok := metadata["durable_qid"].(string)
+	require.True(t, ok, "RUN metadata must contain a durable qid: %v", metadata)
+	require.NotEmpty(t, durableQID)
+	require.NotContains(t, metadata, "qid", "autocommit RUN must retain standard Bolt numeric-qid behavior")
+}
+
 func TestParseStreamingOptions(t *testing.T) {
 	t.Run("typed fields and unknown metadata", func(t *testing.T) {
 		data := encodePackStreamMap(map[string]any{

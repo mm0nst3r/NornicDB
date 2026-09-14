@@ -88,14 +88,16 @@ func (s *Service) acquireCompleteContinuationBuild() (CompleteContinuationPolicy
 }
 
 type catalogContinuationStream struct {
-	mu       sync.RWMutex
-	results  []SearchResult
-	engine   storage.Engine
-	version  uint64
-	policy   *atomic.Uint64
-	policyID uint64
-	metadata map[string]any
-	closed   bool
+	mu            sync.RWMutex
+	results       []SearchResult
+	engine        storage.Engine
+	authorizeNode NodeAuthorizationFunc
+	version       uint64
+	policy        *atomic.Uint64
+	policyID      uint64
+	metadata      map[string]any
+	retainedBytes int64
+	closed        bool
 }
 
 type continuationGroup struct {
@@ -130,9 +132,11 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 	rankedByID := make(map[string]SearchResult)
 	searchMethod := "id"
 	fallbackTriggered := false
+	rankedPoolExhausted := true
 	if ranked != nil {
 		searchMethod = ranked.SearchMethod
 		fallbackTriggered = ranked.FallbackTriggered
+		rankedPoolExhausted = len(ranked.Results) < options.Limit
 		for _, result := range ranked.Results {
 			result.Phase = SearchContinuationRankedPhase
 			rankedByID[searchResultID(result)] = result
@@ -150,7 +154,7 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 		if scannedNodes > policy.MaxScannedNodes {
 			return resultstream.ErrCapacity
 		}
-		eligible, err := s.continuationNodeEligible(node, &options, decayFilter)
+		eligible, err := s.continuationNodeEligible(node, &options, decayFilter, request.AuthorizeNode)
 		if err != nil || !eligible {
 			return err
 		}
@@ -260,11 +264,12 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 		return nil, resultstream.ErrInvalidated
 	}
 	return &catalogContinuationStream{
-		results:  results,
-		engine:   s.engine,
-		version:  version,
-		policy:   &s.completePolicyGen,
-		policyID: policyID,
+		results:       results,
+		engine:        s.engine,
+		authorizeNode: request.AuthorizeNode,
+		version:       version,
+		policy:        &s.completePolicyGen,
+		policyID:      policyID,
 		metadata: map[string]any{
 			"search_method":         searchMethod,
 			"fallback_triggered":    fallbackTriggered,
@@ -272,8 +277,9 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 			"mode":                  request.Mode,
 			"ranked_count":          rankedCount,
 			"eligible_count":        &eligibleCount,
-			"ranked_pool_exhausted": true,
+			"ranked_pool_exhausted": rankedPoolExhausted,
 		},
+		retainedBytes: retainedBytes,
 	}, nil
 }
 
@@ -330,9 +336,15 @@ func betterContinuationRepresentative(candidate, current SearchResult) bool {
 	return candidate.BM25Rank < current.BM25Rank
 }
 
-func (s *Service) continuationNodeEligible(node *storage.Node, options *SearchOptions, decayFilter NodeDecayFilterFunc) (bool, error) {
+func (s *Service) continuationNodeEligible(node *storage.Node, options *SearchOptions, decayFilter NodeDecayFilterFunc, authorizeNode NodeAuthorizationFunc) (bool, error) {
 	if node == nil || node.VisibilitySuppressed || (decayFilter != nil && decayFilter(string(node.ID))) {
 		return false, nil
+	}
+	if authorizeNode != nil {
+		authorized, err := authorizeNode(node)
+		if err != nil || !authorized {
+			return false, err
+		}
 	}
 	if len(options.Types) > 0 {
 		matched := false
@@ -403,7 +415,7 @@ func (s *catalogContinuationStream) Pull(ctx context.Context, position uint64, n
 	end := min(position+uint64(n), uint64(len(s.results)))
 	hasMore := end < uint64(len(s.results))
 	total := uint64(len(s.results))
-	results, err := hydrateContinuationResults(s.engine, s.results[position:end])
+	results, err := hydrateContinuationResults(s.engine, s.results[position:end], s.authorizeNode)
 	if err != nil {
 		return nil, err
 	}
@@ -427,25 +439,39 @@ func (s *catalogContinuationStream) Pull(ctx context.Context, position uint64, n
 	}, nil
 }
 
-func hydrateContinuationResults(engine storage.Engine, compact []SearchResult) ([]SearchResult, error) {
-	ids := make([]storage.NodeID, 0, len(compact))
-	seen := make(map[storage.NodeID]struct{}, len(compact))
+func hydrateContinuationResults(engine storage.Engine, compact []SearchResult, authorizeNode NodeAuthorizationFunc) ([]SearchResult, error) {
+	idCount := 0
 	for index := range compact {
-		if _, exists := seen[compact[index].NodeID]; !exists {
-			seen[compact[index].NodeID] = struct{}{}
+		if len(compact[index].Passages) > 0 {
+			idCount += len(compact[index].Passages)
+		} else {
+			idCount++
+		}
+	}
+	ids := make([]storage.NodeID, 0, idCount)
+	for index := range compact {
+		if len(compact[index].Passages) == 0 {
 			ids = append(ids, compact[index].NodeID)
+			continue
 		}
 		for passageIndex := range compact[index].Passages {
-			id := compact[index].Passages[passageIndex].NodeID
-			if _, exists := seen[id]; !exists {
-				seen[id] = struct{}{}
-				ids = append(ids, id)
-			}
+			ids = append(ids, compact[index].Passages[passageIndex].NodeID)
 		}
 	}
 	nodes, err := engine.BatchGetNodes(ids)
 	if err != nil {
 		return nil, err
+	}
+	if authorizeNode != nil {
+		for _, node := range nodes {
+			authorized, authorizeErr := authorizeNode(node)
+			if authorizeErr != nil {
+				return nil, authorizeErr
+			}
+			if !authorized {
+				return nil, resultstream.ErrInvalidated
+			}
+		}
 	}
 	results := make([]SearchResult, len(compact))
 	for index := range compact {
@@ -482,4 +508,8 @@ func (s *catalogContinuationStream) Close() error {
 	s.results = nil
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *catalogContinuationStream) RetainedBytes() int64 {
+	return s.retainedBytes
 }

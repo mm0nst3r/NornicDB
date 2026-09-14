@@ -54,6 +54,7 @@ The OpenAPI specification includes:
 The OpenAPI spec documents two authentication methods:
 
 1. **Bearer Token (JWT)**
+
    ```yaml
    security:
      - bearerAuth: []
@@ -66,6 +67,7 @@ The OpenAPI spec documents two authentication methods:
    ```
 
 To authenticate in Swagger UI:
+
 - Click the "Authorize" button
 - Enter your credentials
 - All requests will include the authentication header
@@ -73,11 +75,13 @@ To authenticate in Swagger UI:
 ## 📖 Endpoint Categories
 
 ### Health & Status
+
 - `GET /health` - Health check (public)
 - `GET /status` - Server status (authenticated)
 - `GET /metrics` - Prometheus metrics (authenticated)
 
 ### Authentication
+
 - `POST /auth/token` - Get JWT token
 - `POST /auth/logout` - Logout
 - `GET /auth/me` - Current user info
@@ -87,15 +91,18 @@ To authenticate in Swagger UI:
 - User management endpoints (admin only)
 
 ### Neo4j Compatible
+
 - `POST /db/{database}/tx/commit` - Execute Cypher query
 
 ### Search & Embeddings
-- `POST /nornicdb/search` - Hybrid search. 200 responses include `bm25_enabled` and `vector_enabled` so clients can see which path produced the result set. 503 with `request_status: search_disabled_for_database` (`retryable: false`) when both indexes are disabled for the target database; 503 with `request_status: search_not_ready` (`retryable: true`) when an eager build is mid-flight. Lazy-warmed databases block the request synchronously inside `Service.EnsureWarm` and return 200 — no transient lazy 503 is emitted.
+
+- `POST /nornicdb/search` - Hybrid search. Supplying `n`, `qid`, `discard`, `mode`, `group_by`, or `ranked_limit` enables the durable continuation response object; requests without continuation fields retain the legacy result array. See [Search Continuation](../user-guides/search-continuation.md). 200 responses include `bm25_enabled` and `vector_enabled` so clients can see which path produced the result set. 503 with `request_status: search_disabled_for_database` (`retryable: false`) when both indexes are disabled for the target database; 503 with `request_status: search_not_ready` (`retryable: true`) when an eager build is mid-flight. Lazy-warmed databases block the request synchronously inside `Service.EnsureWarm` and return 200 — no transient lazy 503 is emitted.
 - `POST /nornicdb/similar` - Vector similarity search
 - `GET /nornicdb/decay` - Memory decay statistics
 - Embedding management endpoints
 
 ### Graph (Nornic Extensions)
+
 - `POST /nornicdb/graph/{database}/neighborhood` - Build a neighborhood subgraph from `node_ids`
 - `POST /nornicdb/graph/{database}/expand` - Expand an existing graph selection (same request shape as neighborhood)
 - `POST /nornicdb/graph/{database}/path` - Resolve path between `source_node_id` and `target_node_id`
@@ -103,16 +110,19 @@ To authenticate in Swagger UI:
 - `POST /nornicdb/graph/{database}/diff` - Diff target graph `as_of` against `compare_to` or `current`
 
 ### Admin & System
+
 - `GET /admin/stats` - System statistics
 - `GET /admin/config` - Server configuration
 - `POST /admin/backup` - Create backup
 - GPU control endpoints
 
 ### GDPR Compliance
+
 - `GET /gdpr/export` - GDPR data export
 - `POST /gdpr/delete` - GDPR erasure request
 
 ### GraphQL & AI
+
 - `POST /graphql` - GraphQL endpoint
 - `GET /graphql/playground` - GraphQL Playground
 - MCP and Heimdall endpoints

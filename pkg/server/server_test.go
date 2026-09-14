@@ -1609,6 +1609,62 @@ func TestHandleSearchIDContinuationGroupsAllPassages(t *testing.T) {
 	require.True(t, last.CollectionExhausted)
 }
 
+func TestSearchContinuationQIDIsSharedFromHTTPToCypher(t *testing.T) {
+	server, authenticator := setupTestServer(t)
+	token := getAuthToken(t, authenticator, "admin")
+	database := server.dbManager.DefaultDatabaseName()
+	engine, err := server.dbManager.GetStorage(database)
+	require.NoError(t, err)
+	for _, id := range []string{"cross-a", "cross-b"} {
+		_, err := engine.CreateNode(&storage.Node{ID: storage.NodeID(id), Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
+
+	start := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]any{
+		"database": database, "mode": "id", "n": 1,
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	var first struct {
+		QID string `json:"qid"`
+	}
+	require.NoError(t, json.NewDecoder(start.Body).Decode(&first))
+	require.NotEmpty(t, first.QID)
+
+	claims, err := authenticator.ValidateToken(token)
+	require.NoError(t, err)
+	ctx := cypher.WithAuthenticatedPrincipal(context.Background(), auth.PrincipalID(claims))
+	result, err := server.db.GetCypherExecutor().Execute(ctx, "USE "+database+" CALL db.retrieve($request)", map[string]interface{}{
+		"request": map[string]interface{}{"qid": first.QID, "n": int64(1)},
+	})
+	require.NoError(t, err)
+	page := result.Rows[0][0].(map[string]interface{})
+	require.Len(t, page["results"], 1)
+	require.Empty(t, page["qid"])
+	require.True(t, page["collection_exhausted"].(bool))
+
+	result, err = server.db.GetCypherExecutor().Execute(ctx, "USE "+database+" CALL db.retrieve($request)", map[string]interface{}{
+		"request": map[string]interface{}{"mode": "id", "n": int64(1)},
+	})
+	require.NoError(t, err)
+	page = result.Rows[0][0].(map[string]interface{})
+	cypherQID := page["qid"].(string)
+	require.NotEmpty(t, cypherQID)
+
+	pull := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]any{
+		"database": database, "qid": cypherQID, "n": 1,
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, pull.Code, pull.Body.String())
+	var last struct {
+		Results             []map[string]any `json:"results"`
+		QID                 string           `json:"qid"`
+		CollectionExhausted bool             `json:"collection_exhausted"`
+	}
+	require.NoError(t, json.NewDecoder(pull.Body).Decode(&last))
+	require.Len(t, last.Results, 1)
+	require.Empty(t, last.QID)
+	require.True(t, last.CollectionExhausted)
+}
+
 // TestHandleSearch_FiltersParameter verifies that the `filters` field is accepted in the
 // request body and that results are restricted to nodes matching the filter.
 func TestHandleSearch_FiltersParameter(t *testing.T) {

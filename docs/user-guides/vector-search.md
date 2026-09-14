@@ -4,6 +4,11 @@
 
 Last Updated: December 11, 2025
 
+For durable pagination of canonical text/hybrid search results, see
+[Search Continuation](search-continuation.md). The continuation API extends
+`/nornicdb/search`, native `NornicSearch/SearchText`, and `db.retrieve`; it does
+not change the low-level vector index procedures documented here.
+
 ---
 
 ## Overview

@@ -44,8 +44,9 @@ func (c *cypherQueryExecutor) Execute(ctx context.Context, query string, params 
 	}
 
 	return &QueryResult{
-		Columns: result.Columns,
-		Rows:    result.Rows,
+		Columns:  result.Columns,
+		Rows:     result.Rows,
+		Metadata: result.Metadata,
 	}, nil
 }
 
@@ -901,7 +902,7 @@ FOREACH (_ IN CASE WHEN row.target_entity_id IS NULL OR row.target_entity_id = '
 )`)
 
 	params := map[string]any{
-		"rows": []map[string]any{map[string]any{
+		"rows": []map[string]any{{
 			"entity_id":          "repo_fact|calls|symbol::repo::function::bolt-single",
 			"entity_type":        "calls_edge",
 			"repo_id":            "repo",

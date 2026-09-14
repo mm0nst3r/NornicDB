@@ -30,16 +30,26 @@ type Scope struct {
 
 // Config bounds process-local durable result streams.
 type Config struct {
-	TTL         time.Duration
-	MaxStreams  int64
-	MaxPageSize int
+	TTL                      time.Duration
+	MaxStreams               int64
+	MaxStreamsPerOwner       int64
+	MaxPageSize              int
+	MaxRetainedBytes         int64
+	MaxRetainedBytesPerOwner int64
 }
 
 type registryEntry struct {
-	scopeHash [32]byte
-	expires   int64
-	stream    Stream
-	released  atomic.Bool
+	scopeHash     [32]byte
+	ownerHash     [32]byte
+	expires       int64
+	retainedBytes int64
+	stream        Stream
+	released      atomic.Bool
+}
+
+type ownerUsage struct {
+	streams int64
+	bytes   int64
 }
 
 type registryShard struct {
@@ -49,18 +59,22 @@ type registryShard struct {
 
 // Registry owns signed qids and sharded process-local stream entries.
 type Registry struct {
-	config   Config
-	secret   [32]byte
-	instance [8]byte
-	shards   [registryShardCount]registryShard
-	count    atomic.Int64
-	closed   atomic.Bool
-	scopeMAC sync.Pool
+	config      Config
+	secret      [32]byte
+	instance    [8]byte
+	shards      [registryShardCount]registryShard
+	count       atomic.Int64
+	retained    atomic.Int64
+	closed      atomic.Bool
+	scopeMAC    sync.Pool
+	admissionMu sync.Mutex
+	owners      map[[32]byte]ownerUsage
 }
 
 // NewRegistry constructs a registry with a random signing key and instance ID.
 func NewRegistry(config Config) (*Registry, error) {
-	if config.TTL < 0 || config.MaxStreams < 0 || config.MaxPageSize < 0 {
+	if config.TTL < 0 || config.MaxStreams < 0 || config.MaxStreamsPerOwner < 0 || config.MaxPageSize < 0 ||
+		config.MaxRetainedBytes < 0 || config.MaxRetainedBytesPerOwner < 0 {
 		return nil, ErrCapacity
 	}
 	if config.TTL == 0 {
@@ -69,10 +83,19 @@ func NewRegistry(config Config) (*Registry, error) {
 	if config.MaxStreams == 0 {
 		config.MaxStreams = 1024
 	}
+	if config.MaxStreamsPerOwner == 0 {
+		config.MaxStreamsPerOwner = 64
+	}
 	if config.MaxPageSize == 0 {
 		config.MaxPageSize = 500
 	}
-	registry := &Registry{config: config}
+	if config.MaxRetainedBytes == 0 {
+		config.MaxRetainedBytes = 1 << 30
+	}
+	if config.MaxRetainedBytesPerOwner == 0 {
+		config.MaxRetainedBytesPerOwner = 256 << 20
+	}
+	registry := &Registry{config: config, owners: make(map[[32]byte]ownerUsage)}
 	if _, err := io.ReadFull(rand.Reader, registry.secret[:]); err != nil {
 		return nil, err
 	}
@@ -102,16 +125,26 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 		_ = stream.Close()
 		return page, nil
 	}
-	if r.count.Add(1) > r.config.MaxStreams {
-		r.count.Add(-1)
+	retainedBytes := int64(0)
+	if reporter, ok := stream.(RetainedBytesReporter); ok {
+		retainedBytes = reporter.RetainedBytes()
+		if retainedBytes < 0 {
+			_ = stream.Close()
+			return nil, ErrCapacity
+		}
+	}
+	ownerHash := r.ownerDigest(scope.Owner)
+	if !r.reserve(ownerHash, retainedBytes) {
 		_ = stream.Close()
 		return nil, ErrCapacity
 	}
 
 	entry := &registryEntry{
-		scopeHash: r.scopeDigest(scope),
-		expires:   time.Now().Add(r.config.TTL).Unix(),
-		stream:    stream,
+		scopeHash:     r.scopeDigest(scope),
+		ownerHash:     ownerHash,
+		expires:       time.Now().Add(r.config.TTL).Unix(),
+		retainedBytes: retainedBytes,
+		stream:        stream,
 	}
 	var streamID [16]byte
 	inserted := false
@@ -131,7 +164,7 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 		}
 	}
 	if !inserted {
-		r.count.Add(-1)
+		r.release(entry)
 		_ = stream.Close()
 		if r.closed.Load() {
 			return nil, ErrClosed
@@ -220,12 +253,43 @@ func (r *Registry) remove(id [16]byte, expected *registryEntry) {
 	if entry != nil && (expected == nil || expected == entry) {
 		delete(shard.entries, id)
 		entry.released.Store(true)
-		r.count.Add(-1)
 	}
 	shard.mu.Unlock()
 	if entry != nil && (expected == nil || expected == entry) {
+		r.release(entry)
 		_ = entry.stream.Close()
 	}
+}
+
+func (r *Registry) reserve(owner [32]byte, bytes int64) bool {
+	r.admissionMu.Lock()
+	defer r.admissionMu.Unlock()
+	usage := r.owners[owner]
+	if r.count.Load() >= r.config.MaxStreams || usage.streams >= r.config.MaxStreamsPerOwner ||
+		r.retained.Load()+bytes > r.config.MaxRetainedBytes || usage.bytes+bytes > r.config.MaxRetainedBytesPerOwner {
+		return false
+	}
+	usage.streams++
+	usage.bytes += bytes
+	r.owners[owner] = usage
+	r.count.Add(1)
+	r.retained.Add(bytes)
+	return true
+}
+
+func (r *Registry) release(entry *registryEntry) {
+	r.admissionMu.Lock()
+	usage := r.owners[entry.ownerHash]
+	usage.streams--
+	usage.bytes -= entry.retainedBytes
+	if usage.streams == 0 {
+		delete(r.owners, entry.ownerHash)
+	} else {
+		r.owners[entry.ownerHash] = usage
+	}
+	r.count.Add(-1)
+	r.retained.Add(-entry.retainedBytes)
+	r.admissionMu.Unlock()
 }
 
 func (r *Registry) shard(id [16]byte) *registryShard {
@@ -254,6 +318,10 @@ func (r *Registry) scopeDigest(scope Scope) [32]byte {
 	return out
 }
 
+func (r *Registry) ownerDigest(owner string) [32]byte {
+	return scopeDigest(r.secret, Scope{Owner: owner})
+}
+
 // Close releases every retained stream and rejects future operations.
 func (r *Registry) Close() {
 	if !r.closed.CompareAndSwap(false, true) {
@@ -267,8 +335,8 @@ func (r *Registry) Close() {
 		shard.mu.Unlock()
 		for _, entry := range entries {
 			entry.released.Store(true)
+			r.release(entry)
 			_ = entry.stream.Close()
-			r.count.Add(-1)
 		}
 	}
 }

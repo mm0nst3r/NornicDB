@@ -36,25 +36,30 @@ message SearchTextRequest {
   // configured default threshold applies.
   optional float min_similarity = 5;
 
-  // Opaque durable result-stream identifier. Empty starts a new search.
+  // Opaque signed result-stream token returned by a partial page. Empty starts
+  // a new search. The token is bound to the authenticated owner and database.
   string qid = 6;
 
-  // Maximum records to return from this start or pull operation.
+  // Maximum logical results to return from this start or pull operation. This
+  // is a page size, not the ranked retrieval depth or lifetime result ceiling.
   uint32 n = 7;
 
-  // Release the stream identified by qid without returning records.
+  // Release the complete stream identified by qid without returning records.
   bool discard = 8;
 
   // Optional caller-selected cumulative result ceiling. Zero means no caller ceiling.
   optional uint64 max_results = 9;
 
-  // Continuation mode: ranked, ranked_then_id, or id.
+  // Continuation mode: ranked progressively deepens ranked retrieval;
+  // ranked_then_id emits a ranked prefix then the eligible catalogue; id
+  // bypasses ranking and enumerates the eligible catalogue.
   string mode = 10;
 
-  // Optional string property used to collapse child records into logical assets.
+  // Optional flat nonempty UTF-8 string property used to collapse eligible
+  // child records into logical assets before pagination.
   string group_by = 11;
 
-  // Optional ranked candidate boundary for ranked_then_id mode.
+  // Optional fixed ranked-prefix boundary for ranked_then_id mode.
   optional uint64 ranked_limit = 12;
 }
 
@@ -66,6 +71,7 @@ message SearchPassage {
   float rrf_score = 5;
   int32 vector_rank = 6;
   int32 bm25_rank = 7;
+  // ranked for a ranked child or catalog for an unscored catalogue child.
   string phase = 8;
 }
 
@@ -82,7 +88,10 @@ message SearchHit {
   int32 vector_rank = 6;
   int32 bm25_rank = 7;
   string phase = 8;
+  // Logical property value when group_by was requested.
   string group_key = 9;
+  // Matching child results. One parent hit consumes one page slot regardless
+  // of the number of passages.
   repeated SearchPassage passages = 10;
 }
 
@@ -92,18 +101,22 @@ message SearchTextResponse {
   bool fallback_triggered = 3;
   string message = 4;
   double time_seconds = 5;
+  // Token for the next position; empty when exhausted or released.
   string qid = 6;
   bool has_more = 7;
   uint64 position = 8;
   uint32 returned = 9;
+  // Known for complete modes; omitted while progressive ranked cardinality is unknown.
   optional uint64 total = 10;
   google.protobuf.Timestamp expires_at = 11;
   bool released = 12;
   string mode = 13;
   int64 ranked_count = 14;
   optional int64 eligible_count = 15;
+  // True only when the ranked branch returned fewer rows than its requested depth.
   bool ranked_pool_exhausted = 16;
   bool collection_exhausted = 17;
+  // more_results, candidate_pool_exhausted, or eligible_population_exhausted.
   string completion = 18;
 }
 

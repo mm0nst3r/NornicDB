@@ -22,6 +22,14 @@ type blockingContinuationEngine struct {
 	once     sync.Once
 }
 
+type nonStreamingContinuationEngine struct {
+	storage.Engine
+}
+
+func (e nonStreamingContinuationEngine) GraphMutationVersion() (uint64, bool) {
+	return e.Engine.(storage.GraphMutationVersionProvider).GraphMutationVersion()
+}
+
 func (e *blockingContinuationEngine) GraphMutationVersion() (uint64, bool) {
 	return e.Engine.(storage.GraphMutationVersionProvider).GraphMutationVersion()
 }
@@ -87,6 +95,15 @@ func TestSearchTextContinuationExpandsWithoutReembedding(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, second.Results, 4)
 	require.Equal(t, "node-002", second.Results[0].ID)
+	seen := map[string]struct{}{}
+	for _, page := range [][]SearchResult{first.Results, second.Results} {
+		for _, result := range page {
+			_, duplicate := seen[result.ID]
+			require.False(t, duplicate, "duplicate result %s", result.ID)
+			seen[result.ID] = struct{}{}
+		}
+	}
+	require.Len(t, seen, 6)
 	require.Equal(t, int32(1), chunkCalls.Load())
 	require.Equal(t, int32(2), embedCalls.Load())
 }
@@ -184,7 +201,7 @@ func TestSearchTextContinuationRankedThenIDFreezesPrefixBeforeCatalog(t *testing
 	require.Equal(t, []string{"frame-b", "frame-a"}, passageIDs(first.Results[0].Passages))
 	require.Equal(t, []string{SearchContinuationRankedPhase, SearchContinuationRankedPhase}, []string{first.Results[0].Phase, first.Results[1].Phase})
 	require.Equal(t, 2, first.RankedCount)
-	require.True(t, first.RankedPoolExhausted)
+	require.False(t, first.RankedPoolExhausted)
 	require.False(t, first.CollectionExhausted)
 
 	request.QID = first.QID
@@ -468,6 +485,39 @@ func TestSearchTextContinuationIDModeInvalidatesAfterPolicyChange(t *testing.T) 
 	require.ErrorIs(t, err, resultstream.ErrInvalidated)
 }
 
+func TestSearchTextContinuationIDModeAuthorizesBuildAndHydration(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for _, id := range []string{"allowed-a", "allowed-b", "denied"} {
+		_, err := engine.CreateNode(&storage.Node{ID: storage.NodeID(id), Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
+
+	var allowSecond atomic.Bool
+	allowSecond.Store(true)
+	authorize := func(node *storage.Node) (bool, error) {
+		if node.ID == "denied" {
+			return false, nil
+		}
+		return node.ID != "allowed-b" || allowSecond.Load(), nil
+	}
+	request := SearchContinuationRequest{
+		Owner: "alice", Database: "nornic", Mode: SearchContinuationID, N: 1,
+		AuthorizeNode: authorize,
+	}
+	first, err := service.SearchTextContinuation(context.Background(), "", DefaultSearchOptions(), request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+	require.NoError(t, err)
+	require.Equal(t, "allowed-a", first.Results[0].ID)
+	require.Equal(t, 2, *first.EligibleCount)
+	require.True(t, first.HasMore)
+
+	allowSecond.Store(false)
+	request.QID = first.QID
+	_, err = service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+	require.ErrorIs(t, err, resultstream.ErrInvalidated)
+}
+
 func TestSearchTextContinuationIDModeEnumeratesExactlyTwentyThousandMembers(t *testing.T) {
 	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
 	service := NewService(engine)
@@ -567,4 +617,46 @@ func BenchmarkSearchTextContinuationCompleteBuild(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkSearchTextContinuationScanPath(b *testing.B) {
+	base := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	nodes := make([]*storage.Node, 20_000)
+	for index := range nodes {
+		nodes[index] = &storage.Node{ID: storage.NodeID(fmt.Sprintf("scan-%05d", index)), Labels: []string{"Document"}}
+	}
+	for start := 0; start < len(nodes); start += 500 {
+		if err := base.BulkCreateNodes(nodes[start:min(start+500, len(nodes))]); err != nil {
+			b.Fatal(err)
+		}
+	}
+	benchmarks := []struct {
+		name   string
+		engine storage.Engine
+	}{
+		{name: "native_streaming", engine: base},
+		{name: "AllNodes_fallback", engine: nonStreamingContinuationEngine{Engine: base}},
+	}
+	for _, benchmark := range benchmarks {
+		b.Run(benchmark.name, func(b *testing.B) {
+			service := NewService(benchmark.engine)
+			b.Cleanup(func() { _ = service.Close() })
+			request := SearchContinuationRequest{Owner: "benchmark", Database: "nornic", Mode: SearchContinuationID, N: 500}
+			b.ReportAllocs()
+			b.ReportMetric(float64(len(nodes)), "nodes/op")
+			for b.Loop() {
+				page, err := service.SearchTextContinuation(context.Background(), "", DefaultSearchOptions(), request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				if page.QID != "" {
+					request.QID, request.Discard = page.QID, true
+					if _, err := service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{}); err != nil {
+						b.Fatal(err)
+					}
+					request.QID, request.Discard = "", false
+				}
+			}
+		})
+	}
 }

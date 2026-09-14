@@ -472,7 +472,13 @@ paths:
       tags:
         - Search
       summary: Hybrid search
-      description: Perform hybrid search (vector + BM25) across nodes
+      description: |
+        Perform hybrid search (vector + BM25) across nodes. Supplying any
+        continuation field (`n`, `qid`, `discard`, `mode`, `group_by`, or
+        `ranked_limit`) changes the successful response from the legacy result
+        array to a `SearchContinuationPage` object. Durable qids are bound to
+        the authenticated principal and canonical database and expire after a
+        fixed server-configured TTL.
       operationId: hybridSearch
       security:
         - bearerAuth: []
@@ -483,8 +489,6 @@ paths:
           application/json:
             schema:
               type: object
-              required:
-                - query
               properties:
                 database:
                   type: string
@@ -502,18 +506,54 @@ paths:
                   example: ["Article", "Post"]
                 limit:
                   type: integer
-                  description: Maximum number of results
+                  description: Initial ranked retrieval depth; not a lifetime ceiling in continuation mode
                   default: 10
                   example: 10
+                filters:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+                  description: Property filters; OR within one property and AND across properties
+                qid:
+                  type: string
+                  description: Opaque durable qid returned by an earlier partial page
+                n:
+                  type: integer
+                  minimum: 1
+                  maximum: 500
+                  description: Maximum logical results returned by this START or PULL operation
+                discard:
+                  type: boolean
+                  description: Release the stream selected by qid without returning results
+                max_results:
+                  type: integer
+                  minimum: 1
+                  description: Optional cumulative stream ceiling, independent of limit and n
+                mode:
+                  type: string
+                  enum: [ranked, ranked_then_id, id]
+                  description: Declared result population; defaults to ranked
+                group_by:
+                  type: string
+                  description: Flat nonempty UTF-8 string property used to group child nodes before pagination
+                ranked_limit:
+                  type: integer
+                  minimum: 1
+                  description: Explicit ranked-prefix boundary for ranked_then_id mode
       responses:
         "200":
           description: Search results
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/SearchResult"
+                oneOf:
+                  - type: array
+                    description: Legacy response when no continuation fields are supplied
+                    items:
+                      $ref: "#/components/schemas/SearchResult"
+                  - $ref: "#/components/schemas/SearchContinuationPage"
         "400":
           $ref: "#/components/responses/BadRequest"
         "503":
@@ -1279,6 +1319,113 @@ components:
         bm25_rank:
           type: integer
           description: Rank in BM25 search results
+        phase:
+          type: string
+          enum: [ranked, catalog]
+          description: Population phase for continuation results
+        group_key:
+          type: string
+          description: Logical group value when group_by is set
+        passages:
+          type: array
+          description: Matching child nodes retained under one grouped logical result
+          items:
+            $ref: "#/components/schemas/SearchPassage"
+
+    SearchPassage:
+      type: object
+      description: A child result nested under a grouped logical result
+      properties:
+        node:
+          type: object
+          properties:
+            id:
+              type: string
+            labels:
+              type: array
+              items:
+                type: string
+            properties:
+              type: object
+        score:
+          type: number
+        rrf_score:
+          type: number
+        vector_rank:
+          type: integer
+        bm25_rank:
+          type: integer
+        phase:
+          type: string
+          enum: [ranked, catalog]
+
+    SearchContinuationPage:
+      type: object
+      required:
+        [
+          results,
+          has_more,
+          position,
+          returned,
+          discovered,
+          mode,
+          ranked_count,
+          ranked_pool_exhausted,
+          collection_exhausted,
+          completion,
+        ]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+        qid:
+          type: string
+          description: Opaque token for the next position; empty when exhausted or released
+        has_more:
+          type: boolean
+        position:
+          type: integer
+          format: uint64
+        returned:
+          type: integer
+        discovered:
+          type: integer
+        total:
+          type: integer
+          format: uint64
+          nullable: true
+          description: Known for complete modes; may be null for progressive ranked mode
+        expires_at:
+          type: string
+          format: date-time
+        released:
+          type: boolean
+        search_method:
+          type: string
+        fallback_triggered:
+          type: boolean
+        mode:
+          type: string
+          enum: [ranked, ranked_then_id, id]
+        ranked_count:
+          type: integer
+        eligible_count:
+          type: integer
+          nullable: true
+        ranked_pool_exhausted:
+          type: boolean
+          description: True only when the ranked branch is known to have fewer results than its requested depth; false when ranked_limit was filled.
+        collection_exhausted:
+          type: boolean
+        completion:
+          type: string
+          enum:
+            [
+              more_results,
+              candidate_pool_exhausted,
+              eligible_population_exhausted,
+            ]
 
     CypherResponse:
       type: object

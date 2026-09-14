@@ -18,6 +18,7 @@ These procedures are read-only and designed to map directly to internal contract
 - `db.retrieve`
   - Uses existing hybrid search behavior.
   - Accepts explicit candidate-depth, RRF, property-filter, and fallback policy controls.
+  - Supports durable START/PULL/DISCARD through the existing procedure. Continuation calls return one `page` column; ordinary calls retain the legacy result columns.
   - `failClosed: true` (alias `fail_closed`) is opt-in fail-closed retrieval: a usable numeric query embedding is required, strategy fallback including BM25-only is disabled, and supplied numeric policy values must be finite and in range (count fields such as `limit`, `candidateTarget`, and `rerankTopK` must be whole numbers; `rerankMinScore` must be finite). Embedding elements must be numeric types. It does not change ranking defaults. Absent the flag, empty embeddings still fall back to BM25.
   - Reranking is optional and follows request/config defaults.
 
@@ -100,6 +101,33 @@ RETURN node, score
 
 If you use `db.index.vector.embed()`, pass the returned `embedding` array into
 `db.index.vector.queryNodes(..., embedding)` (or an inline array equivalent) for explicit pipeline control.
+
+## Durable search continuation
+
+```cypher
+CALL db.retrieve({
+  query: 'sunset beach',
+  mode: 'ranked_then_id',
+  group_by: 'asset_id',
+  limit: 500,
+  ranked_limit: 5000,
+  n: 50
+}) YIELD page
+RETURN page
+```
+
+Use `page.qid` to continue or discard the same retained population:
+
+```cypher
+CALL db.retrieve({qid: $qid, n: 50}) YIELD page RETURN page
+CALL db.retrieve({qid: $qid, discard: true}) YIELD page RETURN page
+```
+
+One grouped result consumes one page slot. Its `passages` list contains the
+matching child nodes in deterministic order. `id` mode permits an empty query
+and performs a complete eligible storage scan. See
+[Search Continuation](search-continuation.md) for the complete field and
+consistency contract.
 
 ```cypher
 CALL db.infer({prompt: 'Summarize: ...', temperature: 0.0}) YIELD text

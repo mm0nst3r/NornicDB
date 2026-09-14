@@ -342,22 +342,35 @@ func (s *Session) handleRun(data []byte) error {
 			database: dbName,
 		}
 		s.latestStatementID = statementID
-		if err := s.sendSuccessNoFlush(map[string]any{
+		successMetadata := map[string]any{
 			"fields":  result.Columns,
 			"t_first": int64(0),
 			"qid":     statementID,
-		}); err != nil {
+		}
+		addDurableQIDMetadata(successMetadata, result)
+		if err := s.sendSuccessNoFlush(successMetadata); err != nil {
 			return err
 		}
 		return s.flushIfPending()
 	}
-	if err := s.sendSuccessNoFlush(map[string]any{
+	successMetadata := map[string]any{
 		"fields":  result.Columns,
 		"t_first": int64(0),
-	}); err != nil {
+	}
+	addDurableQIDMetadata(successMetadata, result)
+	if err := s.sendSuccessNoFlush(successMetadata); err != nil {
 		return err
 	}
 	return s.flushIfPending()
+}
+
+func addDurableQIDMetadata(metadata map[string]any, result *QueryResult) {
+	if result == nil || result.Metadata == nil {
+		return
+	}
+	if qid, ok := result.Metadata["durable_qid"].(string); ok && qid != "" {
+		metadata["durable_qid"] = qid
+	}
 }
 
 func (s *Session) logRunTiming(status, dbName, query string, duration time.Duration, rows int, runErr error) {
