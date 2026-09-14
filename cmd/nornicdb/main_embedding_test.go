@@ -69,6 +69,11 @@ func TestServeEmbeddingPrecedence(t *testing.T) {
 					proc.Env = append(proc.Env, value)
 				}
 			}
+			// HOME must be isolated: config.FindConfigFile checks
+			// ~/.nornicdb/config.yaml before the current directory, so a
+			// developer's real home-directory config would otherwise leak
+			// into "defaults" and other cases that don't pass --config.
+			proc.Env = append(proc.Env, "HOME="+dir)
 			proc.Env = append(proc.Env, "NORNICDB_TEST_EMBEDDING_CLI=1", "NORNICDB_LANGUAGE=en", "NORNICDB_BOLT_ENABLED=false", "NORNICDB_EMBEDDING_ENABLED=false")
 			proc.Env = append(proc.Env, tc.env...)
 			logPath := filepath.Join(dir, "serve.log")
