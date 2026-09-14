@@ -705,8 +705,11 @@ type Service struct {
 
 	// resultCache caches Search() results by query+options (same semantics as Cypher query cache).
 	// All call paths (HTTP search, Cypher, etc.) benefit. Invalidated on IndexNode/RemoveNode.
-	resultCache    *searchResultCache
-	cacheNamespace string
+	resultCache          *searchResultCache
+	cacheNamespace       string
+	continuationMu       sync.Mutex
+	continuationRegistry continuationRegistry
+	continuationOwned    bool
 
 	nodeDecayFilter NodeDecayFilterFunc
 
@@ -1768,6 +1771,13 @@ func (s *Service) Close() error {
 	if s.lifecycleCancel != nil {
 		s.lifecycleCancel()
 	}
+	s.continuationMu.Lock()
+	if s.continuationRegistry != nil && s.continuationOwned {
+		s.continuationRegistry.Close()
+	}
+	s.continuationRegistry = nil
+	s.continuationOwned = false
+	s.continuationMu.Unlock()
 	s.stopHNSWMaintenance()
 
 	s.persistMu.Lock()

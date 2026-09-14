@@ -139,7 +139,7 @@ func (a *AuthenticatorAdapter) Authenticate(scheme, principal, credentials strin
 			return nil, fmt.Errorf("anonymous authentication not allowed")
 		}
 		roles := []string{string(auth.RoleViewer)}
-		result := &BoltAuthResult{Authenticated: true, Username: "anonymous", Roles: roles}
+		result := &BoltAuthResult{Authenticated: true, Username: "anonymous", PrincipalID: "anonymous", Roles: roles}
 		if a.getEffectivePermissions != nil {
 			result.Permissions = a.getEffectivePermissions(roles)
 		}
@@ -160,7 +160,7 @@ func (a *AuthenticatorAdapter) Authenticate(scheme, principal, credentials strin
 			return nil, fmt.Errorf("invalid bearer token: %w", err)
 		}
 
-		result := &BoltAuthResult{Authenticated: true, Username: claims.Username, Roles: claims.Roles}
+		result := &BoltAuthResult{Authenticated: true, Username: claims.Username, PrincipalID: auth.PrincipalID(claims), Roles: claims.Roles}
 		if a.getEffectivePermissions != nil {
 			result.Permissions = a.getEffectivePermissions(claims.Roles)
 		}
@@ -176,7 +176,7 @@ func (a *AuthenticatorAdapter) Authenticate(scheme, principal, credentials strin
 			return nil, fmt.Errorf("invalid bearer token: %w", err)
 		}
 
-		result := &BoltAuthResult{Authenticated: true, Username: claims.Username, Roles: claims.Roles}
+		result := &BoltAuthResult{Authenticated: true, Username: claims.Username, PrincipalID: auth.PrincipalID(claims), Roles: claims.Roles}
 		if a.getEffectivePermissions != nil {
 			result.Permissions = a.getEffectivePermissions(claims.Roles)
 		}
@@ -190,7 +190,12 @@ func (a *AuthenticatorAdapter) Authenticate(scheme, principal, credentials strin
 
 	if a.basicAuthCache != nil {
 		if cached, ok := a.basicAuthCache.Get(principal, credentials); ok {
-			result := &BoltAuthResult{Authenticated: true, Username: cached.Username, Roles: cached.Roles}
+			result := &BoltAuthResult{
+				Authenticated: true,
+				Username:      cached.Username,
+				PrincipalID:   auth.PrincipalID(cached),
+				Roles:         cached.Roles,
+			}
 			if a.getEffectivePermissions != nil {
 				result.Permissions = a.getEffectivePermissions(cached.Roles)
 			}
@@ -224,7 +229,12 @@ func (a *AuthenticatorAdapter) Authenticate(scheme, principal, credentials strin
 		})
 	}
 
-	result := &BoltAuthResult{Authenticated: true, Username: user.Username, Roles: roles}
+	result := &BoltAuthResult{
+		Authenticated: true,
+		Username:      user.Username,
+		PrincipalID:   "sub:" + user.ID,
+		Roles:         roles,
+	}
 	if a.getEffectivePermissions != nil {
 		result.Permissions = a.getEffectivePermissions(roles)
 	}

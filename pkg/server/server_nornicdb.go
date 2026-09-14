@@ -301,11 +301,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Database string              `json:"database,omitempty"` // Optional: defaults to default database
-		Query    string              `json:"query"`
-		Labels   []string            `json:"labels,omitempty"`
-		Limit    int                 `json:"limit,omitempty"`
-		Filters  map[string][]string `json:"filters,omitempty"`
+		Database   string              `json:"database,omitempty"` // Optional: defaults to default database
+		Query      string              `json:"query"`
+		Labels     []string            `json:"labels,omitempty"`
+		Limit      int                 `json:"limit,omitempty"`
+		Filters    map[string][]string `json:"filters,omitempty"`
+		QID        string              `json:"qid,omitempty"`
+		N          int                 `json:"n,omitempty"`
+		Discard    bool                `json:"discard,omitempty"`
+		MaxResults int                 `json:"max_results,omitempty"`
 	}
 
 	if err := s.readJSON(r, &req); err != nil {
@@ -315,6 +319,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	if req.Limit <= 0 {
 		req.Limit = 10
+	}
+	if req.QID != "" && req.N == 0 {
+		req.N = 50
 	}
 
 	// Get database name (default to default database if not specified)
@@ -427,6 +434,25 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	continuationRequested := req.N != 0 || req.QID != "" || req.Discard
+	continuationRequest := search.SearchContinuationRequest{
+		Owner:      transactionOwnerKey(r, getClaims(r)),
+		Database:   dbName,
+		QID:        req.QID,
+		N:          req.N,
+		Discard:    req.Discard,
+		MaxResults: req.MaxResults,
+	}
+	if req.QID != "" {
+		page, continuationErr := searchSvc.SearchTextContinuation(ctx, "", nil, continuationRequest, nil, nil, nil, search.ChunkedSearchErrorPolicy{})
+		if continuationErr != nil {
+			s.writeBoundaryError(w, r, http.StatusBadRequest, continuationErr, ErrBadRequest)
+			return
+		}
+		s.writeSearchContinuationPage(w, page)
+		return
+	}
+
 	const embedTimeout = 8 * time.Second
 
 	queryChunks, err := s.db.ChunkQueryForDB(ctx, dbName, req.Query)
@@ -477,22 +503,48 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chunkLoopStart := time.Now()
-	searchResponse, err := search.SearchTextChunksWithErrorPolicy(
-		ctx,
-		req.Query,
-		opts,
-		func(context.Context, string) ([]string, error) { return queryChunks, nil },
-		embedQuery,
-		searchQuery,
-		search.ChunkedSearchErrorPolicy{
-			FatalEmbeddingError: func(err error) bool {
-				return errors.Is(err, nornicdb.ErrQueryEmbeddingDimensionMismatch)
-			},
-			FatalSearchError: func(err error) bool {
-				return errors.Is(err, search.ErrSearchIndexBuilding)
-			},
+	errorPolicy := search.ChunkedSearchErrorPolicy{
+		FatalEmbeddingError: func(err error) bool {
+			return errors.Is(err, nornicdb.ErrQueryEmbeddingDimensionMismatch)
 		},
-	)
+		FatalSearchError: func(err error) bool {
+			return errors.Is(err, search.ErrSearchIndexBuilding)
+		},
+	}
+	var searchResponse *search.SearchResponse
+	var continuationPage *search.SearchContinuationPage
+	if continuationRequested {
+		continuationPage, err = searchSvc.SearchTextContinuation(
+			ctx,
+			req.Query,
+			opts,
+			continuationRequest,
+			func(context.Context, string) ([]string, error) { return queryChunks, nil },
+			embedQuery,
+			searchQuery,
+			errorPolicy,
+		)
+		if continuationPage != nil {
+			searchResponse = &search.SearchResponse{
+				Status:            "success",
+				Query:             req.Query,
+				Results:           continuationPage.Results,
+				Returned:          continuationPage.Returned,
+				SearchMethod:      continuationPage.SearchMethod,
+				FallbackTriggered: continuationPage.FallbackTriggered,
+			}
+		}
+	} else {
+		searchResponse, err = search.SearchTextChunksWithErrorPolicy(
+			ctx,
+			req.Query,
+			opts,
+			func(context.Context, string) ([]string, error) { return queryChunks, nil },
+			embedQuery,
+			searchQuery,
+			errorPolicy,
+		)
+	}
 	chunkLoopDur = time.Since(chunkLoopStart)
 	if errors.Is(err, nornicdb.ErrQueryEmbeddingDimensionMismatch) {
 		s.writeBoundaryError(w, r, http.StatusBadRequest, err, ErrBadRequest)
@@ -528,6 +580,21 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Canonical mapping keeps DB and server adapters consistent.
 	results := nornicdb.MapSearchResponse(searchResponse)
+	if continuationPage != nil {
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"results":            results,
+			"qid":                continuationPage.QID,
+			"has_more":           continuationPage.HasMore,
+			"position":           continuationPage.Position,
+			"returned":           continuationPage.Returned,
+			"discovered":         continuationPage.Discovered,
+			"total":              continuationPage.Total,
+			"expires_at":         continuationPage.ExpiresAt,
+			"search_method":      continuationPage.SearchMethod,
+			"fallback_triggered": continuationPage.FallbackTriggered,
+		})
+		return
+	}
 	if searchDiagEnabled {
 		s.logEvent(ctx, slog.LevelInfo, localization.ServerSearchTimingEvent(localization.ServerSearchTimingFields{
 			Status:        "ok",
@@ -550,6 +617,22 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, results)
+}
+
+func (s *Server) writeSearchContinuationPage(w http.ResponseWriter, page *search.SearchContinuationPage) {
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"results":            nornicdb.MapSearchResponse(&search.SearchResponse{Results: page.Results}),
+		"qid":                page.QID,
+		"has_more":           page.HasMore,
+		"position":           page.Position,
+		"returned":           page.Returned,
+		"discovered":         page.Discovered,
+		"total":              page.Total,
+		"expires_at":         page.ExpiresAt,
+		"released":           page.Released,
+		"search_method":      page.SearchMethod,
+		"fallback_triggered": page.FallbackTriggered,
+	})
 }
 
 func runEmbedWithTimeout(parent context.Context, timeout time.Duration, fn func(context.Context) ([]float32, error)) ([]float32, error) {

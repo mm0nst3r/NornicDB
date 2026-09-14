@@ -470,6 +470,15 @@ an empty page. It is activated only by continuation options, so existing
 - Authenticate every start, pull, and discard operation.
 - Derive owner identity from trusted server context. Prefer immutable subject ID
   over username or bearer-token text.
+- Canonicalize validated identities as subject, username, then email. Never
+  parse an unvalidated bearer token or use a raw Authorization header as owner
+  identity. A forwarded credential without a validated principal fails closed.
+- Compute the retained owner/database thumbprint with HMAC-SHA-256 under the
+  registry's random process secret. Retain only this keyed digest; never retain
+  a password, bearer token, API key, or Authorization header in stream state.
+- Reauthentication or token refresh may resume a stream only when it resolves
+  to the same validated principal and current database authorization still
+  permits the pull.
 - Bind the entry to the canonical database, not a user-supplied alias.
 - Recheck database read access and node visibility on every pull.
 - Compare owner hashes in constant time.
@@ -515,36 +524,36 @@ release, pull outcomes, and wrong-instance tokens.
 ### Phase 0: Contract Tests And Baselines
 
 - [ ] Add black-box contract tests for START, repeated PULL, replay, exhaustion,
-  and DISCARD independent of any transport.
+      and DISCARD independent of any transport.
 - [ ] Capture ordinary search and current Bolt PULL latency, allocations, and
-  retained heap before adding the registry.
+      retained heap before adding the registry.
 - [ ] Add benchmark fixtures that consume 10, 100, 1,000, 5,000, and more than
-  5,000 ranked hits from one stream.
+      5,000 ranked hits from one stream.
 - [ ] Verify a stream can return more results than its initial `limit` without
-  duplicates or repeated embedding calls.
+      duplicates or repeated embedding calls.
 
 ### Phase 1: Shared Stream And Compact Registry
 
 - [ ] Add the shared stream interface and materialized adapter.
 - [ ] Add compact search descriptors, normalized resumable search state, and a
-  contiguous string arena.
+      contiguous string arena.
 - [ ] Add signed position-bearing durable qids.
 - [ ] Add sharded immutable registry entries and bounded admission accounting.
 - [ ] Add fixed expiry and bounded cleanup.
 - [ ] Add owner/database binding and error taxonomy.
 - [ ] Prove with tests that no transaction or storage/search lock survives
-  publication.
+      publication.
 
 ### Phase 2: Search Integration
 
 - [ ] Buffer the initial final `SearchTextChunks` outer-RRF population and
-  progressively deepen it when unseen rows run low.
+      progressively deepen it when unseen rows run low.
 - [ ] Preserve explicit-vector single-search behavior.
 - [ ] Hydrate and authorize only the requested page.
 - [ ] Avoid registry insertion for one-page populations.
 - [ ] Ensure pulls never call the chunker or embedder.
 - [ ] Add branch exhaustion reporting and continuation-specific retrieval depth
-  beyond one-shot candidate caps.
+      beyond one-shot candidate caps.
 - [ ] Preserve emitted-prefix stability while deduplicating expanded results.
 
 ### Phase 3: Bolt Adapter
@@ -565,7 +574,7 @@ release, pull outcomes, and wrong-instance tokens.
 - [ ] Add native gRPC principal/database context integration.
 - [ ] Map common continuation errors consistently to HTTP and gRPC statuses.
 - [ ] Add cross-protocol tests that start in one protocol and pull or discard in
-  another.
+      another.
 
 ### Phase 5: Existing Cypher Procedure
 
@@ -573,7 +582,7 @@ release, pull outcomes, and wrong-instance tokens.
 - [ ] Add the continuation-only page envelope without changing ordinary columns.
 - [ ] Derive owner and canonical database from trusted execution context.
 - [ ] Verify standard Neo4j drivers can resume a durable qid after reconnect by
-  calling the existing procedure.
+      calling the existing procedure.
 - [ ] Verify empty and exhausted pages retain continuation metadata.
 
 ### Phase 6: Operations And Cluster Readiness
@@ -582,9 +591,32 @@ release, pull outcomes, and wrong-instance tokens.
 - [ ] Add shutdown and reconfiguration behavior.
 - [ ] Document process-local durability and load-balancer affinity requirements.
 - [ ] Design, but do not require, a shared-registry provider interface for a
-  later cluster-durable implementation.
+      later cluster-durable implementation.
 
 ## Performance Validation
+
+### Implemented Primitive Baseline And Tuning
+
+Measured on Apple M3 Max (`darwin/arm64`, five runs, steady-state median):
+
+| Operation                    |                     Before |                     After |                       Allocation change |
+| ---------------------------- | -------------------------: | ------------------------: | --------------------------------------: |
+| Signed token encode + verify |   710 ns/op (~1.41M ops/s) |  432 ns/op (~2.31M ops/s) | 1,472 B / 18 allocs to 224 B / 2 allocs |
+| Buffered registry pull       | 1,150 ns/op (~0.87M ops/s) |  689 ns/op (~1.45M ops/s) | 2,168 B / 30 allocs to 408 B / 8 allocs |
+| Buffered stream page         |  31.7 ns/op (~31.5M ops/s) | 31.7 ns/op (~31.5M ops/s) |           unchanged at 120 B / 2 allocs |
+
+The tuned path keeps HMAC-SHA-256 and constant-time comparison. It uses
+fixed-size token buffers and fixed-size HMAC computation for the known token
+layout, plus a per-registry pool of keyed scope hashers. Registry locks still
+cover lookup only; stream paging and expansion execute outside shard locks.
+
+Reproduce with:
+
+```bash
+go test ./pkg/resultstream -run '^$' \
+  -bench 'Benchmark(TokenRoundTrip|ProgressiveBufferedPull|RegistryBufferedPull)$' \
+  -benchmem -count=5
+```
 
 Required microbenchmarks:
 

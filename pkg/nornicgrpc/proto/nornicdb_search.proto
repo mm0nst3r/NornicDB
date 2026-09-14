@@ -5,6 +5,7 @@ package nornicdb.grpc.v1;
 option go_package = "github.com/orneryd/nornicdb/pkg/nornicgrpc/gen;gen";
 
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
 
 // NornicSearch is a NornicDB-native gRPC API for high-performance, typed search.
 //
@@ -34,6 +35,18 @@ message SearchTextRequest {
   // Optional similarity threshold for vector search. When unset, the server's
   // configured default threshold applies.
   optional float min_similarity = 5;
+
+  // Opaque durable result-stream identifier. Empty starts a new search.
+  string qid = 6;
+
+  // Maximum records to return from this start or pull operation.
+  uint32 n = 7;
+
+  // Release the stream identified by qid without returning records.
+  bool discard = 8;
+
+  // Optional caller-selected cumulative result ceiling. Zero means no caller ceiling.
+  optional uint64 max_results = 9;
 }
 
 message SearchHit {
@@ -56,5 +69,12 @@ message SearchTextResponse {
   bool fallback_triggered = 3;
   string message = 4;
   double time_seconds = 5;
+  string qid = 6;
+  bool has_more = 7;
+  uint64 position = 8;
+  uint32 returned = 9;
+  optional uint64 total = 10;
+  google.protobuf.Timestamp expires_at = 11;
+  bool released = 12;
 }
 

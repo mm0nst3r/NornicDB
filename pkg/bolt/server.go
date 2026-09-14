@@ -472,6 +472,7 @@ type BoltAuthenticator interface {
 type BoltAuthResult struct {
 	Authenticated bool     // Whether authentication succeeded
 	Username      string   // Authenticated username
+	PrincipalID   string   // Stable identity derived from validated authentication
 	Roles         []string // User roles (admin, editor, viewer, etc.)
 	Permissions   []string // Effective entitlement IDs (when set, used by HasPermission; else fallback to rolePerms)
 }

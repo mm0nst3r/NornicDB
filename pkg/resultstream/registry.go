@@ -1,0 +1,274 @@
+package resultstream
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"errors"
+	"hash"
+	"io"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+const registryShardCount = 32
+
+var (
+	ErrInvalidQID   = errors.New("invalid result stream qid")
+	ErrExpiredQID   = errors.New("result stream qid expired")
+	ErrCapacity     = errors.New("result stream capacity exceeded")
+	ErrInvalidScope = errors.New("invalid result stream scope")
+)
+
+// Scope binds a stream to one authenticated owner and canonical database.
+type Scope struct {
+	Owner    string
+	Database string
+}
+
+// Config bounds process-local durable result streams.
+type Config struct {
+	TTL         time.Duration
+	MaxStreams  int64
+	MaxPageSize int
+}
+
+type registryEntry struct {
+	scopeHash [32]byte
+	expires   int64
+	stream    Stream
+	released  atomic.Bool
+}
+
+type registryShard struct {
+	mu      sync.RWMutex
+	entries map[[16]byte]*registryEntry
+}
+
+// Registry owns signed qids and sharded process-local stream entries.
+type Registry struct {
+	config   Config
+	secret   [32]byte
+	instance [8]byte
+	shards   [registryShardCount]registryShard
+	count    atomic.Int64
+	closed   atomic.Bool
+	scopeMAC sync.Pool
+}
+
+// NewRegistry constructs a registry with a random signing key and instance ID.
+func NewRegistry(config Config) (*Registry, error) {
+	if config.TTL < 0 || config.MaxStreams < 0 || config.MaxPageSize < 0 {
+		return nil, ErrCapacity
+	}
+	if config.TTL == 0 {
+		config.TTL = 5 * time.Minute
+	}
+	if config.MaxStreams == 0 {
+		config.MaxStreams = 1024
+	}
+	if config.MaxPageSize == 0 {
+		config.MaxPageSize = 500
+	}
+	registry := &Registry{config: config}
+	if _, err := io.ReadFull(rand.Reader, registry.secret[:]); err != nil {
+		return nil, err
+	}
+	if _, err := io.ReadFull(rand.Reader, registry.instance[:]); err != nil {
+		return nil, err
+	}
+	secret := registry.secret
+	registry.scopeMAC.New = func() any { return hmac.New(sha256.New, secret[:]) }
+	for index := range registry.shards {
+		registry.shards[index].entries = make(map[[16]byte]*registryEntry)
+	}
+	return registry, nil
+}
+
+// Start returns the first page and publishes the stream only when more rows are
+// available.
+func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int) (*Page, error) {
+	if err := r.validate(scope, n); err != nil {
+		return nil, err
+	}
+	page, err := stream.Pull(ctx, 0, n)
+	if err != nil {
+		_ = stream.Close()
+		return nil, err
+	}
+	if !page.HasMore {
+		_ = stream.Close()
+		return page, nil
+	}
+	if r.count.Add(1) > r.config.MaxStreams {
+		r.count.Add(-1)
+		_ = stream.Close()
+		return nil, ErrCapacity
+	}
+
+	entry := &registryEntry{
+		scopeHash: r.scopeDigest(scope),
+		expires:   time.Now().Add(r.config.TTL).Unix(),
+		stream:    stream,
+	}
+	var streamID [16]byte
+	inserted := false
+	for attempt := 0; attempt < 4; attempt++ {
+		if _, err := io.ReadFull(rand.Reader, streamID[:]); err != nil {
+			break
+		}
+		shard := r.shard(streamID)
+		shard.mu.Lock()
+		if _, exists := shard.entries[streamID]; !exists && !r.closed.Load() {
+			shard.entries[streamID] = entry
+			inserted = true
+		}
+		shard.mu.Unlock()
+		if inserted {
+			break
+		}
+	}
+	if !inserted {
+		r.count.Add(-1)
+		_ = stream.Close()
+		if r.closed.Load() {
+			return nil, ErrClosed
+		}
+		return nil, ErrCapacity
+	}
+	page.QID = encodeToken(r.secret, r.instance, streamID, page.Next, entry.expires)
+	page.ExpiresAt = time.Unix(entry.expires, 0).UTC()
+	return page, nil
+}
+
+// Pull resolves a signed qid and invokes the stream without holding a registry
+// shard lock.
+func (r *Registry) Pull(ctx context.Context, scope Scope, qid string, n int) (*Page, error) {
+	if err := r.validate(scope, n); err != nil {
+		return nil, err
+	}
+	token, err := decodeToken(r.secret, r.instance, qid)
+	if err != nil {
+		return nil, err
+	}
+	if time.Now().Unix() >= token.expires {
+		r.remove(token.streamID, nil)
+		return nil, ErrExpiredQID
+	}
+	entry := r.lookup(token.streamID)
+	wantScope := r.scopeDigest(scope)
+	if entry == nil || entry.released.Load() || entry.expires != token.expires ||
+		!hmac.Equal(entry.scopeHash[:], wantScope[:]) {
+		return nil, ErrInvalidQID
+	}
+	page, err := entry.stream.Pull(ctx, token.position, n)
+	if err != nil {
+		return nil, err
+	}
+	if page.HasMore {
+		page.QID = encodeToken(r.secret, r.instance, token.streamID, page.Next, entry.expires)
+	}
+	page.ExpiresAt = time.Unix(entry.expires, 0).UTC()
+	return page, nil
+}
+
+// Discard releases the complete stream addressed by any of its qids.
+func (r *Registry) Discard(scope Scope, qid string) error {
+	if scope.Owner == "" || scope.Database == "" {
+		return ErrInvalidScope
+	}
+	token, err := decodeToken(r.secret, r.instance, qid)
+	if err != nil {
+		return err
+	}
+	entry := r.lookup(token.streamID)
+	wantScope := r.scopeDigest(scope)
+	if entry == nil || entry.expires != token.expires || !hmac.Equal(entry.scopeHash[:], wantScope[:]) {
+		return ErrInvalidQID
+	}
+	r.remove(token.streamID, entry)
+	return nil
+}
+
+func (r *Registry) validate(scope Scope, n int) error {
+	if r.closed.Load() {
+		return ErrClosed
+	}
+	if scope.Owner == "" || scope.Database == "" {
+		return ErrInvalidScope
+	}
+	if n <= 0 || n > r.config.MaxPageSize {
+		return ErrInvalidPageSize
+	}
+	return nil
+}
+
+func (r *Registry) lookup(id [16]byte) *registryEntry {
+	shard := r.shard(id)
+	shard.mu.RLock()
+	entry := shard.entries[id]
+	shard.mu.RUnlock()
+	return entry
+}
+
+func (r *Registry) remove(id [16]byte, expected *registryEntry) {
+	shard := r.shard(id)
+	shard.mu.Lock()
+	entry := shard.entries[id]
+	if entry != nil && (expected == nil || expected == entry) {
+		delete(shard.entries, id)
+		entry.released.Store(true)
+		r.count.Add(-1)
+	}
+	shard.mu.Unlock()
+	if entry != nil && (expected == nil || expected == entry) {
+		_ = entry.stream.Close()
+	}
+}
+
+func (r *Registry) shard(id [16]byte) *registryShard {
+	return &r.shards[id[0]&byte(registryShardCount-1)]
+}
+
+func scopeDigest(secret [32]byte, scope Scope) [32]byte {
+	digest := hmac.New(sha256.New, secret[:])
+	_, _ = digest.Write([]byte(scope.Owner))
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write([]byte(scope.Database))
+	var out [32]byte
+	copy(out[:], digest.Sum(nil))
+	return out
+}
+
+func (r *Registry) scopeDigest(scope Scope) [32]byte {
+	digest := r.scopeMAC.Get().(hash.Hash)
+	digest.Reset()
+	_, _ = digest.Write([]byte(scope.Owner))
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write([]byte(scope.Database))
+	var out [32]byte
+	digest.Sum(out[:0])
+	r.scopeMAC.Put(digest)
+	return out
+}
+
+// Close releases every retained stream and rejects future operations.
+func (r *Registry) Close() {
+	if !r.closed.CompareAndSwap(false, true) {
+		return
+	}
+	for index := range r.shards {
+		shard := &r.shards[index]
+		shard.mu.Lock()
+		entries := shard.entries
+		shard.entries = make(map[[16]byte]*registryEntry)
+		shard.mu.Unlock()
+		for _, entry := range entries {
+			entry.released.Store(true)
+			_ = entry.stream.Close()
+			r.count.Add(-1)
+		}
+	}
+}

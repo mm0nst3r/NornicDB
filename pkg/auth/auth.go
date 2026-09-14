@@ -316,6 +316,31 @@ type JWTClaims struct {
 	Exp      int64    `json:"exp,omitempty"`      // Expiration (Unix timestamp, 0 = never)
 }
 
+// PrincipalID returns a stable identity only from validated claims.
+func PrincipalID(claims *JWTClaims) string {
+	if claims == nil {
+		return "anonymous"
+	}
+	if value := strings.TrimSpace(claims.Sub); value != "" {
+		return "sub:" + value
+	}
+	if value := strings.TrimSpace(claims.Username); value != "" {
+		return "user:" + value
+	}
+	if value := strings.TrimSpace(claims.Email); value != "" {
+		return "email:" + value
+	}
+	return "anonymous"
+}
+
+// UsernamePrincipalID returns the canonical identity for validated basic auth.
+func UsernamePrincipalID(username string) string {
+	if value := strings.TrimSpace(username); value != "" {
+		return "user:" + value
+	}
+	return "anonymous"
+}
+
 // TokenResponse follows OAuth 2.0 RFC 6749 token response format.
 // Compatible with standard OAuth 2.0 token endpoints.
 type TokenResponse struct {

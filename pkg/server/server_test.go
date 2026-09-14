@@ -1454,6 +1454,78 @@ func TestHandleSearch(t *testing.T) {
 	}
 }
 
+func TestHandleSearchContinuationBeyondInitialLimit(t *testing.T) {
+	server, auth := setupTestServer(t)
+	token := getAuthToken(t, auth, "admin")
+	otherToken := getAuthToken(t, auth, "reader")
+	database := server.dbManager.DefaultDatabaseName()
+	engine, err := server.dbManager.GetStorage(database)
+	require.NoError(t, err)
+
+	nodes := make([]*storage.Node, 5)
+	for index := range nodes {
+		nodes[index] = &storage.Node{
+			ID:     storage.NodeID(fmt.Sprintf("continuation-%d", index)),
+			Labels: []string{"Document"},
+			Properties: map[string]any{
+				"content": fmt.Sprintf("alpha continuation document %d", index),
+			},
+		}
+	}
+	require.NoError(t, engine.BulkCreateNodes(nodes))
+
+	rebuild := makeRequest(t, server, http.MethodPost, "/nornicdb/search/rebuild", map[string]any{"database": database}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, rebuild.Code, rebuild.Body.String())
+	require.Eventually(t, func() bool {
+		status := server.db.GetDatabaseSearchStatus(database)
+		return status.Ready && !status.Building
+	}, 5*time.Second, 50*time.Millisecond)
+
+	start := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]any{
+		"query": "alpha", "limit": 1, "n": 1, "database": database,
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	var first struct {
+		Results  []map[string]any `json:"results"`
+		QID      string           `json:"qid"`
+		HasMore  bool             `json:"has_more"`
+		Position uint64           `json:"position"`
+	}
+	require.NoError(t, json.NewDecoder(start.Body).Decode(&first))
+	require.Len(t, first.Results, 1)
+	require.NotEmpty(t, first.QID)
+	require.True(t, first.HasMore)
+	require.Equal(t, uint64(0), first.Position)
+
+	foreignPull := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]any{
+		"qid": first.QID, "n": 1, "database": database,
+	}, "Bearer "+otherToken)
+	require.Equal(t, http.StatusBadRequest, foreignPull.Code, foreignPull.Body.String())
+
+	pull := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]any{
+		"qid": first.QID, "n": 3, "database": database,
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, pull.Code, pull.Body.String())
+	var second struct {
+		Results  []map[string]any `json:"results"`
+		QID      string           `json:"qid"`
+		Position uint64           `json:"position"`
+	}
+	require.NoError(t, json.NewDecoder(pull.Body).Decode(&second))
+	require.Len(t, second.Results, 3)
+	require.Equal(t, uint64(1), second.Position)
+
+	release := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]any{
+		"qid": second.QID, "discard": true, "database": database,
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, release.Code, release.Body.String())
+	var released struct {
+		Released bool `json:"released"`
+	}
+	require.NoError(t, json.NewDecoder(release.Body).Decode(&released))
+	require.True(t, released.Released)
+}
+
 // TestHandleSearch_FiltersParameter verifies that the `filters` field is accepted in the
 // request body and that results are restricted to nodes matching the filter.
 func TestHandleSearch_FiltersParameter(t *testing.T) {

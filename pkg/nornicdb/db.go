@@ -52,6 +52,7 @@ import (
 	"github.com/orneryd/nornicdb/pkg/localization"
 	"github.com/orneryd/nornicdb/pkg/observability"
 	"github.com/orneryd/nornicdb/pkg/replication"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/retention"
 	"github.com/orneryd/nornicdb/pkg/search"
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -165,10 +166,12 @@ type DB struct {
 	gpuManager        interface{} // *gpu.Manager - interface to avoid circular import
 
 	// Search services (per database) using pre-computed embeddings.
-	embeddingDims       int     // Effective vector index dimensions in use
-	searchMinSimilarity float64 // Default MinSimilarity threshold for search
-	searchServicesMu    sync.RWMutex
-	searchServices      map[string]*dbSearchService
+	embeddingDims        int     // Effective vector index dimensions in use
+	searchMinSimilarity  float64 // Default MinSimilarity threshold for search
+	searchServicesMu     sync.RWMutex
+	searchServices       map[string]*dbSearchService
+	searchContinuationMu sync.Mutex
+	searchContinuation   *resultstream.Registry
 	// searchServiceCreationMu serializes the "create and insert" path in getOrCreateSearchService
 	// so only one goroutine creates a service per dbName at a time, avoiding RWMutex contention deadlock.
 	searchServiceCreationMu sync.Mutex
@@ -1963,6 +1966,12 @@ func (db *DB) closeInternal() error {
 		}
 	}
 	db.searchServicesMu.RUnlock()
+	db.searchContinuationMu.Lock()
+	if db.searchContinuation != nil {
+		db.searchContinuation.Close()
+		db.searchContinuation = nil
+	}
+	db.searchContinuationMu.Unlock()
 
 	if db.accessFlusher != nil {
 		db.accessFlusher.Stop()

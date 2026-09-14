@@ -131,10 +131,11 @@ func (s *Server) startQdrantGRPC() error {
 	rerankEnabled := searchSvc.RerankerAvailable(context.Background())
 	nornicSearchSvc, err := nornicgrpc.NewService(
 		nornicgrpc.Config{
-			DefaultDatabase: dbName,
-			MaxLimit:        cfg.MaxTopK,
-			RerankEnabled:   rerankEnabled,
-			Localizer:       s.localizer,
+			DefaultDatabase:  dbName,
+			MaxLimit:         cfg.MaxTopK,
+			RerankEnabled:    rerankEnabled,
+			Localizer:        s.localizer,
+			OwnerFromContext: qdrantgrpc.AuthenticatedPrincipalID,
 		},
 		func(ctx context.Context, query string) ([]float32, error) {
 			return s.db.EmbedQuery(ctx, query)

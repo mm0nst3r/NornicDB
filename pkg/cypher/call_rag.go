@@ -183,7 +183,17 @@ func (e *StorageExecutor) callDbInfer(ctx context.Context, cypher string) (*Exec
 
 func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]interface{}, forceRerank bool, useConfiguredRerank bool) (*ExecuteResult, error) {
 	query := stringOr(req["query"], stringOr(req["text"], ""))
-	if strings.TrimSpace(query) == "" {
+	qid := stringOr(req["qid"], "")
+	discard, _ := toBool(req["discard"])
+	n, nPresent := toInt(req["n"])
+	continuationRequested := qid != "" || discard || nPresent
+	if qid != "" && !nPresent {
+		n = 50
+	}
+	if continuationRequested && !discard && n <= 0 {
+		return nil, fmt.Errorf("n must be positive")
+	}
+	if strings.TrimSpace(query) == "" && qid == "" {
 		return nil, localizedError(localization.CypherSubqueriesQueryRequired(), nil)
 	}
 
@@ -232,13 +242,49 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 		}
 		return svc
 	}
+	continuationRequest := search.SearchContinuationRequest{
+		Owner:    searchContinuationOwner(ctx),
+		Database: GetUseDatabaseFromContext(ctx),
+		QID:      qid,
+		N:        n,
+		Discard:  discard,
+	}
+	if maxResults, ok := toInt(firstPresent(req, "maxResults", "max_results")); ok && maxResults > 0 {
+		continuationRequest.MaxResults = maxResults
+	}
+	if qid != "" {
+		page, continuationErr := ensureSearchService(nil).SearchTextContinuation(
+			ctx, "", nil, continuationRequest, nil, nil, nil, search.ChunkedSearchErrorPolicy{},
+		)
+		if continuationErr != nil {
+			return nil, continuationErr
+		}
+		return executeSearchContinuationPage(page), nil
+	}
 	if useConfiguredRerank && svc != nil {
 		opts.RerankEnabled = svc.RerankerAvailable(ctx)
 	}
 
 	var response *search.SearchResponse
 	if suppliedEmbedding {
-		response, err = ensureSearchService(embedding).Search(ctx, query, embedding, opts)
+		service := ensureSearchService(embedding)
+		if continuationRequested {
+			page, continuationErr := service.SearchTextContinuation(
+				ctx,
+				query,
+				opts,
+				continuationRequest,
+				nil,
+				func(context.Context, string) ([]float32, error) { return embedding, nil },
+				service.Search,
+				search.ChunkedSearchErrorPolicy{},
+			)
+			if continuationErr != nil {
+				return nil, continuationErr
+			}
+			return executeSearchContinuationPage(page), nil
+		}
+		response, err = service.Search(ctx, query, embedding, opts)
 	} else {
 		if e.embedder == nil && failClosed {
 			return nil, failClosedEmbeddingUnavailable(localizedError(localization.CypherCoreEmbedderNotConfigured(), nil))
@@ -264,24 +310,36 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 			}
 		}
 
+		searchQuery := func(ctx context.Context, text string, queryEmbedding []float32, searchOpts *search.SearchOptions) (*search.SearchResponse, error) {
+			service := ensureSearchService(queryEmbedding)
+			if useConfiguredRerank {
+				searchOpts.RerankEnabled = service.RerankerAvailable(ctx)
+			}
+			return service.Search(ctx, text, queryEmbedding, searchOpts)
+		}
+		chunkQuery := func(_ context.Context, text string) ([]string, error) {
+			return e.embedder.ChunkText(text, 512, 50)
+		}
+		errorPolicy := search.ChunkedSearchErrorPolicy{
+			FatalEmbeddingError: func(error) bool { return failClosed },
+		}
+		if continuationRequested {
+			page, continuationErr := ensureSearchService(embedding).SearchTextContinuation(
+				ctx, query, opts, continuationRequest, chunkQuery, embedQuery, searchQuery, errorPolicy,
+			)
+			if continuationErr != nil {
+				return nil, continuationErr
+			}
+			return executeSearchContinuationPage(page), nil
+		}
 		response, err = search.SearchTextChunksWithErrorPolicy(
 			ctx,
 			query,
 			opts,
-			func(_ context.Context, text string) ([]string, error) {
-				return e.embedder.ChunkText(text, 512, 50)
-			},
+			chunkQuery,
 			embedQuery,
-			func(ctx context.Context, text string, queryEmbedding []float32, searchOpts *search.SearchOptions) (*search.SearchResponse, error) {
-				service := ensureSearchService(queryEmbedding)
-				if useConfiguredRerank {
-					searchOpts.RerankEnabled = service.RerankerAvailable(ctx)
-				}
-				return service.Search(ctx, text, queryEmbedding, searchOpts)
-			},
-			search.ChunkedSearchErrorPolicy{
-				FatalEmbeddingError: func(error) bool { return failClosed },
-			},
+			searchQuery,
+			errorPolicy,
 		)
 	}
 	if err != nil {
@@ -311,6 +369,43 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 	}
 
 	return result, nil
+}
+
+func executeSearchContinuationPage(page *search.SearchContinuationPage) *ExecuteResult {
+	results := make([]interface{}, 0, len(page.Results))
+	for index := range page.Results {
+		result := page.Results[index]
+		results = append(results, map[string]interface{}{
+			"node":  &storage.Node{ID: storage.NodeID(result.ID), Labels: result.Labels, Properties: result.Properties},
+			"score": result.Score, "rrf_score": result.RRFScore,
+			"vector_rank": int64(result.VectorRank), "bm25_rank": int64(result.BM25Rank),
+		})
+	}
+	var total interface{}
+	if page.Total != nil {
+		total = int64(*page.Total)
+	}
+	return &ExecuteResult{
+		Columns: []string{"page"},
+		Rows: [][]interface{}{{map[string]interface{}{
+			"results": results, "qid": page.QID, "has_more": page.HasMore,
+			"position": int64(page.Position), "returned": int64(page.Returned),
+			"discovered": int64(page.Discovered), "total": total,
+			"expires_at": page.ExpiresAt.UTC().Format(time.RFC3339Nano),
+			"released":   page.Released, "search_method": page.SearchMethod,
+			"fallback_triggered": page.FallbackTriggered,
+		}}},
+	}
+}
+
+func searchContinuationOwner(ctx context.Context) string {
+	if principal := strings.TrimSpace(GetAuthenticatedPrincipalFromContext(ctx)); principal != "" {
+		return principal
+	}
+	if strings.TrimSpace(GetAuthTokenFromContext(ctx)) != "" {
+		return ""
+	}
+	return "embedded"
 }
 
 func applyRetrievalPolicyOptions(opts *search.SearchOptions, req map[string]interface{}) (bool, error) {

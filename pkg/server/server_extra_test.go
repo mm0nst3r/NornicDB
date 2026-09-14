@@ -3022,9 +3022,7 @@ func TestRequestAndStatusHelperBranches(t *testing.T) {
 	assert.Equal(t, "email:alice@example.com", transactionOwnerKey(nil, &auth.JWTClaims{Email: " alice@example.com "}))
 	authReq := httptest.NewRequest(http.MethodGet, "/", nil)
 	authReq.Header.Set("Authorization", "Bearer abc")
-	owner := transactionOwnerKey(authReq, nil)
-	assert.True(t, strings.HasPrefix(owner, "auth:"))
-	assert.Len(t, owner, len("auth:")+64)
+	assert.Equal(t, "anonymous", transactionOwnerKey(authReq, nil))
 	assert.Equal(t, "anonymous", transactionOwnerKey(nil, nil))
 }
 

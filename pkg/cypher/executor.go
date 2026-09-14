@@ -2448,6 +2448,10 @@ type ctxKeyAuthTokenType struct{}
 
 var ctxKeyAuthToken = ctxKeyAuthTokenType{}
 
+type ctxKeyAuthenticatedPrincipalType struct{}
+
+var ctxKeyAuthenticatedPrincipal = ctxKeyAuthenticatedPrincipalType{}
+
 // GetUseDatabaseFromContext extracts the database name from :USE command if present in context.
 // Returns empty string if no :USE command was found.
 func GetUseDatabaseFromContext(ctx context.Context) string {
@@ -2470,6 +2474,22 @@ func WithAuthToken(ctx context.Context, authToken string) context.Context {
 func GetAuthTokenFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKeyAuthToken).(string); ok {
 		return v
+	}
+	return ""
+}
+
+// WithAuthenticatedPrincipal attaches an identity produced by successful authentication.
+func WithAuthenticatedPrincipal(ctx context.Context, principal string) context.Context {
+	if strings.TrimSpace(principal) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyAuthenticatedPrincipal, principal)
+}
+
+// GetAuthenticatedPrincipalFromContext returns the trusted caller identity.
+func GetAuthenticatedPrincipalFromContext(ctx context.Context) string {
+	if value, ok := ctx.Value(ctxKeyAuthenticatedPrincipal).(string); ok {
+		return value
 	}
 	return ""
 }

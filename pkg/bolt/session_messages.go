@@ -259,6 +259,11 @@ func (s *Session) handleRun(data []byte) error {
 	defer s.clearActiveRun()
 	ctx = cypher.WithAuthToken(ctx, s.forwardedAuthHeader)
 	if s.authResult != nil {
+		principal := s.authResult.PrincipalID
+		if principal == "" {
+			principal = auth.UsernamePrincipalID(s.authResult.Username)
+		}
+		ctx = cypher.WithAuthenticatedPrincipal(ctx, principal)
 		ctx = cypher.WithPermissionChecker(ctx, func(permission string) bool {
 			return s.authResult.HasPermission(permission)
 		})

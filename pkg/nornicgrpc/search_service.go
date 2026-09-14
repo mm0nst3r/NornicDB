@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // EmbedQueryFunc embeds a query string into a vector.
@@ -27,6 +28,10 @@ type Searcher interface {
 	Search(ctx context.Context, query string, embedding []float32, opts *search.SearchOptions) (*search.SearchResponse, error)
 }
 
+type continuationSearcher interface {
+	SearchTextContinuation(context.Context, string, *search.SearchOptions, search.SearchContinuationRequest, search.ChunkQueryFunc, search.EmbedQueryFunc, search.SearchQueryFunc, search.ChunkedSearchErrorPolicy) (*search.SearchContinuationPage, error)
+}
+
 // Service implements the NornicDB-native gRPC search API.
 type Service struct {
 	gen.UnimplementedNornicSearchServer
@@ -35,10 +40,11 @@ type Service struct {
 	maxLimit        int
 	rerankEnabled   bool
 
-	embedQuery EmbedQueryFunc
-	chunkQuery ChunkQueryFunc
-	searcher   Searcher
-	localizer  *localization.Manager
+	embedQuery       EmbedQueryFunc
+	chunkQuery       ChunkQueryFunc
+	searcher         Searcher
+	localizer        *localization.Manager
+	ownerFromContext func(context.Context) string
 }
 
 type Config struct {
@@ -48,6 +54,8 @@ type Config struct {
 	RerankEnabled bool
 	// Localizer renders human-readable status errors. Nil uses en-US.
 	Localizer *localization.Manager
+	// OwnerFromContext returns a trusted authenticated principal identifier.
+	OwnerFromContext func(context.Context) string
 }
 
 // NewService creates a NornicDB-native search service.
@@ -70,13 +78,14 @@ func NewService(cfg Config, embedQuery EmbedQueryFunc, chunkQuery ChunkQueryFunc
 		cfg.DefaultDatabase = "nornic"
 	}
 	return &Service{
-		defaultDatabase: cfg.DefaultDatabase,
-		maxLimit:        cfg.MaxLimit,
-		rerankEnabled:   cfg.RerankEnabled,
-		embedQuery:      embedQuery,
-		chunkQuery:      chunkQuery,
-		searcher:        searcher,
-		localizer:       cfg.Localizer,
+		defaultDatabase:  cfg.DefaultDatabase,
+		maxLimit:         cfg.MaxLimit,
+		rerankEnabled:    cfg.RerankEnabled,
+		embedQuery:       embedQuery,
+		chunkQuery:       chunkQuery,
+		searcher:         searcher,
+		localizer:        cfg.Localizer,
+		ownerFromContext: cfg.OwnerFromContext,
 	}, nil
 }
 
@@ -86,8 +95,41 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 	if req == nil {
 		return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.RequestRequired())
 	}
-	if req.Query == "" {
+	continuationRequested := req.N > 0 || req.Qid != "" || req.Discard
+	if req.Query == "" && req.Qid == "" {
 		return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.QueryRequired())
+	}
+	if continuationRequested {
+		continuable, ok := s.searcher.(continuationSearcher)
+		if !ok {
+			return nil, status.Error(codes.Unimplemented, "search continuation is unavailable")
+		}
+		n := int(req.N)
+		if req.Qid != "" && n == 0 {
+			n = 50
+		}
+		owner := "anonymous"
+		if s.ownerFromContext != nil {
+			owner = s.ownerFromContext(ctx)
+		}
+		database := req.Database
+		if database == "" {
+			database = s.defaultDatabase
+		}
+		continuation := search.SearchContinuationRequest{
+			Owner: owner, Database: database, QID: req.Qid, N: n, Discard: req.Discard,
+		}
+		if req.MaxResults != nil {
+			continuation.MaxResults = int(*req.MaxResults)
+		}
+		page, err := continuable.SearchTextContinuation(
+			ctx, req.Query, searchOptions(req, s.maxLimit, s.rerankEnabled), continuation,
+			search.ChunkQueryFunc(s.chunkQuery), search.EmbedQueryFunc(s.embedQuery), s.searcher.Search, search.ChunkedSearchErrorPolicy{},
+		)
+		if err != nil {
+			return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.SearchFailed(err))
+		}
+		return grpcContinuationResponse(page, time.Since(start)), nil
 	}
 
 	limit := int(req.Limit)
@@ -148,6 +190,51 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		Message:           resp.Message,
 		TimeSeconds:       time.Since(start).Seconds(),
 	}, nil
+}
+
+func searchOptions(req *gen.SearchTextRequest, maxLimit int, rerank bool) *search.SearchOptions {
+	limit := int(req.Limit)
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	opts := search.DefaultSearchOptions()
+	opts.Limit = limit
+	opts.RerankEnabled = rerank
+	opts.Types = append([]string(nil), req.Labels...)
+	if req.MinSimilarity != nil {
+		value := float64(*req.MinSimilarity)
+		opts.MinSimilarity = &value
+	}
+	return opts
+}
+
+func grpcContinuationResponse(page *search.SearchContinuationPage, elapsed time.Duration) *gen.SearchTextResponse {
+	response := &gen.SearchTextResponse{
+		SearchMethod: page.SearchMethod, FallbackTriggered: page.FallbackTriggered,
+		Qid: page.QID, HasMore: page.HasMore, Position: page.Position,
+		Returned: uint32(page.Returned), Released: page.Released, TimeSeconds: elapsed.Seconds(),
+	}
+	if page.Total != nil {
+		total := *page.Total
+		response.Total = &total
+	}
+	if !page.ExpiresAt.IsZero() {
+		response.ExpiresAt = timestamppb.New(page.ExpiresAt)
+	}
+	response.Hits = make([]*gen.SearchHit, 0, len(page.Results))
+	for index := range page.Results {
+		result := page.Results[index]
+		properties, _ := structpb.NewStruct(result.Properties)
+		response.Hits = append(response.Hits, &gen.SearchHit{
+			NodeId: string(result.NodeID), Labels: result.Labels, Properties: properties,
+			Score: float32(result.Score), RrfScore: float32(result.RRFScore),
+			VectorRank: int32(result.VectorRank), Bm25Rank: int32(result.BM25Rank),
+		})
+	}
+	return response
 }
 
 func (s *Service) localizedStatus(ctx context.Context, code codes.Code, message localization.Message) error {

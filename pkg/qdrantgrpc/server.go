@@ -226,6 +226,13 @@ type Server struct {
 	started bool
 }
 
+// AuthenticatedPrincipalID returns the trusted principal installed by this
+// server's authentication interceptor. Auth-disabled requests share anonymous.
+func AuthenticatedPrincipalID(ctx context.Context) string {
+	claims, _ := ctx.Value(contextKeyClaims{}).(*auth.JWTClaims)
+	return auth.PrincipalID(claims)
+}
+
 // AllowDatabaseAccess implements DatabaseAccessChecker. Returns PermissionDenied if the principal may not access the database.
 func (s *Server) AllowDatabaseAccess(ctx context.Context, database string, write bool) error {
 	if s.databaseAccessModeResolver == nil {

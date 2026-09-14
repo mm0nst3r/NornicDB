@@ -2,6 +2,7 @@ package cypher
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 
@@ -128,6 +129,46 @@ func TestCallDbRetrieveUsesPerChunkOuterRRF(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, storage.NodeID("repeated"), first.ID)
 	require.Equal(t, "chunked_rrf_hybrid", result.Rows[0][5])
+}
+
+func TestCallDbRetrieveContinuesBeyondInitialLimit(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewNamespacedEngine(newTestMemoryEngine(t), "test")
+	exec := NewStorageExecutor(store)
+
+	for index := 0; index < 5; index++ {
+		_, err := store.CreateNode(&storage.Node{
+			ID:         storage.NodeID(fmt.Sprintf("doc-%d", index)),
+			Labels:     []string{"Document"},
+			Properties: map[string]interface{}{"content": "alpha continuation document"},
+		})
+		require.NoError(t, err)
+	}
+
+	service := search.NewService(store)
+	require.NoError(t, service.BuildIndexes(ctx))
+	exec.SetSearchService(service)
+
+	first, err := exec.Execute(ctx, "CALL db.retrieve({query: 'alpha', limit: 1, n: 1})", nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"page"}, first.Columns)
+	page := first.Rows[0][0].(map[string]interface{})
+	require.True(t, page["has_more"].(bool))
+	qid := page["qid"].(string)
+	require.NotEmpty(t, qid)
+
+	second, err := exec.Execute(ctx, "CALL db.retrieve($request)", map[string]interface{}{
+		"request": map[string]interface{}{"qid": qid, "n": int64(3)},
+	})
+	require.NoError(t, err)
+	page = second.Rows[0][0].(map[string]interface{})
+	require.Len(t, page["results"], 3)
+}
+
+func TestSearchContinuationOwnerUsesOnlyAuthenticatedPrincipal(t *testing.T) {
+	require.Empty(t, searchContinuationOwner(WithAuthToken(context.Background(), "Bearer secret")))
+	require.Equal(t, "sub:alice", searchContinuationOwner(WithAuthenticatedPrincipal(context.Background(), "sub:alice")))
+	require.Equal(t, "embedded", searchContinuationOwner(context.Background()))
 }
 
 func TestCallDbRetrieveAppliesPropertyFilters(t *testing.T) {

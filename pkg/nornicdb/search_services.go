@@ -13,6 +13,7 @@ import (
 	featureflags "github.com/orneryd/nornicdb/pkg/config"
 	"github.com/orneryd/nornicdb/pkg/gpu"
 	"github.com/orneryd/nornicdb/pkg/localization"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/search"
 	"github.com/orneryd/nornicdb/pkg/security"
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -272,6 +273,12 @@ func (db *DB) getOrCreateSearchService(dbName string, storageEngine storage.Engi
 		serviceOptions = &resolved
 	}
 	svc := search.NewServiceWithDimensionsAndBM25EngineAndOptions(storageEngine, dims, bm25Engine, serviceOptions)
+	continuations, err := db.getOrCreateSearchContinuationRegistry()
+	if err != nil {
+		_ = svc.Close()
+		return nil, err
+	}
+	svc.SetContinuationRegistry(continuations)
 	svc.SetDefaultMinSimilarity(minSim)
 	if db.config != nil {
 		svc.SetFulltextProperties(db.config.Memory.SearchBM25Properties)
@@ -381,6 +388,20 @@ func (db *DB) getOrCreateSearchService(dbName string, storageEngine storage.Engi
 	db.searchServicesMu.Unlock()
 
 	return svc, nil
+}
+
+func (db *DB) getOrCreateSearchContinuationRegistry() (*resultstream.Registry, error) {
+	db.searchContinuationMu.Lock()
+	defer db.searchContinuationMu.Unlock()
+	if db.searchContinuation != nil {
+		return db.searchContinuation, nil
+	}
+	registry, err := resultstream.NewRegistry(resultstream.Config{})
+	if err != nil {
+		return nil, err
+	}
+	db.searchContinuation = registry
+	return registry, nil
 }
 
 // SetSearchResultCachePolicy applies a dynamic cache policy to an existing database service.

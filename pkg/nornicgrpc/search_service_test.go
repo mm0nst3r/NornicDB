@@ -44,6 +44,30 @@ type stubSearcher struct {
 	err  error
 }
 
+type continuationStubSearcher struct {
+	stubSearcher
+	requests  []search.SearchContinuationRequest
+	queries   []string
+	responses []*search.SearchContinuationPage
+}
+
+func (s *continuationStubSearcher) SearchTextContinuation(
+	_ context.Context,
+	query string,
+	_ *search.SearchOptions,
+	request search.SearchContinuationRequest,
+	_ search.ChunkQueryFunc,
+	_ search.EmbedQueryFunc,
+	_ search.SearchQueryFunc,
+	_ search.ChunkedSearchErrorPolicy,
+) (*search.SearchContinuationPage, error) {
+	s.queries = append(s.queries, query)
+	s.requests = append(s.requests, request)
+	response := s.responses[0]
+	s.responses = s.responses[1:]
+	return response, nil
+}
+
 func (s *stubSearcher) Search(ctx context.Context, query string, embedding []float32, opts *search.SearchOptions) (*search.SearchResponse, error) {
 	s.lastQuery = query
 	s.lastEmbedding = embedding
@@ -168,6 +192,49 @@ func TestService_SearchText_ValidationAndFallback(t *testing.T) {
 		require.NotNil(t, searcher.lastOpts)
 		require.Equal(t, 10, searcher.lastOpts.Limit)
 	})
+}
+
+func TestService_SearchText_ContinuationStartPullAndDiscard(t *testing.T) {
+	searcher := &continuationStubSearcher{responses: []*search.SearchContinuationPage{
+		{
+			Results: []search.SearchResult{{NodeID: "node-1", Score: 0.9}},
+			QID:     "qid-1", HasMore: true, Position: 1, Returned: 1,
+			SearchMethod: "hybrid",
+		},
+		{
+			Results: []search.SearchResult{{NodeID: "node-2", Score: 0.8}, {NodeID: "node-3", Score: 0.7}},
+			QID:     "qid-2", HasMore: true, Position: 3, Returned: 2,
+			SearchMethod: "hybrid",
+		},
+		{Released: true},
+	}}
+	svc, err := NewService(Config{
+		DefaultDatabase:  "nornic",
+		OwnerFromContext: func(context.Context) string { return "sub:alice" },
+	}, nil, nil, searcher)
+	require.NoError(t, err)
+
+	first, err := svc.SearchText(context.Background(), &gen.SearchTextRequest{Query: "alpha", Limit: 1, N: 1})
+	require.NoError(t, err)
+	require.Equal(t, "qid-1", first.Qid)
+	require.True(t, first.HasMore)
+	require.Equal(t, uint32(1), first.Returned)
+	require.Equal(t, "node-1", first.Hits[0].NodeId)
+	require.Equal(t, "sub:alice", searcher.requests[0].Owner)
+	require.Equal(t, "nornic", searcher.requests[0].Database)
+
+	second, err := svc.SearchText(context.Background(), &gen.SearchTextRequest{Qid: first.Qid, N: 2})
+	require.NoError(t, err)
+	require.Equal(t, "qid-2", second.Qid)
+	require.Equal(t, uint64(3), second.Position)
+	require.Len(t, second.Hits, 2)
+	require.Empty(t, searcher.queries[1])
+	require.Equal(t, first.Qid, searcher.requests[1].QID)
+
+	released, err := svc.SearchText(context.Background(), &gen.SearchTextRequest{Qid: second.Qid, Discard: true})
+	require.NoError(t, err)
+	require.True(t, released.Released)
+	require.True(t, searcher.requests[2].Discard)
 }
 
 func TestService_SearchText_ErrorHandling(t *testing.T) {
