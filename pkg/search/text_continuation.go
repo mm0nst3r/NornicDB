@@ -316,7 +316,9 @@ func (s *Service) SetContinuationRegistry(registry *resultstream.Registry) {
 	}
 	s.continuationRegistry = registry
 	s.continuationOwned = false
-	registry.SetObserver(newCursorObserver(metrics))
+	if metrics != nil {
+		registry.SetObserver(newCursorObserver(metrics))
+	}
 	s.continuationMu.Unlock()
 }
 

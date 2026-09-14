@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve process-wide cursor lifecycle metrics and gauges when additional
+  database search services attach to the shared continuation registry.
 - Prevent ranked continuation from treating short approximate, filtered, or fused batches as exhaustion. Propagate retrieval exhaustion evidence, deepen chunk candidates beyond one-shot limits, remove the arbitrary 5,000-candidate engine ceiling, and report caller-selected budget limits explicitly instead of silently ending the stream.
 - Bound database-manager startup memory by scanning only leaked system-record ID prefixes and streaming node/edge size reconciliation. In a cold 2,000-node persistent-store benchmark, cleanup fell from about 3.23 ms and 7.81 MB per operation to 25 us and 3.5 KB; reconciliation allocations fell about 5% without changing serialized-size accounting.
 - Preserve exact cosine-vector fast-path semantics for inline node properties, filtered top-k queries, exact LIMIT results, and WITH projections ordered before RETURN.

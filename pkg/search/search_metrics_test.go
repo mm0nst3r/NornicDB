@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/orneryd/nornicdb/pkg/observability"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -132,6 +133,56 @@ func TestSearch_AttachMetricsNilClearsBindings(t *testing.T) {
 	got := totalCounterByMode(t, reg, "nornicdb_search_requests_total", "bm25")
 	assert.Equal(t, 0.0, got,
 		"detached bag must not see observations after AttachMetrics(nil)")
+}
+
+func TestSearch_SharedContinuationRegistryPreservesProcessObserver(t *testing.T) {
+	registry, err := resultstream.NewRegistry(resultstream.Config{})
+	require.NoError(t, err)
+	t.Cleanup(registry.Close)
+
+	primary := NewServiceWithDimensions(storage.NewMemoryEngine(), 4)
+	t.Cleanup(func() { require.NoError(t, primary.Close()) })
+	primary.SetContinuationRegistry(registry)
+	bag := observability.NewSearchMetrics(prometheus.NewRegistry(), false, &nilSearchProbe{})
+	primary.AttachMetrics(bag)
+
+	stream, err := resultstream.NewProgressive([][]any{{"one"}, {"two"}}, true, 2, nil)
+	require.NoError(t, err)
+	scope := resultstream.Scope{Owner: "owner", Database: "primary"}
+	page, err := registry.Start(context.Background(), scope, stream, 1)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, gaugeValue(t, bag.CursorsActive))
+
+	secondary := NewServiceWithDimensions(storage.NewMemoryEngine(), 4)
+	t.Cleanup(func() { require.NoError(t, secondary.Close()) })
+	secondary.SetContinuationRegistry(registry)
+	secondaryStream, err := resultstream.NewProgressive([][]any{{"three"}, {"four"}}, true, 2, nil)
+	require.NoError(t, err)
+	secondaryScope := resultstream.Scope{Owner: "owner", Database: "secondary"}
+	secondaryPage, err := registry.Start(context.Background(), secondaryScope, secondaryStream, 1)
+	require.NoError(t, err)
+	require.Equal(t, 2.0, gaugeValue(t, bag.CursorsActive))
+	require.Equal(t, 2.0, counterValue(t, bag.CursorEvents.WithLabelValues("start")))
+
+	require.NoError(t, registry.Discard(scope, page.QID))
+	require.NoError(t, registry.Discard(secondaryScope, secondaryPage.QID))
+
+	require.Equal(t, 0.0, gaugeValue(t, bag.CursorsActive))
+	require.Equal(t, 2.0, counterValue(t, bag.CursorEvents.WithLabelValues("discard")))
+}
+
+func gaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	require.NoError(t, gauge.Write(metric))
+	return metric.GetGauge().GetValue()
+}
+
+func counterValue(t *testing.T, counter prometheus.Counter) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	require.NoError(t, counter.Write(metric))
+	return metric.GetCounter().GetValue()
 }
 
 // TestClassifySearchResult unit-tests the closed enum classifier.
