@@ -137,6 +137,12 @@ Continuation errors have stable protocol mappings:
 Wrong-scope qids are deliberately indistinguishable from malformed qids; the
 server does not reveal whether another owner or database has a matching cursor.
 
+Prometheus exposes `nornicdb_search_cursors_active`,
+`nornicdb_search_cursor_retained_bytes`, and
+`nornicdb_search_cursor_events_total{outcome}`. The outcome label is a closed
+set and structured lifecycle events omit qids, owners, queries, and database
+identifiers.
+
 Complete builds prefer the storage streaming interface. Engines without it use
 `AllNodes` fallback, whose temporary full node slice is outside retained
 descriptor admission. On the 20,000-node benchmark fixture (Apple M3 Max), the

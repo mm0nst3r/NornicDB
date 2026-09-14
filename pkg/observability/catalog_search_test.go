@@ -38,9 +38,9 @@ func (panickySearchProbe) IndexSizeBytes(kind string) uint64 {
 	panic("simulated probe panic")
 }
 
-// TestSearchMetrics_RegistersFour asserts MET-13's four search families per
+// TestSearchMetrics_RegistersCursorFamilies asserts the core search and cursor families.
 // ADR §2.3: requests_total, duration_seconds, candidates_rows, index_size_bytes.
-func TestSearchMetrics_RegistersFour(t *testing.T) {
+func TestSearchMetrics_RegistersCursorFamilies(t *testing.T) {
 	te := NewTestEnv(t)
 	bag := NewSearchMetrics(te.Registry, false, searchProbeStub{hnswBytes: 1024, bm25Bytes: 512})
 	require.NotNil(t, bag)
@@ -52,6 +52,11 @@ func TestSearchMetrics_RegistersFour(t *testing.T) {
 	bag.BindDuration("", "vector", "embed").Observe(context.Background(), 0.001)
 	bag.Candidates.Vec().WithLabelValues().Observe(10)
 	bag.IndexSizeBytes.WithLabelValues("hnsw").Set(0)
+	for _, outcome := range AllowedSearchCursorOutcomes {
+		bag.CursorEvents.WithLabelValues(outcome).Inc()
+	}
+	bag.CursorsActive.Set(1)
+	bag.CursorRetainedBytes.Set(1024)
 
 	mfs, err := te.Registry.Gather()
 	require.NoError(t, err)
@@ -61,9 +66,17 @@ func TestSearchMetrics_RegistersFour(t *testing.T) {
 		"nornicdb_search_duration_seconds",
 		"nornicdb_search_candidates_rows",
 		"nornicdb_search_index_size_bytes",
+		"nornicdb_search_cursor_events_total",
+		"nornicdb_search_cursors_active",
+		"nornicdb_search_cursor_retained_bytes",
 	} {
 		assert.Contains(t, names, want, "MET-13: Search family %q must register", want)
 	}
+	te.AssertCardinalityCeiling(t, "nornicdb_search_cursor_events_total", len(AllowedSearchCursorOutcomes), func(string) {
+		for _, outcome := range AllowedSearchCursorOutcomes {
+			bag.CursorEvents.WithLabelValues(outcome).Inc()
+		}
+	})
 }
 
 // TestSearchStage_ClosedEnum asserts MET-13: stage label accepts only

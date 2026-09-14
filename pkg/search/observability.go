@@ -41,9 +41,12 @@ package search
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/orneryd/nornicdb/pkg/observability"
+	"github.com/orneryd/nornicdb/pkg/resultstream"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // AttachMetrics injects the observability.SearchMetrics bag into the
@@ -59,19 +62,55 @@ import (
 // observers.
 func (s *Service) AttachMetrics(metrics *observability.SearchMetrics) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.metrics = metrics
 	if metrics == nil {
 		s.boundDurationIndex = observability.BoundLatencyObserver{}
 		s.boundDurationFuse = observability.BoundLatencyObserver{}
-		return
+	} else {
+		// Pre-bind under tenant-OFF for the (mode="hybrid", stage=*) tuples
+		// most commonly observed. Other (mode, stage) tuples lazy-bind via
+		// metrics.BindDuration at the call site — still cheap (one
+		// WithLabelValues per Search call, NOT per inner candidate).
+		s.boundDurationIndex = metrics.BindDuration("", "hybrid", "index")
+		s.boundDurationFuse = metrics.BindDuration("", "hybrid", "fuse")
 	}
-	// Pre-bind under tenant-OFF for the (mode="hybrid", stage=*) tuples
-	// most commonly observed. Other (mode, stage) tuples lazy-bind via
-	// metrics.BindDuration at the call site — still cheap (one
-	// WithLabelValues per Search call, NOT per inner candidate).
-	s.boundDurationIndex = metrics.BindDuration("", "hybrid", "index")
-	s.boundDurationFuse = metrics.BindDuration("", "hybrid", "fuse")
+	s.mu.Unlock()
+
+	s.continuationMu.Lock()
+	if registry, ok := s.continuationRegistry.(*resultstream.Registry); ok {
+		registry.SetObserver(newCursorObserver(metrics))
+	}
+	s.continuationMu.Unlock()
+}
+
+type cursorObserver struct {
+	metrics  *observability.SearchMetrics
+	counters map[string]prometheus.Counter
+}
+
+func newCursorObserver(metrics *observability.SearchMetrics) resultstream.Observer {
+	if metrics == nil {
+		return nil
+	}
+	counters := make(map[string]prometheus.Counter, len(observability.AllowedSearchCursorOutcomes))
+	for _, outcome := range observability.AllowedSearchCursorOutcomes {
+		counters[outcome] = metrics.CursorEvents.WithLabelValues(outcome)
+	}
+	return &cursorObserver{metrics: metrics, counters: counters}
+}
+
+func (o *cursorObserver) CursorEvent(outcome string) {
+	if counter := o.counters[outcome]; counter != nil {
+		counter.Inc()
+	}
+	if outcome != "pull" {
+		slog.Info("search cursor lifecycle", "event_id", "search.cursor.lifecycle", "component", "search", "outcome", outcome)
+	}
+}
+
+func (o *cursorObserver) CursorUsage(active, retainedBytes int64) {
+	o.metrics.CursorsActive.Set(float64(active))
+	o.metrics.CursorRetainedBytes.Set(float64(retainedBytes))
 }
 
 // observeSearchStage records a per-stage duration observation. mode is

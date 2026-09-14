@@ -30,6 +30,14 @@ type Scope struct {
 	Database string
 }
 
+// Observer receives bounded cursor lifecycle and aggregate usage signals.
+type Observer interface {
+	CursorEvent(outcome string)
+	CursorUsage(active, retainedBytes int64)
+}
+
+type observerHolder struct{ observer Observer }
+
 // Config bounds process-local durable result streams.
 type Config struct {
 	Disabled                 bool
@@ -74,6 +82,17 @@ type Registry struct {
 	scopeInput  sync.Pool
 	admissionMu sync.Mutex
 	owners      map[[32]byte]ownerUsage
+	observer    atomic.Pointer[observerHolder]
+}
+
+// SetObserver replaces the optional lifecycle observer.
+func (r *Registry) SetObserver(observer Observer) {
+	if observer == nil {
+		r.observer.Store(nil)
+		return
+	}
+	r.observer.Store(&observerHolder{observer: observer})
+	observer.CursorUsage(r.count.Load(), r.retained.Load())
 }
 
 // NewRegistry constructs a registry with a random signing key and instance ID.
@@ -120,6 +139,7 @@ func NewRegistry(config Config) (*Registry, error) {
 // available.
 func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int) (*Page, error) {
 	if err := r.validate(scope, n); err != nil {
+		r.observeError(err)
 		return nil, err
 	}
 	page, err := stream.Pull(ctx, 0, n)
@@ -141,6 +161,7 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 	}
 	ownerHash := r.ownerDigest(scope.Owner)
 	if !r.reserve(ownerHash, retainedBytes) {
+		r.observe("capacity")
 		_ = stream.Close()
 		return nil, ErrCapacity
 	}
@@ -173,10 +194,14 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 		r.release(entry)
 		_ = stream.Close()
 		if r.closed.Load() {
+			r.observe("release")
 			return nil, ErrClosed
 		}
+		r.observe("capacity")
 		return nil, ErrCapacity
 	}
+	r.observe("start")
+	r.observeUsage()
 	page.QID = encodeToken(r.secret, r.instance, streamID, page.Next, entry.expires)
 	page.ExpiresAt = time.Unix(entry.expires, 0).UTC()
 	return page, nil
@@ -186,41 +211,50 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 // shard lock.
 func (r *Registry) Pull(ctx context.Context, scope Scope, qid string, n int) (*Page, error) {
 	if r.disabled {
+		r.observe("disabled")
 		return nil, ErrDisabled
 	}
 	if err := r.validate(scope, n); err != nil {
+		r.observeError(err)
 		return nil, err
 	}
 	token, err := decodeToken(r.secret, r.instance, qid)
 	if err != nil {
+		r.observe("invalid")
 		return nil, err
 	}
 	if time.Now().Unix() >= token.expires {
 		r.remove(token.streamID, nil)
+		r.observe("expiry")
 		return nil, ErrExpiredQID
 	}
 	entry := r.lookup(token.streamID)
 	wantScope := r.scopeDigest(scope)
 	if entry == nil || entry.released.Load() {
+		r.observe("gone")
 		return nil, ErrGoneQID
 	}
 	if entry.expires != token.expires || !hmac.Equal(entry.scopeHash[:], wantScope[:]) {
+		r.observe("invalid")
 		return nil, ErrInvalidQID
 	}
 	page, err := entry.stream.Pull(ctx, token.position, n)
 	if err != nil {
+		r.observeError(err)
 		return nil, err
 	}
 	if page.HasMore {
 		page.QID = encodeToken(r.secret, r.instance, token.streamID, page.Next, entry.expires)
 	}
 	page.ExpiresAt = time.Unix(entry.expires, 0).UTC()
+	r.observe("pull")
 	return page, nil
 }
 
 // Discard releases the complete stream addressed by any of its qids.
 func (r *Registry) Discard(scope Scope, qid string) error {
 	if r.disabled {
+		r.observe("disabled")
 		return ErrDisabled
 	}
 	if scope.Owner == "" || scope.Database == "" {
@@ -228,22 +262,56 @@ func (r *Registry) Discard(scope Scope, qid string) error {
 	}
 	token, err := decodeToken(r.secret, r.instance, qid)
 	if err != nil {
+		r.observe("invalid")
 		return err
 	}
 	if time.Now().Unix() >= token.expires {
 		r.remove(token.streamID, nil)
+		r.observe("expiry")
 		return ErrExpiredQID
 	}
 	entry := r.lookup(token.streamID)
 	wantScope := r.scopeDigest(scope)
 	if entry == nil || entry.released.Load() {
+		r.observe("gone")
 		return ErrGoneQID
 	}
 	if entry.expires != token.expires || !hmac.Equal(entry.scopeHash[:], wantScope[:]) {
+		r.observe("invalid")
 		return ErrInvalidQID
 	}
 	r.remove(token.streamID, entry)
+	r.observe("discard")
 	return nil
+}
+
+func (r *Registry) observe(outcome string) {
+	if holder := r.observer.Load(); holder != nil {
+		holder.observer.CursorEvent(outcome)
+	}
+}
+
+func (r *Registry) observeError(err error) {
+	switch {
+	case errors.Is(err, ErrCapacity):
+		r.observe("capacity")
+	case errors.Is(err, ErrDisabled):
+		r.observe("disabled")
+	case errors.Is(err, ErrGoneQID):
+		r.observe("gone")
+	case errors.Is(err, ErrExpiredQID):
+		r.observe("expiry")
+	case errors.Is(err, ErrInvalidQID), errors.Is(err, ErrInvalidScope), errors.Is(err, ErrInvalidPageSize), errors.Is(err, ErrInvalidPosition):
+		r.observe("invalid")
+	case errors.Is(err, ErrInvalidated):
+		r.observe("release")
+	}
+}
+
+func (r *Registry) observeUsage() {
+	if holder := r.observer.Load(); holder != nil {
+		holder.observer.CursorUsage(r.count.Load(), r.retained.Load())
+	}
 }
 
 func (r *Registry) validate(scope Scope, n int) error {
@@ -314,6 +382,7 @@ func (r *Registry) release(entry *registryEntry) {
 	r.count.Add(-1)
 	r.retained.Add(-entry.retainedBytes)
 	r.admissionMu.Unlock()
+	r.observeUsage()
 }
 
 func (r *Registry) shard(id [16]byte) *registryShard {
@@ -367,4 +436,5 @@ func (r *Registry) Close() {
 			_ = entry.stream.Close()
 		}
 	}
+	r.observe("release")
 }

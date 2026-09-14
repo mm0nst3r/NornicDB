@@ -68,9 +68,12 @@ var AllowedSearchStages = []string{"embed", "index", "fuse"}
 // AllowedSearchIndexKinds is the closed enum for the `kind` label on
 // index_size_bytes per CONTEXT MET-13 / D-15b. Two index kinds:
 //   - hnsw: vector index (HNSW or IVF-HNSW or IVFPQ — all vector indexes
-//           bucket here from a capacity-planning perspective)
+//     bucket here from a capacity-planning perspective)
 //   - bm25: full-text index
 var AllowedSearchIndexKinds = []string{"hnsw", "bm25"}
+
+// AllowedSearchCursorOutcomes bounds cursor lifecycle metric cardinality.
+var AllowedSearchCursorOutcomes = []string{"start", "pull", "discard", "expiry", "release", "capacity", "invalid", "gone", "disabled"}
 
 // SearchProbe is the seam between pkg/search index-size accessors and the
 // observability index_size_bytes GaugeFunc callback (D-02d leaf-package
@@ -119,6 +122,13 @@ type SearchMetrics struct {
 	// SearchProbe.IndexSizeBytes(kind) callback on every scrape. Closed
 	// kind enum {hnsw, bm25}.
 	IndexSizeBytes *prometheus.GaugeVec
+
+	// CursorEvents counts durable cursor lifecycle outcomes.
+	CursorEvents *prometheus.CounterVec
+	// CursorsActive reports process-local retained cursor count.
+	CursorsActive prometheus.Gauge
+	// CursorRetainedBytes reports process-local retained descriptor bytes.
+	CursorRetainedBytes prometheus.Gauge
 
 	// tenantLabelsEnabled captured at construction so caller helpers can
 	// decide arity uniformly. Subsystems pass database unconditionally
@@ -200,6 +210,19 @@ func NewSearchMetrics(reg *prometheus.Registry, tenantLabelsEnabled bool, probe 
 				"per RISK-8 mitigation).",
 		},
 		[]string{"kind"})
+
+	bag.CursorEvents = NewCounterVec(reg,
+		MetricOpts{Subsystem: "search", Name: "cursor_events_total", Help: "Durable search cursor lifecycle events by closed outcome."},
+		[]string{"outcome"})
+	bag.CursorsActive = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "nornicdb", Subsystem: "search", Name: "cursors_active",
+		Help: "Current process-local durable search cursors.",
+	})
+	bag.CursorRetainedBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "nornicdb", Subsystem: "search", Name: "cursor_retained_bytes",
+		Help: "Reported descriptor bytes retained by durable search cursors.",
+	})
+	reg.MustRegister(bag.CursorsActive, bag.CursorRetainedBytes)
 
 	// Per-kind live-read collector for index sizes (D-15b). One custom
 	// Collector emits the AllowedSearchIndexKinds series at scrape time —

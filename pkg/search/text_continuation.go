@@ -287,12 +287,16 @@ func (s *Service) SetContinuationRegistry(registry *resultstream.Registry) {
 	if s == nil || registry == nil {
 		return
 	}
+	s.mu.RLock()
+	metrics := s.metrics
+	s.mu.RUnlock()
 	s.continuationMu.Lock()
 	if s.continuationRegistry != nil && s.continuationOwned {
 		s.continuationRegistry.Close()
 	}
 	s.continuationRegistry = registry
 	s.continuationOwned = false
+	registry.SetObserver(newCursorObserver(metrics))
 	s.continuationMu.Unlock()
 }
 
