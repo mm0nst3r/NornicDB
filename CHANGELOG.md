@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevent ranked continuation from treating short approximate, filtered, or
+  fused batches as exhaustion. Propagate retrieval exhaustion evidence, deepen
+  chunk candidates beyond one-shot limits, and report candidate budget limits
+  explicitly instead of silently ending the stream.
+
 ### Added
 
 - Add signed, authorization-bound search continuation across HTTP, native gRPC,

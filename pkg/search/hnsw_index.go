@@ -516,8 +516,13 @@ func (h *HNSWIndex) SearchWithEf(ctx context.Context, query []float32, k int, mi
 }
 
 func (h *HNSWIndex) searchWithEf(ctx context.Context, query []float32, k int, minSimilarity float64, ef int) ([]ANNResult, error) {
+	results, _, err := h.searchWithEfExhaustion(ctx, query, k, minSimilarity, ef)
+	return results, err
+}
+
+func (h *HNSWIndex) searchWithEfExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64, ef int) ([]ANNResult, bool, error) {
 	if len(query) != h.dimensions {
-		return nil, ErrDimensionMismatch
+		return nil, false, ErrDimensionMismatch
 	}
 	if ef <= 0 {
 		ef = h.config.EfSearch
@@ -527,7 +532,7 @@ func (h *HNSWIndex) searchWithEf(ctx context.Context, query []float32, k int, mi
 	defer h.mu.RUnlock()
 
 	if !h.hasEntryPoint || len(h.nodeLevel) == 0 {
-		return []ANNResult{}, nil
+		return []ANNResult{}, true, nil
 	}
 
 	var (
@@ -559,18 +564,18 @@ func (h *HNSWIndex) searchWithEf(ctx context.Context, query []float32, k int, mi
 		var err error
 		ep, err = h.searchLayerSingleWithContext(ctx, normalized, ep, l)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
 	candidates, err := h.searchLayerHeapPooledWithContext(ctx, normalized, ep, ef, 0)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer h.itemsPool.Put(candidates[:0])
 
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Distances were computed during graph traversal; reuse them to avoid a second
@@ -600,7 +605,11 @@ func (h *HNSWIndex) searchWithEf(ctx context.Context, query []float32, k int, mi
 			Score: score,
 		})
 	}
-	return results, nil
+	// The pre-filter heap must cover the entire index while this read lock is
+	// held, and top-k must not have hidden further candidates. Merely filling
+	// the beam or getting a short post-threshold result proves neither fact.
+	exhausted := len(candidates) == len(h.nodeLevel) && (len(results) < k || len(candidates) <= k)
+	return results, exhausted, nil
 }
 
 // Size returns the number of vectors in the index.

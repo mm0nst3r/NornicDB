@@ -136,7 +136,7 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 	if ranked != nil {
 		searchMethod = ranked.SearchMethod
 		fallbackTriggered = ranked.FallbackTriggered
-		rankedPoolExhausted = len(ranked.Results) < options.Limit
+		rankedPoolExhausted = ranked.RetrievalExhausted
 		for _, result := range ranked.Results {
 			result.Phase = SearchContinuationRankedPhase
 			rankedByID[searchResultID(result)] = result

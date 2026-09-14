@@ -267,15 +267,19 @@ type SearchPassage struct {
 
 // SearchResponse is the response from a search operation.
 type SearchResponse struct {
-	Status            string         `json:"status"`
-	Query             string         `json:"query"`
-	Results           []SearchResult `json:"results"`
-	TotalCandidates   int            `json:"total_candidates"`
-	Returned          int            `json:"returned"`
-	SearchMethod      string         `json:"search_method"`
-	FallbackTriggered bool           `json:"fallback_triggered"`
-	Message           string         `json:"message,omitempty"`
-	Metrics           *SearchMetrics `json:"metrics,omitempty"`
+	// RetrievalExhausted is internal continuation evidence: every participating
+	// retrieval branch is exhausted and no candidate prefix was truncated.
+	// A short filtered or approximate result alone must never set this flag.
+	RetrievalExhausted bool           `json:"-"`
+	Status             string         `json:"status"`
+	Query              string         `json:"query"`
+	Results            []SearchResult `json:"results"`
+	TotalCandidates    int            `json:"total_candidates"`
+	Returned           int            `json:"returned"`
+	SearchMethod       string         `json:"search_method"`
+	FallbackTriggered  bool           `json:"fallback_triggered"`
+	Message            string         `json:"message,omitempty"`
+	Metrics            *SearchMetrics `json:"metrics,omitempty"`
 }
 
 // SearchMetrics contains timing and statistics.
@@ -295,6 +299,8 @@ type SearchMetrics struct {
 
 // SearchOptions configures the search behavior.
 type SearchOptions struct {
+	// continuation allows chunk candidate depth to grow beyond one-shot limits.
+	continuation bool
 	// Limit is the maximum number of results to return
 	Limit int
 
@@ -4088,7 +4094,7 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	// If no embedding provided, fall back to full-text only unless fallback is disabled.
 	if len(embedding) == 0 {
 		if !opts.fallbackEnabled() {
-			response := &SearchResponse{Status: "success", Query: query, SearchMethod: "rrf_hybrid"}
+			response := &SearchResponse{Status: "success", Query: query, SearchMethod: "rrf_hybrid", RetrievalExhausted: true}
 			if s.resultCache != nil {
 				s.resultCache.Put(cacheKey, response)
 			}
@@ -4138,8 +4144,10 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	}
 
 	// Fallback to vector-only
+	hybridExhausted := err == nil && response != nil && response.RetrievalExhausted
 	response, err = s.vectorSearchOnly(ctx, embedding, opts)
 	if err == nil && len(response.Results) > 0 {
+		response.RetrievalExhausted = response.RetrievalExhausted && hybridExhausted
 		response.FallbackTriggered = true
 		response.Message = "RRF search returned no results, fell back to vector search"
 		if s.resultCache != nil {
@@ -4150,8 +4158,12 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	}
 
 	// Final fallback to full-text
+	vectorExhausted := err == nil && response != nil && response.RetrievalExhausted
 	mode = "bm25" // Plan 04-05-05: final fallback to BM25-only
 	resp, err = s.fullTextSearchOnly(ctx, query, opts)
+	if resp != nil {
+		resp.RetrievalExhausted = resp.RetrievalExhausted && hybridExhausted && vectorExhausted
+	}
 	if err == nil && s.resultCache != nil {
 		s.resultCache.Put(cacheKey, resp)
 	}
@@ -4242,6 +4254,7 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	// Step 4: Fuse with RRF
 	fusionStart := time.Now()
 	fusedResults := s.fuseRRF(vectorResults, bm25Results, opts)
+	retrievalExhausted := vectorStats.exhausted && bm25Result.stats.exhausted && len(fusedResults) <= opts.Limit
 
 	// Step 5: Apply MMR diversification if enabled
 	searchMethod := "rrf_hybrid"
@@ -4285,13 +4298,14 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	s.observeSearchStage(ctx, "hybrid", "fuse", time.Since(fusionStart))
 
 	return &SearchResponse{
-		Status:          "success",
-		Query:           query,
-		Results:         results,
-		TotalCandidates: len(fusedResults),
-		Returned:        len(results),
-		SearchMethod:    searchMethod,
-		Message:         message,
+		Status:             "success",
+		Query:              query,
+		Results:            results,
+		RetrievalExhausted: retrievalExhausted,
+		TotalCandidates:    len(fusedResults),
+		Returned:           len(results),
+		SearchMethod:       searchMethod,
+		Message:            message,
 		Metrics: &SearchMetrics{
 			VectorSearchTimeMs:     vectorMs,
 			BM25SearchTimeMs:       bm25Ms,
@@ -4377,6 +4391,7 @@ type adaptiveOverfetchConfig struct {
 type vectorOverfetchStats struct {
 	rawCandidates int
 	retries       int
+	exhausted     bool
 }
 
 func resolveAdaptiveOverfetch(opts *SearchOptions) adaptiveOverfetchConfig {
@@ -4464,11 +4479,12 @@ func (s *Service) adaptiveVectorSearch(
 	requestLimit := config.initialLimit
 	var stats vectorOverfetchStats
 	for {
-		scored, err := pipeline.Search(ctx, embedding, requestLimit, opts.GetMinSimilarity(0.5))
+		scored, exhausted, err := pipeline.searchWithExhaustion(ctx, embedding, requestLimit, opts.GetMinSimilarity(0.5))
 		if err != nil {
 			return nil, stats, err
 		}
 		stats.rawCandidates = len(scored)
+		stats.exhausted = exhausted
 		results := make([]indexResult, 0, len(scored))
 		for _, result := range scored {
 			results = append(results, indexResult{ID: result.ID, Score: result.Score})
@@ -4478,6 +4494,7 @@ func (s *Service) adaptiveVectorSearch(
 			results = postProcess(results)
 		}
 		if len(results) >= config.target {
+			stats.exhausted = stats.exhausted && len(results) == config.target
 			return results[:config.target], stats, nil
 		}
 		if !config.adaptive || requestLimit >= config.maxLimit || len(scored) < requestLimit {
@@ -4500,7 +4517,7 @@ func (s *Service) adaptiveBM25Search(
 	postProcess func([]indexResult) []indexResult,
 ) ([]indexResult, vectorOverfetchStats, error) {
 	if index == nil {
-		return nil, vectorOverfetchStats{}, nil
+		return nil, vectorOverfetchStats{exhausted: true}, nil
 	}
 	config := resolveAdaptiveOverfetch(opts)
 	requestLimit := config.initialLimit
@@ -4511,11 +4528,14 @@ func (s *Service) adaptiveBM25Search(
 		}
 		rawResults := index.Search(query, requestLimit)
 		stats.rawCandidates = len(rawResults)
+		// BM25 enumerates an exact ranked prefix before metadata filtering.
+		stats.exhausted = len(rawResults) < requestLimit
 		results := rawResults
 		if postProcess != nil {
 			results = postProcess(results)
 		}
 		if len(results) >= config.target {
+			stats.exhausted = stats.exhausted && len(results) == config.target
 			return results[:config.target], stats, nil
 		}
 		if !config.adaptive || requestLimit >= config.maxLimit || len(rawResults) < requestLimit {
@@ -6276,12 +6296,13 @@ func (s *Service) vectorSearchOnly(ctx context.Context, embedding []float32, opt
 	totalMs := int(time.Since(totalStart).Milliseconds())
 
 	return &SearchResponse{
-		Status:          "success",
-		Results:         searchResults,
-		TotalCandidates: len(results),
-		Returned:        len(searchResults),
-		SearchMethod:    searchMethod,
-		Message:         message,
+		Status:             "success",
+		Results:            searchResults,
+		RetrievalExhausted: vectorStats.exhausted && len(results) <= opts.Limit,
+		TotalCandidates:    len(results),
+		Returned:           len(searchResults),
+		SearchMethod:       searchMethod,
+		Message:            message,
 		Metrics: &SearchMetrics{
 			VectorSearchTimeMs:     vectorMs,
 			TotalTimeMs:            totalMs,
@@ -6300,14 +6321,15 @@ func (s *Service) fullTextSearchOnly(ctx context.Context, query string, opts *Se
 	s.mu.RUnlock()
 	if ft == nil {
 		return &SearchResponse{
-			Status:            "success",
-			Query:             query,
-			Results:           nil,
-			TotalCandidates:   0,
-			Returned:          0,
-			SearchMethod:      "fulltext",
-			FallbackTriggered: true,
-			Message:           "Full-text index not available",
+			RetrievalExhausted: true,
+			Status:             "success",
+			Query:              query,
+			Results:            nil,
+			TotalCandidates:    0,
+			Returned:           0,
+			SearchMethod:       "fulltext",
+			FallbackTriggered:  true,
+			Message:            "Full-text index not available",
 			Metrics: &SearchMetrics{
 				TotalTimeMs: int(time.Since(totalStart).Milliseconds()),
 			},
@@ -6335,14 +6357,15 @@ func (s *Service) fullTextSearchOnly(ctx context.Context, query string, opts *Se
 	totalMs := int(time.Since(totalStart).Milliseconds())
 
 	return &SearchResponse{
-		Status:            "success",
-		Query:             query,
-		Results:           searchResults,
-		TotalCandidates:   len(results),
-		Returned:          len(searchResults),
-		SearchMethod:      "fulltext",
-		FallbackTriggered: true,
-		Message:           "Full-text BM25 search (vector search unavailable or returned no results)",
+		Status:             "success",
+		Query:              query,
+		Results:            searchResults,
+		RetrievalExhausted: bm25Stats.exhausted && len(results) <= opts.Limit,
+		TotalCandidates:    len(results),
+		Returned:           len(searchResults),
+		SearchMethod:       "fulltext",
+		FallbackTriggered:  true,
+		Message:            "Full-text BM25 search (vector search unavailable or returned no results)",
 		Metrics: &SearchMetrics{
 			BM25SearchTimeMs:     bm25Ms,
 			TotalTimeMs:          totalMs,

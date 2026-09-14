@@ -201,6 +201,7 @@ func (s *Service) SearchTextContinuation(
 		opts = DefaultSearchOptions()
 	}
 	ownedOptions := cloneContinuationSearchOptions(opts)
+	ownedOptions.continuation = true
 	if ownedOptions.Limit <= 0 {
 		ownedOptions.Limit = 50
 	}
@@ -223,20 +224,30 @@ func (s *Service) SearchTextContinuation(
 	for index := range state.results {
 		state.seen[searchResultID(state.results[index])] = struct{}{}
 	}
-	initialRows := continuationRows(state.results)
 	maxResults := request.MaxResults
-	initialExhausted := len(initial.Results) < ownedOptions.Limit ||
+	initialRows := continuationRows(state.results)
+	initialExhausted := initial.RetrievalExhausted ||
 		(maxResults > 0 && len(initial.Results) >= maxResults)
+	depthLimit := ownedOptions.MaxCandidateLimit
+	if depthLimit <= 0 || depthLimit > MaxCandidates {
+		depthLimit = MaxCandidates
+	}
+	lastDepth := ownedOptions.Limit
 	expand := func(expandCtx context.Context, depth int) ([][]any, bool, error) {
-		if maxResults > 0 && depth > maxResults {
-			depth = maxResults
+		// A candidate budget is not evidence that retrieval is exhausted. Fail
+		// explicitly when no deeper supported request can be made. max_results
+		// limits emitted members, not how deeply we may search to find them.
+		if lastDepth >= depthLimit {
+			return nil, false, fmt.Errorf("continuation retrieval depth limit reached: %w", resultstream.ErrCapacity)
 		}
+		depth = min(depth, depthLimit)
 		expandedOptions := cloneContinuationSearchOptions(&ownedOptions)
 		expandedOptions.Limit = depth
 		response, expandErr := SearchTextChunksWithErrorPolicy(expandCtx, query, &expandedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
 		if expandErr != nil {
 			return nil, false, expandErr
 		}
+		lastDepth = depth
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		for index := range response.Results {
@@ -248,7 +259,7 @@ func (s *Service) SearchTextContinuation(
 			state.seen[id] = struct{}{}
 			state.results = append(state.results, result)
 		}
-		exhausted := len(response.Results) < depth ||
+		exhausted := response.RetrievalExhausted ||
 			(maxResults > 0 && len(state.results) >= maxResults)
 		if maxResults > 0 && len(state.results) > maxResults {
 			state.results = state.results[:maxResults]
