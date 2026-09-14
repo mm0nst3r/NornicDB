@@ -101,8 +101,9 @@ func SearchTextChunksWithErrorPolicy(
 	}
 	exhausted := true
 	var (
-		fusedIndexes map[string]int
-		fused        []fusedResult
+		fusedIndexes  map[string]int
+		fused         []fusedResult
+		budgetReached bool
 	)
 	for _, chunk := range chunks {
 		embedding, err := embedQuery(ctx, chunk)
@@ -121,6 +122,7 @@ func SearchTextChunksWithErrorPolicy(
 		if err != nil || response == nil {
 			continue
 		}
+		budgetReached = budgetReached || response.CandidateBudgetReached
 		exhausted = exhausted && response.RetrievalExhausted
 		if fusedIndexes == nil && len(response.Results) > 0 {
 			candidatesPerChunk := chunkOpts.Limit
@@ -154,19 +156,21 @@ func SearchTextChunksWithErrorPolicy(
 	if len(fused) == 0 {
 		if opts.FallbackEnabled != nil && !*opts.FallbackEnabled {
 			return &SearchResponse{
-				RetrievalExhausted: exhausted,
-				Status:             "success",
-				Query:              query,
-				Results:            []SearchResult{},
-				SearchMethod:       "chunked_rrf_hybrid",
-				FallbackTriggered:  false,
+				RetrievalExhausted:     exhausted && !budgetReached,
+				CandidateBudgetReached: budgetReached,
+				Status:                 "success",
+				Query:                  query,
+				Results:                []SearchResult{},
+				SearchMethod:           "chunked_rrf_hybrid",
+				FallbackTriggered:      false,
 			}, nil
 		}
 		response, err := searchQuery(ctx, query, nil, opts)
 		if response != nil {
 			// The callback may return a cached response shared with other callers.
 			copy := *response
-			copy.RetrievalExhausted = exhausted && response.RetrievalExhausted
+			copy.CandidateBudgetReached = budgetReached || response.CandidateBudgetReached
+			copy.RetrievalExhausted = exhausted && response.RetrievalExhausted && !copy.CandidateBudgetReached
 			response = &copy
 		}
 		return response, err
@@ -184,14 +188,15 @@ func SearchTextChunksWithErrorPolicy(
 	}
 
 	response := &SearchResponse{
-		RetrievalExhausted: exhausted,
-		Status:             "success",
-		Query:              query,
-		Results:            make([]SearchResult, 0, len(fused)),
-		TotalCandidates:    len(fusedIndexes),
-		Returned:           len(fused),
-		SearchMethod:       "chunked_rrf_hybrid",
-		FallbackTriggered:  false,
+		RetrievalExhausted:     exhausted && !budgetReached,
+		CandidateBudgetReached: budgetReached,
+		Status:                 "success",
+		Query:                  query,
+		Results:                make([]SearchResult, 0, len(fused)),
+		TotalCandidates:        len(fusedIndexes),
+		Returned:               len(fused),
+		SearchMethod:           "chunked_rrf_hybrid",
+		FallbackTriggered:      false,
 	}
 	for _, fusedResult := range fused {
 		result := *fusedResult.best

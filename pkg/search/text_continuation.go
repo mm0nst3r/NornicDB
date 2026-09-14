@@ -175,7 +175,7 @@ func (s *Service) SearchTextContinuation(
 		}
 		ranked, err := SearchTextChunksWithErrorPolicy(ctx, query, &ownedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
 		for err == nil && rankedLimit <= 0 && !ranked.RetrievalExhausted {
-			if rankedPrefixProducerBounded(ownedOptions, ranked) {
+			if ranked.CandidateBudgetReached {
 				break
 			}
 			depthLimit := ownedOptions.MaxCandidateLimit
@@ -249,6 +249,7 @@ func (s *Service) SearchTextContinuation(
 	}
 	initialRows := continuationRows(state.results)
 	initialExhausted := initial.RetrievalExhausted ||
+		initial.CandidateBudgetReached ||
 		(maxResults > 0 && len(initial.Results) >= maxResults)
 	depthLimit := ownedOptions.MaxCandidateLimit
 	if depthLimit <= 0 {
@@ -285,6 +286,7 @@ func (s *Service) SearchTextContinuation(
 			state.results = append(state.results, compactContinuationResult(result))
 		}
 		exhausted := response.RetrievalExhausted ||
+			response.CandidateBudgetReached ||
 			(maxResults > 0 && len(state.results) >= maxResults)
 		if maxResults > 0 && len(state.results) > maxResults {
 			state.results = state.results[:maxResults]
@@ -302,13 +304,6 @@ func (s *Service) SearchTextContinuation(
 		return nil, err
 	}
 	return searchPageFromResultStream(page)
-}
-
-func rankedPrefixProducerBounded(options SearchOptions, response *SearchResponse) bool {
-	return response != nil &&
-		!response.RetrievalExhausted &&
-		options.Limit > 0 &&
-		len(response.Results) < options.Limit
 }
 
 func (s *Service) searchContinuationRegistry() (continuationRegistry, error) {
@@ -409,11 +404,21 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 	}
 	page.Rows = continuationRows(results)
 	s.state.mu.RLock()
+	response := s.state.response
+	rankedPoolExhausted := response != nil && response.RetrievalExhausted && !response.CandidateBudgetReached
+	completion := SearchContinuationMoreResults
+	if !page.HasMore {
+		completion = SearchContinuationCandidateComplete
+	}
 	page.Metadata = map[string]any{
-		"search_method":      s.state.searchMethod,
-		"response":           s.state.response,
-		"fallback_triggered": s.state.fallbackTriggered,
-		"discovered":         len(s.state.results),
+		"search_method":         s.state.searchMethod,
+		"response":              response,
+		"fallback_triggered":    s.state.fallbackTriggered,
+		"discovered":            len(s.state.results),
+		"mode":                  SearchContinuationRanked,
+		"ranked_count":          len(s.state.results),
+		"ranked_pool_exhausted": rankedPoolExhausted,
+		"completion":            completion,
 	}
 	s.state.mu.RUnlock()
 	return page, nil

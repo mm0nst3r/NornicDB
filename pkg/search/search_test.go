@@ -3462,6 +3462,42 @@ func TestService_RerankerPlumbingAndStage2(t *testing.T) {
 	assert.Equal(t, 0.70, out[0].OriginalScore, "reranking must preserve the vector cosine score")
 }
 
+func TestService_RerankTopKBudgetDoesNotReportRetrievalExhausted(t *testing.T) {
+	eng := newNamespacedEngine(t)
+	svc := NewServiceWithDimensions(eng, 2)
+	t.Cleanup(func() { require.NoError(t, svc.Close()) })
+	ctx := context.Background()
+
+	for _, doc := range []struct {
+		id      storage.NodeID
+		content string
+		vector  []float32
+	}{
+		{id: "a", content: "library transcript alpha", vector: []float32{1, 0}},
+		{id: "b", content: "library transcript beta", vector: []float32{0.8, 0.2}},
+		{id: "c", content: "library transcript gamma", vector: []float32{0.6, 0.4}},
+	} {
+		_, err := eng.CreateNode(&storage.Node{
+			ID: doc.id, Labels: []string{"Document"}, Properties: map[string]any{"content": doc.content},
+		})
+		require.NoError(t, err)
+		require.NoError(t, svc.vectorIndex.Add(string(doc.id), doc.vector))
+	}
+	svc.vectorPipeline = NewVectorSearchPipeline(NewBruteForceCandidateGen(svc.vectorIndex), NewCPUExactScorer(svc.vectorIndex))
+	svc.SetReranker(&testReranker{enabled: true})
+
+	opts := DefaultSearchOptions()
+	opts.Limit = 10
+	opts.RerankEnabled = true
+	opts.RerankTopK = 2
+	response, err := svc.Search(ctx, "library transcript", []float32{1, 0}, opts)
+	require.NoError(t, err)
+	require.Len(t, response.Results, 2)
+	require.True(t, response.CandidateBudgetReached)
+	require.False(t, response.RetrievalExhausted)
+	require.Equal(t, "rrf_hybrid+rerank", response.SearchMethod)
+}
+
 func TestService_RerankCandidatesBranches(t *testing.T) {
 	ctx := context.Background()
 	var nilSvc *Service

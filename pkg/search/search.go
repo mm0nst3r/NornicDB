@@ -255,16 +255,20 @@ type SearchResponse struct {
 	// RetrievalExhausted is internal continuation evidence: every participating
 	// retrieval branch is exhausted and no candidate prefix was truncated.
 	// A short filtered or approximate result alone must never set this flag.
-	RetrievalExhausted bool           `json:"-"`
-	Status             string         `json:"status"`
-	Query              string         `json:"query"`
-	Results            []SearchResult `json:"results"`
-	TotalCandidates    int            `json:"total_candidates"`
-	Returned           int            `json:"returned"`
-	SearchMethod       string         `json:"search_method"`
-	FallbackTriggered  bool           `json:"fallback_triggered"`
-	Message            string         `json:"message,omitempty"`
-	Metrics            *SearchMetrics `json:"metrics,omitempty"`
+	RetrievalExhausted bool `json:"-"`
+	// CandidateBudgetReached is internal continuation evidence: the selected
+	// producer hit a configured candidate budget and cannot expose a deeper
+	// ranked prefix without changing that budget.
+	CandidateBudgetReached bool           `json:"-"`
+	Status                 string         `json:"status"`
+	Query                  string         `json:"query"`
+	Results                []SearchResult `json:"results"`
+	TotalCandidates        int            `json:"total_candidates"`
+	Returned               int            `json:"returned"`
+	SearchMethod           string         `json:"search_method"`
+	FallbackTriggered      bool           `json:"fallback_triggered"`
+	Message                string         `json:"message,omitempty"`
+	Metrics                *SearchMetrics `json:"metrics,omitempty"`
 }
 
 // SearchMetrics contains timing and statistics.
@@ -4242,6 +4246,7 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	fusionStart := time.Now()
 	fusedResults := s.fuseRRF(vectorResults, bm25Results, opts)
 	retrievalExhausted := vectorStats.exhausted && bm25Result.stats.exhausted && len(fusedResults) <= opts.Limit
+	candidateBudgetReached := false
 
 	// Step 5: Apply MMR diversification if enabled
 	searchMethod := "rrf_hybrid"
@@ -4265,6 +4270,7 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 
 	// Step 6: Stage-2 reranking (optional)
 	if opts.RerankEnabled && reranker != nil && reranker.Enabled() {
+		candidateBudgetReached = len(fusedResults) > effectiveRerankTopK(opts)
 		fusedResults = s.applyStage2Rerank(ctx, query, fusedResults, opts, seenOrphans, reranker)
 		if searchMethod == "rrf_hybrid" {
 			searchMethod = "rrf_hybrid+rerank"
@@ -4285,14 +4291,15 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	s.observeSearchStage(ctx, "hybrid", "fuse", time.Since(fusionStart))
 
 	return &SearchResponse{
-		Status:             "success",
-		Query:              query,
-		Results:            results,
-		RetrievalExhausted: retrievalExhausted,
-		TotalCandidates:    len(fusedResults),
-		Returned:           len(results),
-		SearchMethod:       searchMethod,
-		Message:            message,
+		Status:                 "success",
+		Query:                  query,
+		Results:                results,
+		RetrievalExhausted:     retrievalExhausted && !candidateBudgetReached,
+		CandidateBudgetReached: candidateBudgetReached,
+		TotalCandidates:        len(fusedResults),
+		Returned:               len(results),
+		SearchMethod:           searchMethod,
+		Message:                message,
 		Metrics: &SearchMetrics{
 			VectorSearchTimeMs:     vectorMs,
 			BM25SearchTimeMs:       bm25Ms,
@@ -5991,10 +5998,7 @@ func (s *Service) applyStage2Rerank(ctx context.Context, query string, results [
 	}
 
 	// Limit to top-K (optional; keeps prompt/service bounded).
-	topK := opts.RerankTopK
-	if topK <= 0 {
-		topK = 100
-	}
+	topK := effectiveRerankTopK(opts)
 	if len(results) > topK {
 		results = results[:topK]
 	}
@@ -6104,6 +6108,13 @@ func (s *Service) applyStage2Rerank(ctx context.Context, query string, results [
 	}
 
 	return rerankedResults
+}
+
+func effectiveRerankTopK(opts *SearchOptions) int {
+	if opts == nil || opts.RerankTopK <= 0 {
+		return 100
+	}
+	return opts.RerankTopK
 }
 
 // SetCrossEncoder configures the Stage-2 reranker to use the cross-encoder implementation.

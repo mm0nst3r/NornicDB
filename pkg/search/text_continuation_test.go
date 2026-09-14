@@ -365,9 +365,10 @@ func TestSearchTextContinuationRankedThenIDStopsAtBoundedRankedPrefix(t *testing
 			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(100 - index)}
 		}
 		return &SearchResponse{
-			Results:            results,
-			SearchMethod:       "bounded-rerank-test",
-			RetrievalExhausted: false,
+			Results:                results,
+			SearchMethod:           "bounded-rerank-test",
+			RetrievalExhausted:     false,
+			CandidateBudgetReached: opts.Limit > 100,
 		}, nil
 	}
 
@@ -406,6 +407,187 @@ func TestSearchTextContinuationRankedThenIDStopsAtBoundedRankedPrefix(t *testing
 	require.True(t, second.CollectionExhausted)
 	require.Equal(t, SearchContinuationCollectionComplete, second.Completion)
 	require.False(t, second.HasMore)
+}
+
+func TestSearchTextContinuationRankedThenIDShortPrefixCanStillDeepen(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 3; index++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%d", index))
+		_, err := engine.CreateNode(&storage.Node{
+			ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "library transcript"},
+		})
+		require.NoError(t, err)
+	}
+
+	var requestedLimits []int
+	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		requestedLimits = append(requestedLimits, opts.Limit)
+		resultCount := 1
+		if opts.Limit >= 8 {
+			resultCount = 3
+		}
+		results := make([]SearchResult, resultCount)
+		for index := range results {
+			id := fmt.Sprintf("doc-%d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(3 - index)}
+		}
+		return &SearchResponse{
+			Results:            results,
+			SearchMethod:       "short-batch-test",
+			RetrievalExhausted: opts.Limit >= 16,
+		}, nil
+	}
+
+	options := DefaultSearchOptions()
+	options.Limit = 4
+	page, err := service.SearchTextContinuation(
+		context.Background(), "library transcript", options,
+		SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: SearchContinuationRankedThenID, N: 10},
+		nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []int{4, 8, 16}, requestedLimits)
+	require.Len(t, page.Results, 3)
+	require.Equal(t, 3, page.RankedCount)
+	require.True(t, page.RankedPoolExhausted)
+	require.NotNil(t, page.EligibleCount)
+	require.Equal(t, 3, *page.EligibleCount)
+	require.Equal(t, []string{"doc-0", "doc-1", "doc-2"}, []string{page.Results[0].ID, page.Results[1].ID, page.Results[2].ID})
+	require.Equal(t, []string{SearchContinuationRankedPhase, SearchContinuationRankedPhase, SearchContinuationRankedPhase}, []string{page.Results[0].Phase, page.Results[1].Phase, page.Results[2].Phase})
+}
+
+func TestSearchTextContinuationRankedStopsAtDeclaredCandidateBudget(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 100; index++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%03d", index))
+		_, err := engine.CreateNode(&storage.Node{
+			ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "library transcript"},
+		})
+		require.NoError(t, err)
+	}
+
+	var requestedLimits []int
+	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		requestedLimits = append(requestedLimits, opts.Limit)
+		resultCount := min(opts.Limit, 100)
+		results := make([]SearchResult, resultCount)
+		for index := range results {
+			id := fmt.Sprintf("doc-%03d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(100 - index)}
+		}
+		return &SearchResponse{
+			Results:                results,
+			SearchMethod:           "bounded-ranked-test",
+			RetrievalExhausted:     false,
+			CandidateBudgetReached: opts.Limit > 100,
+		}, nil
+	}
+
+	request := SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: SearchContinuationRanked, N: 1}
+	page, err := service.SearchTextContinuation(
+		context.Background(), "library transcript", &SearchOptions{Limit: 1, MaxCandidateLimit: 1024},
+		request, nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+	ids := []string{}
+	for {
+		for _, result := range page.Results {
+			ids = append(ids, result.ID)
+		}
+		if !page.HasMore {
+			break
+		}
+		request.QID = page.QID
+		request.N = 25
+		page, err = service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+		require.NoError(t, err)
+	}
+	require.Len(t, ids, 100)
+	require.Equal(t, "doc-000", ids[0])
+	require.Equal(t, "doc-099", ids[len(ids)-1])
+	require.Equal(t, []int{1, 2, 4, 8, 16, 32, 64, 128}, requestedLimits)
+	require.Equal(t, SearchContinuationCandidateComplete, page.Completion)
+	require.False(t, page.RankedPoolExhausted)
+
+	request.N = 25
+	replay, err := service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+	require.NoError(t, err)
+	require.Equal(t, page.Results, replay.Results)
+	require.Equal(t, []int{1, 2, 4, 8, 16, 32, 64, 128}, requestedLimits)
+}
+
+func TestSearchTextContinuationRerankBudgetBoundary(t *testing.T) {
+	for _, mode := range []SearchContinuationMode{SearchContinuationRanked, SearchContinuationRankedThenID} {
+		t.Run(string(mode), func(t *testing.T) {
+			engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+			service := NewServiceWithDimensions(engine, 2)
+			t.Cleanup(func() { require.NoError(t, service.Close()) })
+			for _, doc := range []struct {
+				id      storage.NodeID
+				content string
+				vector  []float32
+			}{
+				{id: "doc-a", content: "library transcript alpha", vector: []float32{1, 0}},
+				{id: "doc-b", content: "library transcript beta", vector: []float32{0.8, 0.2}},
+				{id: "doc-c", content: "library transcript gamma", vector: []float32{0.6, 0.4}},
+			} {
+				_, err := engine.CreateNode(&storage.Node{
+					ID: doc.id, Labels: []string{"Document"}, Properties: map[string]any{"content": doc.content},
+				})
+				require.NoError(t, err)
+				require.NoError(t, service.vectorIndex.Add(string(doc.id), doc.vector))
+			}
+			service.vectorPipeline = NewVectorSearchPipeline(NewBruteForceCandidateGen(service.vectorIndex), NewCPUExactScorer(service.vectorIndex))
+			service.SetReranker(&testReranker{enabled: true})
+
+			options := DefaultSearchOptions()
+			options.Limit = 10
+			options.RerankEnabled = true
+			options.RerankTopK = 2
+			request := SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: mode, N: 1}
+			if mode == SearchContinuationRankedThenID {
+				request.N = 10
+			}
+			page, err := service.SearchTextContinuation(
+				context.Background(), "library transcript", options, request,
+				nil,
+				func(context.Context, string) ([]float32, error) { return []float32{1, 0}, nil },
+				service.Search,
+				ChunkedSearchErrorPolicy{},
+			)
+			require.NoError(t, err)
+			require.False(t, page.RankedPoolExhausted)
+			require.Equal(t, "rrf_hybrid+rerank", page.SearchMethod)
+
+			if mode == SearchContinuationRanked {
+				require.Len(t, page.Results, 1)
+				require.True(t, page.HasMore)
+				request.QID = page.QID
+				request.N = 10
+				page, err = service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+				require.NoError(t, err)
+				require.Len(t, page.Results, 1)
+				require.False(t, page.HasMore)
+				require.Equal(t, SearchContinuationCandidateComplete, page.Completion)
+				require.False(t, page.RankedPoolExhausted)
+				return
+			}
+
+			require.Len(t, page.Results, 3)
+			require.Equal(t, 2, page.RankedCount)
+			require.NotNil(t, page.EligibleCount)
+			require.Equal(t, 3, *page.EligibleCount)
+			require.Equal(t, []string{SearchContinuationRankedPhase, SearchContinuationRankedPhase, SearchContinuationCatalogPhase}, []string{
+				page.Results[0].Phase, page.Results[1].Phase, page.Results[2].Phase,
+			})
+			require.Equal(t, SearchContinuationCollectionComplete, page.Completion)
+			require.False(t, page.HasMore)
+		})
+	}
 }
 
 func TestSearchTextContinuationRankedPullRehydratesAndAuthorizes(t *testing.T) {
