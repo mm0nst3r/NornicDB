@@ -140,8 +140,8 @@ func TestVoyageManagedWorkerPreservesDocumentsImagesAndSpaces(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, response.Results, 1)
 		require.Equal(t, "text:document", response.Results[0].ID)
-		require.Len(t, response.Results[0].Passages, 1)
-		passage := response.Results[0].Passages[0]
+		require.Len(t, response.Results[0].SupportingPassages, 1)
+		passage := response.Results[0].SupportingPassages[0]
 		require.Equal(t, 1, passage.ChunkIndex)
 		require.Equal(t, "Second supporting passage", passage.Text)
 		require.Equal(t, document.EmbedMeta["embedding_space"], passage.Space)

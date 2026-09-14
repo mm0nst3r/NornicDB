@@ -137,13 +137,13 @@ type DiscoverResult struct {
 
 // SearchResult represents a search result node
 type SearchResult struct {
-	Passages       []search.SupportingPassage `json:"passages,omitempty"`
-	ID             string                     `json:"id"`
-	Type           string                     `json:"type"`
-	Title          string                     `json:"title"`
-	ContentPreview string                     `json:"content_preview,omitempty"`
-	Similarity     float64                    `json:"similarity"`
-	Properties     map[string]interface{}     `json:"properties,omitempty"`
+	SupportingPassages []search.SupportingPassage `json:"supporting_passages,omitempty"`
+	ID                 string                     `json:"id"`
+	Type               string                     `json:"type"`
+	Title              string                     `json:"title"`
+	ContentPreview     string                     `json:"content_preview,omitempty"`
+	Similarity         float64                    `json:"similarity"`
+	Properties         map[string]interface{}     `json:"properties,omitempty"`
 	// Related nodes discovered via graph traversal (only populated when depth > 1)
 	Related []RelatedNode `json:"related,omitempty"`
 }

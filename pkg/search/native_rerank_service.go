@@ -46,9 +46,9 @@ func (s *Service) applyReportingRerank(ctx context.Context, query string, result
 			continue
 		}
 		content := s.extractSearchableText(node)
-		if len(result.Passages) > 0 {
-			texts := make([]string, len(result.Passages))
-			for i, p := range result.Passages {
+		if len(result.SupportingPassages) > 0 {
+			texts := make([]string, len(result.SupportingPassages))
+			for i, p := range result.SupportingPassages {
 				texts[i] = p.Text
 			}
 			content = strings.Join(texts, "\n\n")
@@ -119,7 +119,7 @@ func (s *Service) RerankSearchResponse(ctx context.Context, query string, respon
 	fused := make([]rrfResult, len(response.Results))
 	originals := make(map[string]SearchResult, len(response.Results))
 	for i, row := range response.Results {
-		fused[i] = rrfResult{ID: row.ID, RRFScore: row.Score, VectorRank: row.VectorRank, BM25Rank: row.BM25Rank, OriginalScore: row.Similarity, Passages: row.Passages}
+		fused[i] = rrfResult{ID: row.ID, RRFScore: row.Score, VectorRank: row.VectorRank, BM25Rank: row.BM25Rank, OriginalScore: row.Similarity, SupportingPassages: row.SupportingPassages}
 		originals[row.ID] = row
 	}
 	ranked, report, err := s.applyReportingRerank(ctx, query, fused, opts, make(map[string]bool), native)
