@@ -493,6 +493,21 @@ type NodeWithoutEmbeddingsReader interface {
 	GetNodeWithoutEmbeddings(id NodeID) (*Node, error)
 }
 
+// BatchNodeWithoutEmbeddingsReader is an optional extension interface for
+// fetching several nodes without stored embedding vectors in one storage
+// operation. Missing IDs are omitted from the returned map, matching
+// BatchGetNodes semantics.
+type BatchNodeWithoutEmbeddingsReader interface {
+	BatchGetNodesWithoutEmbeddings(ids []NodeID) (map[NodeID]*Node, error)
+}
+
+// BatchNodeWithoutEmbeddingsCapability lets wrappers expose whether their
+// current inner engine can satisfy batched light node reads without falling
+// back to one call per ID.
+type BatchNodeWithoutEmbeddingsCapability interface {
+	BatchGetNodesWithoutEmbeddingsSupported() bool
+}
+
 // ProjectedLabelNodeReader is an optional extension interface for iterating
 // label-matching nodes while decoding only a caller-specified subset of user
 // properties. The callback runs against one consistent storage snapshot and

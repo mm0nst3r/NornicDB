@@ -54,7 +54,7 @@ type registryEntry struct {
 	ownerHash     [32]byte
 	database      string
 	expires       int64
-	retainedBytes int64
+	retainedBytes atomic.Int64
 	stream        Stream
 	released      atomic.Bool
 }
@@ -175,13 +175,13 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 	}
 
 	entry := &registryEntry{
-		scopeHash:     r.scopeDigest(scope),
-		ownerHash:     ownerHash,
-		database:      scope.Database,
-		expires:       time.Now().Add(r.config.TTL).Unix(),
-		retainedBytes: retainedBytes,
-		stream:        stream,
+		scopeHash: r.scopeDigest(scope),
+		ownerHash: ownerHash,
+		database:  scope.Database,
+		expires:   time.Now().Add(r.config.TTL).Unix(),
+		stream:    stream,
 	}
+	entry.retainedBytes.Store(retainedBytes)
 	var streamID [16]byte
 	inserted := false
 	for attempt := 0; attempt < 4; attempt++ {
@@ -215,7 +215,8 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 			if !reportsBytes {
 				return true
 			}
-			return r.resize(entry, reporter.RetainedBytes())
+			retainedBytes := reporter.RetainedBytes()
+			return retainedBytes == entry.retainedBytes.Load() || r.resize(entry, retainedBytes)
 		})
 	}
 	r.observe("start")
@@ -300,7 +301,7 @@ func (r *Registry) Pull(ctx context.Context, scope Scope, qid string, n int) (*P
 	}
 	if reporter, ok := entry.stream.(RetainedBytesReporter); ok {
 		retainedBytes := reporter.RetainedBytes()
-		if retainedBytes < 0 || !r.resize(entry, retainedBytes) {
+		if retainedBytes < 0 || (retainedBytes != entry.retainedBytes.Load() && !r.resize(entry, retainedBytes)) {
 			r.remove(token.streamID, entry)
 			r.observe("capacity")
 			return nil, ErrCapacity
@@ -438,12 +439,13 @@ func (r *Registry) resize(entry *registryEntry, bytes int64) bool {
 	if entry.released.Load() {
 		return false
 	}
-	delta := bytes - entry.retainedBytes
+	current := entry.retainedBytes.Load()
+	delta := bytes - current
 	if delta <= 0 {
 		usage := r.owners[entry.ownerHash]
 		usage.bytes += delta
 		r.owners[entry.ownerHash] = usage
-		entry.retainedBytes = bytes
+		entry.retainedBytes.Store(bytes)
 		r.retained.Add(delta)
 		return true
 	}
@@ -453,23 +455,24 @@ func (r *Registry) resize(entry *registryEntry, bytes int64) bool {
 	}
 	usage.bytes += delta
 	r.owners[entry.ownerHash] = usage
-	entry.retainedBytes = bytes
+	entry.retainedBytes.Store(bytes)
 	r.retained.Add(delta)
 	return true
 }
 
 func (r *Registry) release(entry *registryEntry) {
 	r.admissionMu.Lock()
+	retainedBytes := entry.retainedBytes.Load()
 	usage := r.owners[entry.ownerHash]
 	usage.streams--
-	usage.bytes -= entry.retainedBytes
+	usage.bytes -= retainedBytes
 	if usage.streams == 0 {
 		delete(r.owners, entry.ownerHash)
 	} else {
 		r.owners[entry.ownerHash] = usage
 	}
 	r.count.Add(-1)
-	r.retained.Add(-entry.retainedBytes)
+	r.retained.Add(-retainedBytes)
 	r.admissionMu.Unlock()
 	r.observeUsage()
 }

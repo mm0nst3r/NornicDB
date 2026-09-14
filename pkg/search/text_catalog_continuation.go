@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -484,13 +485,15 @@ func (s *catalogContinuationStream) Pull(ctx context.Context, position uint64, n
 	end := min(position+uint64(n), uint64(len(s.results)))
 	hasMore := end < uint64(len(s.results))
 	total := uint64(len(s.results))
-	compact := append([]SearchResult(nil), s.results[position:end]...)
-	metadata := make(map[string]any, len(s.metadata)+2)
-	for key, value := range s.metadata {
-		metadata[key] = value
-	}
+	window := s.results[position:end]
+	metadataSource := s.metadata
 	s.mu.RUnlock()
 
+	compact := append([]SearchResult(nil), window...)
+	metadata := make(map[string]any, len(metadataSource)+2)
+	for key, value := range metadataSource {
+		metadata[key] = value
+	}
 	results, err := hydrateContinuationResults(s.engine, compact, s.authorizeNode)
 	if err != nil {
 		return nil, err
@@ -530,7 +533,7 @@ func hydrateContinuationResults(engine storage.Engine, compact []SearchResult, a
 			ids = append(ids, compact[index].Passages[passageIndex].NodeID)
 		}
 	}
-	nodes, err := engine.BatchGetNodes(ids)
+	nodes, err := batchContinuationNodesWithoutEmbeddings(engine, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -568,6 +571,19 @@ func hydrateContinuationResults(engine storage.Engine, compact []SearchResult, a
 		}
 	}
 	return results, nil
+}
+
+func batchContinuationNodesWithoutEmbeddings(engine storage.Engine, ids []storage.NodeID) (map[storage.NodeID]*storage.Node, error) {
+	if reader, ok := engine.(storage.BatchNodeWithoutEmbeddingsReader); ok {
+		nodes, err := reader.BatchGetNodesWithoutEmbeddings(ids)
+		if err == nil {
+			return nodes, nil
+		}
+		if !errors.Is(err, storage.ErrNotImplemented) {
+			return nil, err
+		}
+	}
+	return engine.BatchGetNodes(ids)
 }
 
 func (s *catalogContinuationStream) Close() error {

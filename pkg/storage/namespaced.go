@@ -275,6 +275,41 @@ func (n *NamespacedEngine) GetNodeWithoutEmbeddings(id NodeID) (*Node, error) {
 	return n.toUserNode(node), nil
 }
 
+func (n *NamespacedEngine) BatchGetNodesWithoutEmbeddings(ids []NodeID) (map[NodeID]*Node, error) {
+	if len(ids) == 0 {
+		return make(map[NodeID]*Node), nil
+	}
+	reader, ok := n.inner.(BatchNodeWithoutEmbeddingsReader)
+	if !ok {
+		return nil, ErrNotImplemented
+	}
+
+	namespacedIDs := make([]NodeID, len(ids))
+	for i, id := range ids {
+		namespacedIDs[i] = n.prefixNodeID(id)
+	}
+	result, err := reader.BatchGetNodesWithoutEmbeddings(namespacedIDs)
+	if err != nil {
+		return nil, err
+	}
+	unprefixed := make(map[NodeID]*Node, len(result))
+	for namespacedID, node := range result {
+		if node == nil {
+			continue
+		}
+		unprefixedID := n.unprefixNodeID(namespacedID)
+		out := n.toUserNode(node)
+		out.ID = unprefixedID
+		unprefixed[unprefixedID] = out
+	}
+	return unprefixed, nil
+}
+
+func (n *NamespacedEngine) BatchGetNodesWithoutEmbeddingsSupported() bool {
+	_, ok := n.inner.(BatchNodeWithoutEmbeddingsReader)
+	return ok
+}
+
 // StreamNodesByLabelProjected iterates projected label matches in this namespace.
 func (n *NamespacedEngine) StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error {
 	if visit == nil {

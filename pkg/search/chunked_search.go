@@ -53,7 +53,8 @@ func SearchTextChunksWithErrorPolicy(
 	errorPolicy ChunkedSearchErrorPolicy,
 ) (*SearchResponse, error) {
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 	if embedQuery == nil {
 		return searchQuery(ctx, query, nil, opts)

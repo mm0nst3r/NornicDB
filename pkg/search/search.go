@@ -336,26 +336,33 @@ type SearchOptions struct {
 	Filters map[string][]string
 }
 
+var defaultSearchOptionsTemplate = SearchOptions{
+	Limit:                 50,
+	MinSimilarity:         nil, // nil = use service default or 0.5 fallback
+	RRFK:                  60,
+	VectorWeight:          1.0,
+	BM25Weight:            1.0,
+	MinRRFScore:           0.01,
+	AdaptiveOverfetch:     true,
+	InitialOverfetchRatio: 1.5,
+	MaxOverfetchRatio:     10,
+	OverfetchGrowthFactor: 2,
+	MaxCandidateLimit:     0,
+	MMREnabled:            false,
+	MMRLambda:             0.7, // Balanced: 70% relevance, 30% diversity
+	RerankEnabled:         false,
+	RerankTopK:            100,
+	RerankMinScore:        0.0,
+}
+
+func defaultSearchOptionsValue() SearchOptions {
+	return defaultSearchOptionsTemplate
+}
+
 // DefaultSearchOptions returns sensible defaults.
 func DefaultSearchOptions() *SearchOptions {
-	return &SearchOptions{
-		Limit:                 50,
-		MinSimilarity:         nil, // nil = use service default or 0.5 fallback
-		RRFK:                  60,
-		VectorWeight:          1.0,
-		BM25Weight:            1.0,
-		MinRRFScore:           0.01,
-		AdaptiveOverfetch:     true,
-		InitialOverfetchRatio: 1.5,
-		MaxOverfetchRatio:     10,
-		OverfetchGrowthFactor: 2,
-		MaxCandidateLimit:     0,
-		MMREnabled:            false,
-		MMRLambda:             0.7, // Balanced: 70% relevance, 30% diversity
-		RerankEnabled:         false,
-		RerankTopK:            100,
-		RerankMinScore:        0.0,
-	}
+	options := defaultSearchOptionsValue()
+	return &options
 }
 
 // GetMinSimilarity returns the MinSimilarity value, or the fallback if nil.
@@ -398,7 +405,8 @@ func newSearchResultCache(maxSize int, ttl time.Duration) *searchResultCache {
 // searchCacheKey builds a deterministic key for query, embedding, and options.
 func searchCacheKey(query string, embedding []float32, opts *SearchOptions) string {
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 	embeddingHash := fnv.New64a()
 	var floatBytes [4]byte
@@ -4065,7 +4073,8 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 		return nil, localizedError(localization.SearchIndexBuilding(), ErrSearchIndexBuilding)
 	}
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 
 	// Set resolved value back for downstream use
@@ -4338,7 +4347,8 @@ func (s *Service) VectorSearchCandidates(ctx context.Context, embedding []float3
 		return nil, err
 	}
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 
 	opts.MinSimilarity = s.resolveMinSimilarity(opts)
@@ -4391,7 +4401,8 @@ type vectorOverfetchStats struct {
 
 func resolveAdaptiveOverfetch(opts *SearchOptions) adaptiveOverfetchConfig {
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 	maxCandidateLimit := opts.MaxCandidateLimit
 	if maxCandidateLimit <= 0 {
@@ -4455,7 +4466,8 @@ func resolveVectorAdaptiveOverfetch(opts *SearchOptions, pipeline *VectorSearchP
 		return resolveAdaptiveOverfetch(opts)
 	}
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 	effective := *opts
 	if effective.MaxCandidateLimit <= 0 || generator.index.profile.RerankTopK < effective.MaxCandidateLimit {
@@ -4472,7 +4484,8 @@ func (s *Service) adaptiveVectorSearch(
 	postProcess func([]indexResult) []indexResult,
 ) ([]indexResult, vectorOverfetchStats, error) {
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 	config := resolveVectorAdaptiveOverfetch(opts, pipeline)
 	requestLimit := config.initialLimit
@@ -5727,6 +5740,44 @@ func (s *Service) getNodeWithoutEmbeddings(id storage.NodeID) (*storage.Node, er
 	return s.engine.GetNode(id)
 }
 
+func (s *Service) batchGetNodesWithoutEmbeddings(ids []storage.NodeID) (map[storage.NodeID]*storage.Node, error) {
+	if len(ids) == 0 {
+		return map[storage.NodeID]*storage.Node{}, nil
+	}
+	if reader, ok := s.engine.(storage.BatchNodeWithoutEmbeddingsReader); ok {
+		nodes, err := reader.BatchGetNodesWithoutEmbeddings(ids)
+		if err == nil {
+			return nodes, nil
+		}
+		if !errors.Is(err, storage.ErrNotImplemented) {
+			return nil, err
+		}
+	}
+	nodes := make(map[storage.NodeID]*storage.Node, len(ids))
+	for _, id := range ids {
+		node, err := s.getNodeWithoutEmbeddings(id)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		nodes[id] = node
+	}
+	return nodes, nil
+}
+
+func (s *Service) supportsBatchNodesWithoutEmbeddings() bool {
+	reader, ok := s.engine.(storage.BatchNodeWithoutEmbeddingsReader)
+	if !ok {
+		return false
+	}
+	if capability, ok := reader.(storage.BatchNodeWithoutEmbeddingsCapability); ok {
+		return capability.BatchGetNodesWithoutEmbeddingsSupported()
+	}
+	return true
+}
+
 // filterCandidatesByType filters candidates by node type/label.
 func (s *Service) filterCandidatesByType(ctx context.Context, candidates []SearchCandidate, types []string, seenOrphans map[string]bool) []SearchCandidate {
 	if len(types) == 0 {
@@ -6216,7 +6267,8 @@ func (s *Service) RerankCandidates(ctx context.Context, query string, candidates
 		return nil, localizedError(localization.SearchServiceUnavailable(), nil)
 	}
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 	if len(candidates) == 0 {
 		return []RerankResult{}, nil
@@ -6820,18 +6872,29 @@ func (s *Service) filterByType(ctx context.Context, results []indexResult, types
 
 // enrichResults converts RRF results to SearchResult with full node data.
 func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, limit int, seenOrphans map[string]bool) []SearchResult {
-	var results []SearchResult
+	resultLimit := boundedResultLimit(len(rrfResults), limit)
+	if resultLimit == 0 {
+		return nil
+	}
+	if !s.supportsBatchNodesWithoutEmbeddings() {
+		return s.enrichResultsIndividually(ctx, rrfResults[:resultLimit], seenOrphans)
+	}
 
-	for i, rrf := range rrfResults {
-		if i >= limit {
-			break
-		}
+	ids := make([]storage.NodeID, resultLimit)
+	for index := 0; index < resultLimit; index++ {
+		ids[index] = storage.NodeID(rrfResults[index].ID)
+	}
+	nodes, err := s.batchGetNodesWithoutEmbeddings(ids)
+	if err != nil {
+		return nil
+	}
 
-		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(rrf.ID))
-		if err != nil {
-			if s.handleOrphanedEmbedding(ctx, rrf.ID, err, seenOrphans) {
-				continue
-			}
+	results := make([]SearchResult, 0, resultLimit)
+	for index := 0; index < resultLimit; index++ {
+		rrf := rrfResults[index]
+		node := nodes[storage.NodeID(rrf.ID)]
+		if node == nil {
+			_ = s.handleOrphanedEmbedding(ctx, rrf.ID, storage.ErrNotFound, seenOrphans)
 			continue
 		}
 
@@ -6869,41 +6932,114 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 	return results
 }
 
-// enrichIndexResults converts raw index results to SearchResult.
-// Maps chunk IDs (e.g., "node-id-chunk-0") back to the original node ID.
-func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexResult, limit int, seenOrphans map[string]bool) []SearchResult {
-	var results []SearchResult
-	seenNodes := make(map[string]bool) // Track nodes we've already added to avoid duplicates
-
-	for _, ir := range indexResults {
-		if len(results) >= limit {
-			break
-		}
-
-		nodeIDStr := normalizeVectorResultIDToNodeID(ir.ID)
-
-		// Skip if we've already added this node (from a different chunk)
-		if seenNodes[nodeIDStr] {
-			continue
-		}
-
-		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(nodeIDStr))
+func (s *Service) enrichResultsIndividually(ctx context.Context, rrfResults []rrfResult, seenOrphans map[string]bool) []SearchResult {
+	results := make([]SearchResult, 0, len(rrfResults))
+	for _, rrf := range rrfResults {
+		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(rrf.ID))
 		if err != nil {
-			if s.handleOrphanedEmbedding(ctx, nodeIDStr, err, seenOrphans) {
+			if s.handleOrphanedEmbedding(ctx, rrf.ID, err, seenOrphans) {
 				continue
 			}
 			continue
 		}
+		result := SearchResult{
+			ID:         rrf.ID,
+			NodeID:     node.ID,
+			Labels:     node.Labels,
+			Properties: node.Properties,
+			Score:      rrf.RRFScore,
+			Similarity: rrf.OriginalScore,
+			RRFScore:   rrf.RRFScore,
+			VectorRank: rrf.VectorRank,
+			BM25Rank:   rrf.BM25Rank,
+		}
+		if t, ok := node.Properties["type"].(string); ok {
+			result.Type = t
+		}
+		if title, ok := node.Properties["title"].(string); ok {
+			result.Title = title
+		}
+		if desc, ok := node.Properties["description"].(string); ok {
+			result.Description = desc
+		}
+		if content, ok := node.Properties["content"].(string); ok {
+			result.ContentPreview = truncate(content, 200)
+		} else if text, ok := node.Properties["text"].(string); ok {
+			result.ContentPreview = truncate(text, 200)
+		}
+		results = append(results, result)
+	}
+	return results
+}
 
-		seenNodes[nodeIDStr] = true
+// enrichIndexResults converts raw index results to SearchResult.
+// Maps chunk IDs (e.g., "node-id-chunk-0") back to the original node ID.
+func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexResult, limit int, seenOrphans map[string]bool) []SearchResult {
+	resultLimit := boundedResultLimit(len(indexResults), limit)
+	if resultLimit == 0 {
+		return nil
+	}
 
+	ids := make([]storage.NodeID, 0, resultLimit)
+	scores := make([]float64, 0, resultLimit)
+	var seen map[string]struct{}
+	for _, ir := range indexResults {
+		if len(ids) >= resultLimit {
+			break
+		}
+
+		nodeIDStr := normalizeVectorResultIDToNodeID(ir.ID)
+		if seen != nil {
+			if _, exists := seen[nodeIDStr]; exists {
+				continue
+			}
+			seen[nodeIDStr] = struct{}{}
+		} else {
+			duplicate := false
+			for _, id := range ids {
+				if string(id) == nodeIDStr {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+			if len(ids) >= 64 {
+				seen = make(map[string]struct{}, len(ids)+1)
+				for _, id := range ids {
+					seen[string(id)] = struct{}{}
+				}
+				seen[nodeIDStr] = struct{}{}
+			}
+		}
+		ids = append(ids, storage.NodeID(nodeIDStr))
+		scores = append(scores, ir.Score)
+	}
+	if !s.supportsBatchNodesWithoutEmbeddings() {
+		return s.enrichIndexResultsIndividually(ctx, ids, scores, seenOrphans)
+	}
+
+	nodes, err := s.batchGetNodesWithoutEmbeddings(ids)
+	if err != nil {
+		return nil
+	}
+
+	results := make([]SearchResult, 0, len(ids))
+	for index, id := range ids {
+		nodeIDStr := string(id)
+		node := nodes[id]
+		if node == nil {
+			_ = s.handleOrphanedEmbedding(ctx, nodeIDStr, storage.ErrNotFound, seenOrphans)
+			continue
+		}
 		result := SearchResult{
 			ID:         nodeIDStr, // Use original node ID, not chunk ID
 			NodeID:     node.ID,
 			Labels:     node.Labels,
 			Properties: node.Properties,
-			Score:      ir.Score,
-			Similarity: ir.Score,
+			Score:      scores[index],
+			Similarity: scores[index],
 		}
 
 		// Extract common fields
@@ -6926,6 +7062,54 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 	}
 
 	return results
+}
+
+func (s *Service) enrichIndexResultsIndividually(ctx context.Context, ids []storage.NodeID, scores []float64, seenOrphans map[string]bool) []SearchResult {
+	results := make([]SearchResult, 0, len(ids))
+	for index, id := range ids {
+		nodeIDStr := string(id)
+		node, err := s.getNodeWithoutEmbeddings(id)
+		if err != nil {
+			if s.handleOrphanedEmbedding(ctx, nodeIDStr, err, seenOrphans) {
+				continue
+			}
+			continue
+		}
+		result := SearchResult{
+			ID:         nodeIDStr,
+			NodeID:     node.ID,
+			Labels:     node.Labels,
+			Properties: node.Properties,
+			Score:      scores[index],
+			Similarity: scores[index],
+		}
+		if t, ok := node.Properties["type"].(string); ok {
+			result.Type = t
+		}
+		if title, ok := node.Properties["title"].(string); ok {
+			result.Title = title
+		}
+		if desc, ok := node.Properties["description"].(string); ok {
+			result.Description = desc
+		}
+		if content, ok := node.Properties["content"].(string); ok {
+			result.ContentPreview = truncate(content, 200)
+		} else if text, ok := node.Properties["text"].(string); ok {
+			result.ContentPreview = truncate(text, 200)
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+func boundedResultLimit(total, limit int) int {
+	if total <= 0 || limit <= 0 {
+		return 0
+	}
+	if limit < total {
+		return limit
+	}
+	return total
 }
 
 // GetAdaptiveRRFConfig returns the production RRF configuration for a query.

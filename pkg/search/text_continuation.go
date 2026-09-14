@@ -142,7 +142,8 @@ func (s *Service) SearchTextContinuation(
 	}
 	if request.Mode == SearchContinuationID {
 		if opts == nil {
-			opts = DefaultSearchOptions()
+			defaults := defaultSearchOptionsValue()
+			opts = &defaults
 		}
 		stream, err := s.newIDContinuationStream(ctx, cloneContinuationSearchOptions(opts), request)
 		if err != nil {
@@ -159,7 +160,8 @@ func (s *Service) SearchTextContinuation(
 			return nil, errors.New("ranked_then_id continuation requires a search function")
 		}
 		if opts == nil {
-			opts = DefaultSearchOptions()
+			defaults := defaultSearchOptionsValue()
+			opts = &defaults
 		}
 		ownedOptions := cloneContinuationSearchOptions(opts)
 		ownedOptions.continuation = true
@@ -212,7 +214,8 @@ func (s *Service) SearchTextContinuation(
 		return nil, errors.New("search continuation requires a search function")
 	}
 	if opts == nil {
-		opts = DefaultSearchOptions()
+		defaults := defaultSearchOptionsValue()
+		opts = &defaults
 	}
 	ownedOptions := cloneContinuationSearchOptions(opts)
 	ownedOptions.continuation = true

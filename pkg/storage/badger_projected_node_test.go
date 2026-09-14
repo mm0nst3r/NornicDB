@@ -81,6 +81,32 @@ func TestNamespacedEngine_GetNodeWithoutEmbeddingsSkipsSeparateVectors(t *testin
 	require.Len(t, full.ChunkEmbeddings[0], 10_000)
 }
 
+func TestNamespacedEngine_BatchGetNodesWithoutEmbeddingsSkipsSeparateVectors(t *testing.T) {
+	engine := createTestBadgerEngine(t)
+	tenant := NewNamespacedEngine(engine, "tenant")
+	for _, id := range []NodeID{"large-vector-a", "large-vector-b"} {
+		node := &Node{
+			ID:         id,
+			Labels:     []string{"Evidence"},
+			Properties: map[string]any{"asset_id": string(id) + "-asset"},
+			ChunkEmbeddings: [][]float32{
+				make([]float32, 10_000),
+				make([]float32, 10_000),
+			},
+		}
+		_, err := tenant.CreateNode(node)
+		require.NoError(t, err)
+	}
+
+	light, err := tenant.BatchGetNodesWithoutEmbeddings([]NodeID{"large-vector-a", "missing", "large-vector-b"})
+	require.NoError(t, err)
+	require.Len(t, light, 2)
+	require.Equal(t, NodeID("large-vector-a"), light["large-vector-a"].ID)
+	require.Equal(t, "large-vector-a-asset", light["large-vector-a"].Properties["asset_id"])
+	require.Empty(t, light["large-vector-a"].ChunkEmbeddings)
+	require.Empty(t, light["large-vector-b"].ChunkEmbeddings)
+}
+
 func TestNamespacedEngine_StreamNodesByLabelProjected(t *testing.T) {
 	engine := createTestBadgerEngine(t)
 	tenantA := NewNamespacedEngine(engine, "tenant_a")

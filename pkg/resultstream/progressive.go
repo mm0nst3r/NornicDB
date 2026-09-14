@@ -12,7 +12,7 @@ type ExpandFunc func(ctx context.Context, depth int) (rows [][]any, exhausted bo
 // Progressive grows a replayable row prefix only when buffered rows cannot
 // satisfy a pull. Expansion work runs without registry locks.
 type Progressive struct {
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	rows      [][]any
 	depth     int
 	exhausted bool
@@ -45,6 +45,27 @@ func (s *Progressive) Pull(ctx context.Context, position uint64, n int) (*Page, 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		s.mu.RLock()
+		if s.closed {
+			s.mu.RUnlock()
+			return nil, ErrClosed
+		}
+		if position > uint64(len(s.rows)) {
+			s.mu.RUnlock()
+			return nil, ErrInvalidPosition
+		}
+		end := position + uint64(n)
+		if end > uint64(len(s.rows)) {
+			end = uint64(len(s.rows))
+		}
+		needLookahead := end == uint64(len(s.rows)) && !s.exhausted
+		if !needLookahead {
+			page := s.pageLocked(position, end)
+			s.mu.RUnlock()
+			return page, nil
+		}
+		s.mu.RUnlock()
+
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
@@ -54,11 +75,11 @@ func (s *Progressive) Pull(ctx context.Context, position uint64, n int) (*Page, 
 			s.mu.Unlock()
 			return nil, ErrInvalidPosition
 		}
-		end := position + uint64(n)
+		end = position + uint64(n)
 		if end > uint64(len(s.rows)) {
 			end = uint64(len(s.rows))
 		}
-		needLookahead := end == uint64(len(s.rows)) && !s.exhausted
+		needLookahead = end == uint64(len(s.rows)) && !s.exhausted
 		if !needLookahead {
 			page := s.pageLocked(position, end)
 			s.mu.Unlock()

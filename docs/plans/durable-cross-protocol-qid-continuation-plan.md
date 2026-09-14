@@ -252,8 +252,13 @@ pulls do not call the chunker or embedding provider again. It does not retain:
 - index handles or locks.
 
 Full nodes are batch-hydrated for the requested page through normal storage and
-authorization paths. Storage engines that implement `BatchGetNodes` should use
-it; the fallback may call `GetNode` per descriptor.
+authorization paths. Storage engines that implement
+`BatchGetNodesWithoutEmbeddings` should use that lighter contract first so
+continuation page hydration does not reload stored vector payloads that are not
+returned on the wire. Missing IDs are omitted, matching `BatchGetNodes`
+semantics. Wrappers such as `NamespacedEngine` may report whether their current
+inner engine supports the light batch read; callers fall back to `BatchGetNodes`
+or per-node `GetNodeWithoutEmbeddings`/`GetNode` when the capability is absent.
 
 ### 3. Locking Model
 

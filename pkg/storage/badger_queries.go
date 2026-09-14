@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -596,6 +597,73 @@ func (b *BadgerEngine) BatchGetNodes(ids []NodeID) (map[NodeID]*Node, error) {
 		}
 	}
 
+	return result, nil
+}
+
+// BatchGetNodesWithoutEmbeddings fetches multiple nodes in one read
+// transaction without loading separately stored embedding vectors.
+func (b *BadgerEngine) BatchGetNodesWithoutEmbeddings(ids []NodeID) (map[NodeID]*Node, error) {
+	if len(ids) == 0 {
+		return make(map[NodeID]*Node), nil
+	}
+	if err := b.ensureOpen(); err != nil {
+		return nil, err
+	}
+
+	result := make(map[NodeID]*Node, len(ids))
+	missing := make([]NodeID, 0, len(ids))
+	cacheHits := 0
+
+	b.nodeCacheMu.RLock()
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if cached, ok := b.nodeCache[id]; ok {
+			cacheHits++
+			nodeCopy := copyNodeWithoutEmbeddings(cached)
+			if b.filterNodeByDecay(nodeCopy, DecayScoringTime()) {
+				continue
+			}
+			result[id] = nodeCopy
+			continue
+		}
+		missing = append(missing, id)
+	}
+	b.nodeCacheMu.RUnlock()
+	atomic.AddInt64(&b.cacheHits, int64(cacheHits))
+	atomic.AddInt64(&b.cacheMisses, int64(len(missing)))
+
+	if len(missing) == 0 {
+		return result, nil
+	}
+
+	nowNanos := DecayScoringTime()
+	err := b.withView(func(txn *badger.Txn) error {
+		for _, id := range missing {
+			item, err := txn.Get(nodeKey(id))
+			if err != nil {
+				continue
+			}
+			var node *Node
+			if err := item.Value(func(val []byte) error {
+				namespace := namespaceForNodeID(id)
+				var decodeErr error
+				node, decodeErr = b.decodeNode(namespace, val)
+				return decodeErr
+			}); err != nil {
+				continue
+			}
+			if b.filterNodeByDecay(node, nowNanos) {
+				continue
+			}
+			result[id] = node
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
