@@ -625,6 +625,60 @@ func (b *BadgerEngine) StreamNodesByPrefix(ctx context.Context, prefix string, f
 	})
 }
 
+// StreamNodesByPrefixProjected streams nodes whose IDs start with prefix while
+// decoding only the requested user properties. It preserves StreamNodesByPrefix
+// semantics: nil properties reads full nodes, and ErrIterationStopped ends the
+// scan successfully.
+func (b *BadgerEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
+	if properties == nil {
+		return b.StreamNodesByPrefix(ctx, prefix, fn)
+	}
+	if err := b.ensureOpen(); err != nil {
+		return err
+	}
+
+	include := propertyProjectionSet(properties)
+	return b.withView(func(txn *badger.Txn) error {
+		seekPrefix := append([]byte{prefixNode}, []byte(prefix)...)
+		it := txn.NewIterator(badgerIterOptsKeyOnly(seekPrefix))
+		defer it.Close()
+
+		for it.Seek(seekPrefix); it.ValidForPrefix(seekPrefix); it.Next() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			item := it.Item()
+			var node *Node
+			err := item.Value(func(val []byte) error {
+				key := item.Key()
+				if len(key) <= 1 {
+					return nil
+				}
+				nodeID := NodeID(key[1:])
+				var decErr error
+				node, decErr = b.decodeNodeProjected(namespaceForNodeID(nodeID), val, include)
+				return decErr
+			})
+			if err != nil {
+				continue
+			}
+			if err := fn(node); err != nil {
+				if err == ErrIterationStopped {
+					return nil
+				}
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // StreamEdges implements StreamingEngine.StreamEdges for memory-efficient iteration.
 // Iterates through all edges one at a time without loading all into memory.
 func (b *BadgerEngine) StreamEdges(ctx context.Context, fn func(edge *Edge) error) error {

@@ -4601,6 +4601,28 @@ func collapseIndexResultsByNodeID(results []indexResult) []indexResult {
 	if len(results) == 0 {
 		return nil
 	}
+	const duplicateScanLimit = 1024
+	canonical := true
+	for _, r := range results {
+		if normalizeVectorResultIDToNodeID(r.ID) != r.ID {
+			canonical = false
+			break
+		}
+	}
+	if canonical && len(results) <= duplicateScanLimit {
+		for i := 1; i < len(results); i++ {
+			for j := 0; j < i; j++ {
+				if results[i].ID == results[j].ID {
+					return collapseIndexResultsByNodeIDSlow(results)
+				}
+			}
+		}
+		return results
+	}
+	return collapseIndexResultsByNodeIDSlow(results)
+}
+
+func collapseIndexResultsByNodeIDSlow(results []indexResult) []indexResult {
 	best := make(map[string]float64, len(results))
 	for _, r := range results {
 		nodeID := normalizeVectorResultIDToNodeID(r.ID)
@@ -5697,6 +5719,13 @@ func envDurationSec(key string, fallbackSec int) time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
+func (s *Service) getNodeWithoutEmbeddings(id storage.NodeID) (*storage.Node, error) {
+	if reader, ok := s.engine.(storage.NodeWithoutEmbeddingsReader); ok {
+		return reader.GetNodeWithoutEmbeddings(id)
+	}
+	return s.engine.GetNode(id)
+}
+
 // filterCandidatesByType filters candidates by node type/label.
 func (s *Service) filterCandidatesByType(ctx context.Context, candidates []SearchCandidate, types []string, seenOrphans map[string]bool) []SearchCandidate {
 	if len(types) == 0 {
@@ -5710,7 +5739,7 @@ func (s *Service) filterCandidatesByType(ctx context.Context, candidates []Searc
 
 	filtered := make([]SearchCandidate, 0, len(candidates))
 	for _, cand := range candidates {
-		node, err := s.engine.GetNode(storage.NodeID(cand.ID))
+		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(cand.ID))
 		if err != nil {
 			if s.handleOrphanedEmbedding(ctx, cand.ID, err, seenOrphans) {
 				continue
@@ -5783,28 +5812,6 @@ func (s *Service) filterCandidatesByType(ctx context.Context, candidates []Searc
 // "Reciprocal Rank Fusion outperforms the best known automatic evaluation
 // measures in combining results from multiple text retrieval systems."
 func (s *Service) fuseRRF(vectorResults, bm25Results []indexResult, opts *SearchOptions) []rrfResult {
-	// Create rank maps (1-indexed per RRF formula)
-	vectorRanks := make(map[string]int)
-	for i, r := range vectorResults {
-		vectorRanks[r.ID] = i + 1
-	}
-
-	bm25Ranks := make(map[string]int)
-	for i, r := range bm25Results {
-		bm25Ranks[r.ID] = i + 1
-	}
-
-	// Get all unique document IDs
-	allIDs := make(map[string]struct{})
-	for _, r := range vectorResults {
-		allIDs[r.ID] = struct{}{}
-	}
-	for _, r := range bm25Results {
-		allIDs[r.ID] = struct{}{}
-	}
-
-	// Calculate RRF scores
-	var results []rrfResult
 	k := opts.RRFK
 	if k == 0 {
 		k = 60 // Default
@@ -5818,38 +5825,59 @@ func (s *Service) fuseRRF(vectorResults, bm25Results []indexResult, opts *Search
 		bm25Weight = 1.0 // Default weight
 	}
 
-	for id := range allIDs {
-		var vectorComponent, bm25Component float64
-
-		if rank, ok := vectorRanks[id]; ok {
-			vectorComponent = vectorWeight / (k + float64(rank))
+	type accumulator struct {
+		result          rrfResult
+		vectorComponent float64
+		bm25Component   float64
+		hasVectorScore  bool
+		hasBM25Score    bool
+	}
+	total := len(vectorResults) + len(bm25Results)
+	positions := make(map[string]int, total)
+	accumulated := make([]accumulator, 0, total)
+	add := func(candidate indexResult, rank int, weight float64, vector bool) {
+		position, exists := positions[candidate.ID]
+		if !exists {
+			position = len(accumulated)
+			positions[candidate.ID] = position
+			accumulated = append(accumulated, accumulator{result: rrfResult{ID: candidate.ID}})
 		}
-		if rank, ok := bm25Ranks[id]; ok {
-			bm25Component = bm25Weight / (k + float64(rank))
+		entry := &accumulated[position]
+		component := weight / (k + float64(rank))
+		if vector {
+			entry.result.RRFScore -= entry.vectorComponent
+			entry.vectorComponent = component
+			entry.result.RRFScore += component
+			entry.result.VectorRank = rank
+			if !entry.hasVectorScore {
+				entry.result.OriginalScore = candidate.Score
+				entry.hasVectorScore = true
+			}
+			return
 		}
+		entry.result.RRFScore -= entry.bm25Component
+		entry.bm25Component = component
+		entry.result.RRFScore += component
+		entry.result.BM25Rank = rank
+		if !entry.hasVectorScore && !entry.hasBM25Score {
+			entry.result.OriginalScore = candidate.Score
+		}
+		entry.hasBM25Score = true
+	}
 
-		rrfScore := vectorComponent + bm25Component
+	for index, candidate := range vectorResults {
+		add(candidate, index+1, vectorWeight, true)
+	}
+	for index, candidate := range bm25Results {
+		add(candidate, index+1, bm25Weight, false)
+	}
 
-		// Skip below threshold
-		if rrfScore < opts.MinRRFScore {
+	results := make([]rrfResult, 0, len(accumulated))
+	for index := range accumulated {
+		if accumulated[index].result.RRFScore < opts.MinRRFScore {
 			continue
 		}
-
-		// Get original score (prefer vector if available)
-		var originalScore float64
-		if idx := findResultIndex(vectorResults, id); idx >= 0 {
-			originalScore = vectorResults[idx].Score
-		} else if idx := findResultIndex(bm25Results, id); idx >= 0 {
-			originalScore = bm25Results[idx].Score
-		}
-
-		results = append(results, rrfResult{
-			ID:            id,
-			RRFScore:      rrfScore,
-			VectorRank:    vectorRanks[id],
-			BM25Rank:      bm25Ranks[id],
-			OriginalScore: originalScore,
-		})
+		results = append(results, accumulated[index].result)
 	}
 
 	// Sort by RRF score descending
@@ -6006,7 +6034,7 @@ func (s *Service) applyStage2Rerank(ctx context.Context, query string, results [
 	// Build candidates with content from storage.
 	candidates := make([]RerankCandidate, 0, len(results))
 	for _, r := range results {
-		node, err := s.engine.GetNode(storage.NodeID(r.ID))
+		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(r.ID))
 		if err != nil {
 			if s.handleOrphanedEmbedding(ctx, r.ID, err, seenOrphans) {
 				continue
@@ -6655,7 +6683,7 @@ func (s *Service) filterByProperties(ctx context.Context, results []indexResult,
 	}
 	var filtered []indexResult
 	for _, r := range results {
-		node, err := s.engine.GetNode(storage.NodeID(r.ID))
+		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(r.ID))
 		if err != nil {
 			if s.handleOrphanedEmbedding(ctx, r.ID, err, seenOrphans) {
 				continue
@@ -6762,7 +6790,7 @@ func (s *Service) filterByType(ctx context.Context, results []indexResult, types
 
 	var filtered []indexResult
 	for _, r := range results {
-		node, err := s.engine.GetNode(storage.NodeID(r.ID))
+		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(r.ID))
 		if err != nil {
 			if s.handleOrphanedEmbedding(ctx, r.ID, err, seenOrphans) {
 				continue
@@ -6798,7 +6826,7 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 			break
 		}
 
-		node, err := s.engine.GetNode(storage.NodeID(rrf.ID))
+		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(rrf.ID))
 		if err != nil {
 			if s.handleOrphanedEmbedding(ctx, rrf.ID, err, seenOrphans) {
 				continue
@@ -6858,7 +6886,7 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 			continue
 		}
 
-		node, err := s.engine.GetNode(storage.NodeID(nodeIDStr))
+		node, err := s.getNodeWithoutEmbeddings(storage.NodeID(nodeIDStr))
 		if err != nil {
 			if s.handleOrphanedEmbedding(ctx, nodeIDStr, err, seenOrphans) {
 				continue
@@ -6922,15 +6950,6 @@ type rrfResult struct {
 	VectorRank    int
 	BM25Rank      int
 	OriginalScore float64
-}
-
-func findResultIndex(results []indexResult, id string) int {
-	for i, r := range results {
-		if r.ID == id {
-			return i
-		}
-	}
-	return -1
 }
 
 func truncate(s string, maxLen int) string {

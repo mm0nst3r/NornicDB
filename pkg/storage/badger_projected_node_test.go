@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -51,6 +52,35 @@ func TestBadgerEngine_GetNodeProjectedEmptyPropertyList(t *testing.T) {
 	require.Empty(t, projected.Properties)
 }
 
+func TestNamespacedEngine_GetNodeWithoutEmbeddingsSkipsSeparateVectors(t *testing.T) {
+	engine := createTestBadgerEngine(t)
+	tenant := NewNamespacedEngine(engine, "tenant")
+	node := &Node{
+		ID:         "large-vector-node",
+		Labels:     []string{"Evidence"},
+		Properties: map[string]any{"asset_id": "asset-a"},
+		ChunkEmbeddings: [][]float32{
+			make([]float32, 10_000),
+			make([]float32, 10_000),
+		},
+	}
+	_, err := tenant.CreateNode(node)
+	require.NoError(t, err)
+
+	light, err := tenant.GetNodeWithoutEmbeddings(node.ID)
+	require.NoError(t, err)
+	require.Equal(t, node.ID, light.ID)
+	require.Equal(t, "asset-a", light.Properties["asset_id"])
+	require.Empty(t, light.ChunkEmbeddings)
+	require.Empty(t, light.NamedEmbeddings)
+
+	full, err := tenant.GetNode(node.ID)
+	require.NoError(t, err)
+	require.False(t, full.EmbeddingsStoredSeparately)
+	require.Len(t, full.ChunkEmbeddings, 2)
+	require.Len(t, full.ChunkEmbeddings[0], 10_000)
+}
+
 func TestNamespacedEngine_StreamNodesByLabelProjected(t *testing.T) {
 	engine := createTestBadgerEngine(t)
 	tenantA := NewNamespacedEngine(engine, "tenant_a")
@@ -82,6 +112,45 @@ func TestNamespacedEngine_StreamNodesByLabelProjected(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, nodes, 1)
 	require.Equal(t, NodeID("one"), nodes[0].ID)
+	require.Equal(t, "wanted", nodes[0].Properties["asset_id"])
+	require.NotContains(t, nodes[0].Properties, "embedding")
+}
+
+func TestNamespacedEngine_StreamNodesByPrefixProjected(t *testing.T) {
+	engine := createTestBadgerEngine(t)
+	tenantA := NewNamespacedEngine(engine, "tenant_a")
+	tenantB := NewNamespacedEngine(engine, "tenant_b")
+
+	_, err := tenantA.CreateNode(&Node{
+		ID:     "evidence-one",
+		Labels: []string{"Evidence"},
+		Properties: map[string]any{
+			"asset_id":  "wanted",
+			"embedding": make([]float64, 1024),
+		},
+	})
+	require.NoError(t, err)
+	_, err = tenantA.CreateNode(&Node{
+		ID:         "other-one",
+		Labels:     []string{"Evidence"},
+		Properties: map[string]any{"asset_id": "same-tenant-other-prefix"},
+	})
+	require.NoError(t, err)
+	_, err = tenantB.CreateNode(&Node{
+		ID:         "evidence-two",
+		Labels:     []string{"Evidence"},
+		Properties: map[string]any{"asset_id": "other-tenant"},
+	})
+	require.NoError(t, err)
+
+	var nodes []*Node
+	err = tenantA.StreamNodesByPrefixProjected(context.Background(), "evidence", []string{"asset_id"}, func(node *Node) error {
+		nodes = append(nodes, node)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	require.Equal(t, NodeID("evidence-one"), nodes[0].ID)
 	require.Equal(t, "wanted", nodes[0].Properties["asset_id"])
 	require.NotContains(t, nodes[0].Properties, "embedding")
 }

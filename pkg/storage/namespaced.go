@@ -263,6 +263,18 @@ func (n *NamespacedEngine) GetNodeProjected(id NodeID, properties []string) (*No
 	return n.toUserNode(node), nil
 }
 
+func (n *NamespacedEngine) GetNodeWithoutEmbeddings(id NodeID) (*Node, error) {
+	reader, ok := n.inner.(NodeWithoutEmbeddingsReader)
+	if !ok {
+		return n.GetNode(id)
+	}
+	node, err := reader.GetNodeWithoutEmbeddings(n.prefixNodeID(id))
+	if err != nil || node == nil {
+		return node, err
+	}
+	return n.toUserNode(node), nil
+}
+
 // StreamNodesByLabelProjected iterates projected label matches in this namespace.
 func (n *NamespacedEngine) StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error {
 	if visit == nil {
@@ -1109,6 +1121,33 @@ func (n *NamespacedEngine) StreamNodesByPrefix(ctx context.Context, prefix strin
 	return n.StreamNodes(ctx, func(node *Node) error {
 		if strings.HasPrefix(string(node.ID), prefix) {
 			return fn(node)
+		}
+		return nil
+	})
+}
+
+// StreamNodesByPrefixProjected streams nodes in the namespace whose
+// user-visible IDs start with prefix while decoding only requested properties
+// when the wrapped engine supports projected prefix scans.
+func (n *NamespacedEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, fn func(node *Node) error) error {
+	if fn == nil {
+		return ErrInvalidData
+	}
+	physicalPrefix := n.namespace + n.separator + prefix
+	if reader, ok := n.inner.(ProjectedPrefixNodeReader); ok {
+		return reader.StreamNodesByPrefixProjected(ctx, physicalPrefix, properties, func(node *Node) error {
+			return fn(n.toUserNode(node))
+		})
+	}
+	if prefixStreamer, ok := n.inner.(PrefixStreamingEngine); ok {
+		return prefixStreamer.StreamNodesByPrefix(ctx, physicalPrefix, func(node *Node) error {
+			return fn(keepNodeProperties(n.toUserNode(node), properties))
+		})
+	}
+
+	return n.StreamNodes(ctx, func(node *Node) error {
+		if strings.HasPrefix(string(node.ID), prefix) {
+			return fn(keepNodeProperties(node, properties))
 		}
 		return nil
 	})

@@ -165,10 +165,12 @@ Prometheus exposes `nornicdb_search_cursors_active`,
 set and structured lifecycle events omit qids, owners, queries, and database
 identifiers.
 
-Complete builds prefer the storage streaming interface. Engines without it use
+Complete builds prefer projected prefix streaming when the storage engine
+supports it. During materialization the builder only decodes properties needed
+for eligibility: `group_by`, filter keys, `type`, and temporal-constraint
+fields. Page pulls still hydrate full nodes before returning results. Requests
+with an `AuthorizeNode` callback use full-node streaming because the callback
+may inspect arbitrary properties. Engines without streaming support use
 `AllNodes` fallback, whose temporary full node slice is outside retained
-descriptor admission. On the 20,000-node benchmark fixture (Apple M3 Max), the
-optimized ungrouped native build takes about 20.2 ms and 26.9 MB/op. The
-pre-optimization native build took about 30.0 ms and 30.0 MB/op; the measured
-optimized `AllNodes` fallback uses about 34.6 MB/op. Operators
-using a fallback engine must budget for that additional build-time memory.
+descriptor admission; operators using a fallback engine must budget for that
+additional build-time memory.

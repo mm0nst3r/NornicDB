@@ -110,6 +110,44 @@ func (s *Service) newIDContinuationStream(ctx context.Context, options SearchOpt
 	return s.newCompleteContinuationStream(ctx, options, request, nil)
 }
 
+func (s *Service) streamCompleteContinuationNodes(ctx context.Context, options *SearchOptions, request SearchContinuationRequest, visit storage.NodeVisitor) error {
+	if request.AuthorizeNode == nil {
+		if reader, ok := s.engine.(storage.ProjectedPrefixNodeReader); ok {
+			return reader.StreamNodesByPrefixProjected(ctx, "", s.completeContinuationProjectionProperties(options, request), visit)
+		}
+	}
+	return storage.StreamNodesWithFallback(ctx, s.engine, 1000, visit)
+}
+
+func (s *Service) completeContinuationProjectionProperties(options *SearchOptions, request SearchContinuationRequest) []string {
+	properties := make(map[string]struct{}, len(options.Filters)+4)
+	if len(options.Types) > 0 {
+		properties["type"] = struct{}{}
+	}
+	for property := range options.Filters {
+		properties[property] = struct{}{}
+	}
+	if request.GroupBy != "" {
+		properties[request.GroupBy] = struct{}{}
+	}
+	if schema := s.engine.GetSchema(); schema != nil {
+		for _, constraint := range schema.GetAllConstraints() {
+			if constraint.Type != storage.ConstraintTemporal {
+				continue
+			}
+			for _, property := range constraint.Properties {
+				properties[property] = struct{}{}
+			}
+		}
+	}
+	projected := make([]string, 0, len(properties))
+	for property := range properties {
+		projected = append(projected, property)
+	}
+	sort.Strings(projected)
+	return projected
+}
+
 func (s *Service) newCompleteContinuationStream(ctx context.Context, options SearchOptions, request SearchContinuationRequest, ranked *SearchResponse) (resultstream.Stream, error) {
 	started := time.Now()
 	policy, policyID, admitted := s.acquireCompleteContinuationBuild()
@@ -151,7 +189,7 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 	scannedNodes := 0
 	passageCount := 0
 	var retainedBytes int64
-	err := storage.StreamNodesWithFallback(ctx, s.engine, 1000, func(node *storage.Node) error {
+	err := s.streamCompleteContinuationNodes(ctx, &options, request, func(node *storage.Node) error {
 		if time.Since(started) > policy.MaxBuildDuration {
 			return resultstream.ErrCapacity
 		}

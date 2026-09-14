@@ -236,6 +236,62 @@ func (b *BadgerEngine) GetNodeProjected(id NodeID, properties []string) (*Node, 
 	return node, nil
 }
 
+// GetNodeWithoutEmbeddings retrieves a node without following separately
+// stored embedding vectors. User properties and node metadata are preserved.
+func (b *BadgerEngine) GetNodeWithoutEmbeddings(id NodeID) (*Node, error) {
+	if id == "" {
+		return nil, ErrInvalidID
+	}
+	start := time.Now()
+	defer b.observeStorageOp(start, b.opDurGet)
+	if err := b.ensureOpen(); err != nil {
+		return nil, err
+	}
+
+	b.nodeCacheMu.RLock()
+	if cached, ok := b.nodeCache[id]; ok {
+		b.nodeCacheMu.RUnlock()
+		atomic.AddInt64(&b.cacheHits, 1)
+		nodeCopy := copyNodeWithoutEmbeddings(cached)
+		if b.filterNodeByDecay(nodeCopy, DecayScoringTime()) {
+			return nil, ErrNotFound
+		}
+		return nodeCopy, nil
+	}
+	b.nodeCacheMu.RUnlock()
+	atomic.AddInt64(&b.cacheMisses, 1)
+
+	var node *Node
+	err := b.withView(func(txn *badger.Txn) error {
+		item, err := txn.Get(nodeKey(id))
+		if err == badger.ErrKeyNotFound {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			namespace := namespaceForNodeID(id)
+			decoded, decodeErr := b.decodeNode(namespace, val)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			node = decoded
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	if node == nil {
+		return nil, ErrNotFound
+	}
+	if b.filterNodeByDecay(node, DecayScoringTime()) {
+		return nil, ErrNotFound
+	}
+	return node, nil
+}
+
 // UpdateNode updates an existing node or creates it if it doesn't exist (upsert).
 func (b *BadgerEngine) UpdateNode(node *Node) error {
 	start := time.Now()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,8 +27,41 @@ type nonStreamingContinuationEngine struct {
 	storage.Engine
 }
 
+type projectedContinuationEngine struct {
+	storage.Engine
+	calls      int
+	prefixes   []string
+	properties []string
+}
+
 func (e nonStreamingContinuationEngine) GraphMutationVersion() (uint64, bool) {
 	return e.Engine.(storage.GraphMutationVersionProvider).GraphMutationVersion()
+}
+
+func (e *projectedContinuationEngine) GraphMutationVersion() (uint64, bool) {
+	return e.Engine.(storage.GraphMutationVersionProvider).GraphMutationVersion()
+}
+
+func (e *projectedContinuationEngine) StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, visit func(*storage.Node) error) error {
+	e.calls++
+	e.prefixes = append(e.prefixes, prefix)
+	e.properties = append([]string(nil), properties...)
+	return storage.StreamNodesWithFallback(ctx, e.Engine, 1000, func(node *storage.Node) error {
+		if !strings.HasPrefix(string(node.ID), prefix) {
+			return nil
+		}
+		if properties == nil {
+			return visit(node)
+		}
+		projected := *node
+		projected.Properties = make(map[string]any, len(properties))
+		for _, property := range properties {
+			if value, ok := node.Properties[property]; ok {
+				projected.Properties[property] = value
+			}
+		}
+		return visit(&projected)
+	})
 }
 
 func (e *blockingContinuationEngine) GraphMutationVersion() (uint64, bool) {
@@ -199,6 +233,44 @@ func TestSearchTextContinuationIDModeGroupsCompleteFilteredPopulation(t *testing
 	require.True(t, second.CollectionExhausted)
 	require.Equal(t, SearchContinuationCollectionComplete, second.Completion)
 	require.Empty(t, second.QID)
+}
+
+func TestSearchTextContinuationIDModeProjectedBuildStillHydratesFullResults(t *testing.T) {
+	base := storage.NewMemoryEngine()
+	engine := storage.NewNamespacedEngine(base, "nornic")
+	for _, node := range []*storage.Node{
+		{ID: "doc-a", Labels: []string{"Report"}, Properties: map[string]any{"asset_id": "asset-a", "status": "active", "type": "report", "secret": "hydrate-me"}},
+		{ID: "doc-b", Labels: []string{"Report"}, Properties: map[string]any{"asset_id": "asset-b", "status": "inactive", "type": "report", "secret": "skip-me"}},
+		{ID: "doc-c", Labels: []string{"Other"}, Properties: map[string]any{"asset_id": "asset-c", "status": "active", "type": "other", "secret": "skip-me-too"}},
+	} {
+		_, err := engine.CreateNode(node)
+		require.NoError(t, err)
+	}
+	projected := &projectedContinuationEngine{Engine: engine}
+	service := NewService(projected)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+
+	options := &SearchOptions{
+		Types:   []string{"report"},
+		Filters: map[string][]string{"status": {"active"}},
+	}
+	page, err := service.SearchTextContinuation(
+		context.Background(),
+		"",
+		options,
+		SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: SearchContinuationID, GroupBy: "asset_id", N: 1},
+		nil,
+		nil,
+		nil,
+		ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, projected.calls)
+	require.Equal(t, []string{""}, projected.prefixes)
+	require.ElementsMatch(t, []string{"asset_id", "status", "type"}, projected.properties)
+	require.Len(t, page.Results, 1)
+	require.Equal(t, "doc-a", page.Results[0].ID)
+	require.Equal(t, "hydrate-me", page.Results[0].Properties["secret"])
 }
 
 func TestSearchTextContinuationRankedThenIDFreezesPrefixBeforeCatalog(t *testing.T) {
@@ -1088,6 +1160,56 @@ func BenchmarkSearchTextContinuationCompleteBuild(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkSearchTextContinuationCompleteBuildBadger(b *testing.B) {
+	b.Run("ID/2000_members_with_embeddings", func(b *testing.B) {
+		base, err := storage.NewBadgerEngine(b.TempDir())
+		require.NoError(b, err)
+		engine := storage.NewNamespacedEngine(base, "nornic")
+		service := NewService(engine)
+		b.Cleanup(func() {
+			_ = service.Close()
+			_ = base.Close()
+		})
+		nodes := make([]*storage.Node, 2_000)
+		for index := range nodes {
+			nodes[index] = &storage.Node{
+				ID:              storage.NodeID(fmt.Sprintf("node-%05d", index)),
+				Labels:          []string{"Document"},
+				Properties:      map[string]any{"content": "library transcript", "asset_id": "asset-a"},
+				ChunkEmbeddings: [][]float32{benchmarkContinuationEmbedding(index)},
+			}
+		}
+		for start := 0; start < len(nodes); start += 250 {
+			require.NoError(b, engine.BulkCreateNodes(nodes[start:min(start+250, len(nodes))]))
+		}
+		request := SearchContinuationRequest{Owner: "benchmark", Database: "nornic", Mode: SearchContinuationID, N: 500}
+		b.ReportAllocs()
+		b.ReportMetric(float64(len(nodes)), "nodes/op")
+		b.ResetTimer()
+		for b.Loop() {
+			page, err := service.SearchTextContinuation(context.Background(), "", DefaultSearchOptions(), request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+			if err != nil {
+				b.Fatal(err)
+			}
+			if page.QID != "" {
+				request.QID, request.Discard = page.QID, true
+				if _, err := service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{}); err != nil {
+					b.Fatal(err)
+				}
+				request.QID, request.Discard = "", false
+			}
+		}
+	})
+}
+
+func benchmarkContinuationEmbedding(seed int) []float32 {
+	embedding := make([]float32, 64)
+	for index := range embedding {
+		embedding[index] = float32((seed+index)%17) / 17
+	}
+	return embedding
 }
 
 func BenchmarkSearchTextContinuationScanPath(b *testing.B) {

@@ -106,6 +106,32 @@ type Transaction = BadgerTransaction
 // copyNode creates a deep copy of a node.
 // Used by transactions to preserve state for rollback.
 func copyNode(node *Node) *Node {
+	nodeCopy := copyNodeWithoutEmbeddings(node)
+	if nodeCopy == nil {
+		return nil
+	}
+
+	if len(node.ChunkEmbeddings) > 0 {
+		nodeCopy.ChunkEmbeddings = make([][]float32, len(node.ChunkEmbeddings))
+		for i, emb := range node.ChunkEmbeddings {
+			nodeCopy.ChunkEmbeddings[i] = make([]float32, len(emb))
+			copy(nodeCopy.ChunkEmbeddings[i], emb)
+		}
+	}
+
+	if node.NamedEmbeddings != nil {
+		nodeCopy.NamedEmbeddings = make(map[string][]float32, len(node.NamedEmbeddings))
+		for name, emb := range node.NamedEmbeddings {
+			embCopy := make([]float32, len(emb))
+			copy(embCopy, emb)
+			nodeCopy.NamedEmbeddings[name] = embCopy
+		}
+	}
+
+	return nodeCopy
+}
+
+func copyNodeWithoutEmbeddings(node *Node) *Node {
 	if node == nil {
 		return nil
 	}
@@ -130,23 +156,6 @@ func copyNode(node *Node) *Node {
 		nodeCopy.EmbedMeta = make(map[string]any, len(node.EmbedMeta))
 		for k, v := range node.EmbedMeta {
 			nodeCopy.EmbedMeta[k] = v
-		}
-	}
-
-	if len(node.ChunkEmbeddings) > 0 {
-		nodeCopy.ChunkEmbeddings = make([][]float32, len(node.ChunkEmbeddings))
-		for i, emb := range node.ChunkEmbeddings {
-			nodeCopy.ChunkEmbeddings[i] = make([]float32, len(emb))
-			copy(nodeCopy.ChunkEmbeddings[i], emb)
-		}
-	}
-
-	if node.NamedEmbeddings != nil {
-		nodeCopy.NamedEmbeddings = make(map[string][]float32, len(node.NamedEmbeddings))
-		for name, emb := range node.NamedEmbeddings {
-			embCopy := make([]float32, len(emb))
-			copy(embCopy, emb)
-			nodeCopy.NamedEmbeddings[name] = embCopy
 		}
 	}
 

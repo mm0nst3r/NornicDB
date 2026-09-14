@@ -484,6 +484,15 @@ type ProjectedNodeReader interface {
 	GetNodeProjected(id NodeID, properties []string) (*Node, error)
 }
 
+// NodeWithoutEmbeddingsReader is an optional extension interface for read paths
+// that need a node's metadata and user properties but not stored embedding
+// vectors. Implementations must preserve ID, labels, properties, timestamps,
+// and embedding metadata, while avoiding separately stored vector payloads when
+// possible.
+type NodeWithoutEmbeddingsReader interface {
+	GetNodeWithoutEmbeddings(id NodeID) (*Node, error)
+}
+
 // ProjectedLabelNodeReader is an optional extension interface for iterating
 // label-matching nodes while decoding only a caller-specified subset of user
 // properties. The callback runs against one consistent storage snapshot and
@@ -493,6 +502,17 @@ type ProjectedNodeReader interface {
 // requests no user properties.
 type ProjectedLabelNodeReader interface {
 	StreamNodesByLabelProjected(label string, properties []string, visit func(*Node) error) error
+}
+
+// ProjectedPrefixNodeReader is an optional extension interface for iterating
+// prefix-matching nodes while decoding only a caller-specified subset of user
+// properties. The prefix is applied to stored NodeID values, matching
+// PrefixStreamingEngine semantics.
+//
+// A nil properties slice requests the full node; an empty non-nil slice
+// requests no user properties.
+type ProjectedPrefixNodeReader interface {
+	StreamNodesByPrefixProjected(ctx context.Context, prefix string, properties []string, visit func(*Node) error) error
 }
 
 // NamespaceLister is an optional extension interface that reports the known

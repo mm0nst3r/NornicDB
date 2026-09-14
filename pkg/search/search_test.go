@@ -228,6 +228,19 @@ func TestRRFFusion(t *testing.T) {
 	assert.Equal(t, 1, fusedResults[0].BM25Rank)   // First in BM25 = rank 1
 }
 
+func TestCollapseIndexResultsByNodeIDFastPathAndFallback(t *testing.T) {
+	canonical := []indexResult{{ID: "doc-a", Score: 0.9}, {ID: "doc-b", Score: 0.8}}
+	got := collapseIndexResultsByNodeID(canonical)
+	require.Equal(t, canonical, got)
+	require.True(t, &canonical[0] == &got[0])
+
+	duplicate := collapseIndexResultsByNodeID([]indexResult{{ID: "doc-a", Score: 0.7}, {ID: "doc-a", Score: 0.9}})
+	require.Equal(t, []indexResult{{ID: "doc-a", Score: 0.9}}, duplicate)
+
+	chunked := collapseIndexResultsByNodeID([]indexResult{{ID: "doc-a-chunk-0", Score: 0.7}, {ID: "doc-a-chunk-1", Score: 0.9}})
+	require.Equal(t, []indexResult{{ID: "doc-a", Score: 0.9}}, chunked)
+}
+
 func TestServicePersistenceAndTimingHelpers(t *testing.T) {
 	engine := newNamespacedEngine(t)
 	svc := NewServiceWithDimensions(engine, 3)
