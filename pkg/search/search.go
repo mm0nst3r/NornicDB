@@ -247,16 +247,18 @@ type SearchResult struct {
 
 // SearchResponse is the response from a search operation.
 type SearchResponse struct {
-	Rerank            *RerankReport  `json:"rerank,omitempty"`
-	Status            string         `json:"status"`
-	Query             string         `json:"query"`
-	Results           []SearchResult `json:"results"`
-	TotalCandidates   int            `json:"total_candidates"`
-	Returned          int            `json:"returned"`
-	SearchMethod      string         `json:"search_method"`
-	FallbackTriggered bool           `json:"fallback_triggered"`
-	Message           string         `json:"message,omitempty"`
-	Metrics           *SearchMetrics `json:"metrics,omitempty"`
+	// RetrievalExhausted records complete candidate coverage before transport paging.
+	RetrievalExhausted bool           `json:"-"`
+	Rerank             *RerankReport  `json:"rerank,omitempty"`
+	Status             string         `json:"status"`
+	Query              string         `json:"query"`
+	Results            []SearchResult `json:"results"`
+	TotalCandidates    int            `json:"total_candidates"`
+	Returned           int            `json:"returned"`
+	SearchMethod       string         `json:"search_method"`
+	FallbackTriggered  bool           `json:"fallback_triggered"`
+	Message            string         `json:"message,omitempty"`
+	Metrics            *SearchMetrics `json:"metrics,omitempty"`
 }
 
 // SearchMetrics contains timing and statistics.

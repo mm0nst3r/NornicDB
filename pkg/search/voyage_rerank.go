@@ -47,13 +47,15 @@ type NativeRerankRequest struct {
 // RerankReport makes an actual rerank distinguishable from explicit fallback.
 // Error is a sanitized category/status string, never provider body content.
 type RerankReport struct {
-	Provider   string          `json:"provider"`
-	Status     string          `json:"status"` // applied, fallback, skipped, failed
-	Candidates int             `json:"candidates"`
-	Submitted  int             `json:"submitted"`
-	Returned   int             `json:"returned"`
-	Error      string          `json:"error,omitempty"`
-	Metadata   voyage.Metadata `json:"metadata"`
+	// CandidatesCovered records full input coverage before score filtering.
+	CandidatesCovered bool            `json:"-"`
+	Provider          string          `json:"provider"`
+	Status            string          `json:"status"` // applied, fallback, skipped, failed
+	Candidates        int             `json:"candidates"`
+	Submitted         int             `json:"submitted"`
+	Returned          int             `json:"returned"`
+	Error             string          `json:"error,omitempty"`
+	Metadata          voyage.Metadata `json:"metadata"`
 }
 
 // RerankOutcome returns verified rankings and request-local status together.
@@ -184,6 +186,7 @@ func (r *VoyageReranker) RerankWithOptions(ctx context.Context, query string, ca
 	if !r.Enabled() || len(candidates) == 0 {
 		out.Results = originalRerankResults(candidates, request.Limit)
 		out.Report.Returned = len(out.Results)
+		out.Report.CandidatesCovered = len(out.Results) == len(candidates)
 		return out, nil
 	}
 	seen := make(map[string]struct{}, len(candidates))
@@ -242,10 +245,12 @@ func (r *VoyageReranker) RerankWithOptions(ctx context.Context, query string, ca
 		out.Report.Status = "fallback"
 		out.Results = originalRerankResults(candidates, count)
 		out.Report.Returned = len(out.Results)
+		out.Report.CandidatesCovered = len(out.Results) == len(candidates)
 		return out, nil
 	}
 	out.Report.Metadata = response.Metadata
 	out.Report.Status = "applied"
+	out.Report.CandidatesCovered = len(submitted) == len(candidates) && len(response.Rankings) == len(submitted)
 	threshold := r.config.MinScore
 	if request.MinScore > threshold {
 		threshold = request.MinScore

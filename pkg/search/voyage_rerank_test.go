@@ -80,6 +80,16 @@ func TestVoyageRerankerTopOneThresholdAndOverrides(t *testing.T) {
 	}
 }
 
+func TestVoyageRerankerCoveragePrecedesScoreFiltering(t *testing.T) {
+	r := adapterReranker(t, func(w http.ResponseWriter, req *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"index":0,"relevance_score":0.9},{"index":1,"relevance_score":0.1},{"index":2,"relevance_score":0.3}]}`)
+	}, &VoyageRerankOptions{MaxAttempts: 1})
+	out, err := r.RerankWithOptions(context.Background(), "query", voyageCandidates(), NativeRerankRequest{Limit: 3, MinScore: 0.5})
+	if err != nil || len(out.Results) != 1 || !out.Report.CandidatesCovered {
+		t.Fatalf("score filtering lost complete provider coverage: %+v %v", out.Report, err)
+	}
+}
+
 func TestVoyageRerankerCandidateBudget(t *testing.T) {
 	var budget atomic.Int64
 	budget.Store(1)
