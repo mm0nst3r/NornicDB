@@ -4144,10 +4144,12 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	}
 
 	// Fallback to vector-only
-	hybridExhausted := err == nil && response != nil && response.RetrievalExhausted
+	// Failed branches are replaced by the selected fallback. A successful but
+	// incomplete branch must still prevent false exhaustion of the whole search.
+	hybridIncomplete := err == nil && response != nil && !response.RetrievalExhausted
 	response, err = s.vectorSearchOnly(ctx, embedding, opts)
 	if err == nil && len(response.Results) > 0 {
-		response.RetrievalExhausted = response.RetrievalExhausted && hybridExhausted
+		response.RetrievalExhausted = response.RetrievalExhausted && !hybridIncomplete
 		response.FallbackTriggered = true
 		response.Message = "RRF search returned no results, fell back to vector search"
 		if s.resultCache != nil {
@@ -4158,11 +4160,11 @@ func (s *Service) Search(ctx context.Context, query string, embedding []float32,
 	}
 
 	// Final fallback to full-text
-	vectorExhausted := err == nil && response != nil && response.RetrievalExhausted
+	vectorIncomplete := err == nil && response != nil && !response.RetrievalExhausted
 	mode = "bm25" // Plan 04-05-05: final fallback to BM25-only
 	resp, err = s.fullTextSearchOnly(ctx, query, opts)
 	if resp != nil {
-		resp.RetrievalExhausted = resp.RetrievalExhausted && hybridExhausted && vectorExhausted
+		resp.RetrievalExhausted = resp.RetrievalExhausted && !hybridIncomplete && !vectorIncomplete
 	}
 	if err == nil && s.resultCache != nil {
 		s.resultCache.Put(cacheKey, resp)

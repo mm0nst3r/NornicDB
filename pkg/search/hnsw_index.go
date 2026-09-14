@@ -605,10 +605,20 @@ func (h *HNSWIndex) searchWithEfExhaustion(ctx context.Context, query []float32,
 			Score: score,
 		})
 	}
-	// The pre-filter heap must cover the entire index while this read lock is
+	// The pre-filter heap must cover the live index while this read lock is
 	// held, and top-k must not have hidden further candidates. Merely filling
 	// the beam or getting a short post-threshold result proves neither fact.
-	exhausted := len(candidates) == len(h.nodeLevel) && (len(results) < k || len(candidates) <= k)
+	// Allocated node slots include tombstones left by normal updates/deletes.
+	exhausted := false
+	if len(candidates) >= h.liveCount {
+		liveCandidates := 0
+		for _, item := range candidates {
+			if validHNSWIndex(item.id, len(h.deleted)) && !h.deleted[item.id] {
+				liveCandidates++
+			}
+		}
+		exhausted = liveCandidates == h.liveCount && (len(results) < k || liveCandidates <= k)
+	}
 	return results, exhausted, nil
 }
 

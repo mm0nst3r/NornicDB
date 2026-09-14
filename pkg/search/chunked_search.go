@@ -110,7 +110,8 @@ func SearchTextChunksWithErrorPolicy(
 			return nil, err
 		}
 		if err != nil || len(embedding) == 0 {
-			exhausted = false
+			// Unavailable preparation does not participate in the selected search;
+			// the canonical fallback (or other successful chunks) owns its result.
 			continue
 		}
 		response, err := searchQuery(ctx, chunk, embedding, &chunkOpts)
@@ -118,7 +119,6 @@ func SearchTextChunksWithErrorPolicy(
 			return nil, err
 		}
 		if err != nil || response == nil {
-			exhausted = false
 			continue
 		}
 		exhausted = exhausted && response.RetrievalExhausted

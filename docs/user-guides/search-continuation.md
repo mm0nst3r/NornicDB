@@ -42,8 +42,10 @@ depth budget remains bounded by `MaxCandidateLimit` and the engine's 5,000
 candidate ceiling. If that budget is reached without proven exhaustion or the
 requested `max_results`, the operation fails with the existing capacity error
 instead of returning a falsely exhausted page. HNSW establishes exhaustion only
-when its pre-filter candidate heap covers the entire index and the returned
-prefix is not truncated. Other approximate generators that cannot establish
+when its pre-filter candidate heap covers the live index (excluding deleted
+entries) and the returned prefix is not truncated. Unavailable embedding or
+retrieval branches do not prevent an exact, selected BM25 fallback from
+completing. Other approximate generators that cannot establish
 coverage may reach the capacity error even when a deeper request returns no
 additional results. Replaying that request does not increase its budget.
 

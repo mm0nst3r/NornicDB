@@ -2,10 +2,12 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"testing"
 
+	"github.com/orneryd/nornicdb/pkg/gpu"
 	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/storage"
 	"github.com/stretchr/testify/require"
@@ -143,14 +145,18 @@ func TestContinuationShortExpansionDoesNotEndSearch(t *testing.T) {
 func TestContinuationVectorExhaustionRequiresExactCandidateEvidence(t *testing.T) {
 	index := NewVectorIndex(2)
 	hnsw := NewHNSWIndex(2, DefaultHNSWConfig())
+	accelerated := gpu.NewEmbeddingIndex(nil, gpu.DefaultEmbeddingIndexConfig(2))
+	t.Cleanup(accelerated.Release)
 	require.NoError(t, index.Add("a", []float32{1, 0}))
 	require.NoError(t, hnsw.Add("a", []float32{1, 0}))
+	require.NoError(t, accelerated.Add("a", []float32{1, 0}))
 	for _, tc := range []struct {
 		name      string
 		generator CandidateGenerator
 		exhausted bool
 	}{
 		{"exact", NewBruteForceCandidateGen(index), true},
+		{"GPU generator with supported CPU backend", NewGPUBruteForceCandidateGen(accelerated), true},
 		{"fully explored HNSW", NewHNSWCandidateGen(hnsw), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,6 +186,12 @@ func TestContinuationHNSWShortThresholdBatchNeedsFullCoverage(t *testing.T) {
 }
 
 func TestContinuationDefaultHNSWFinishesFinitePopulation(t *testing.T) {
+	for _, deleted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deleted=%t", deleted), func(t *testing.T) { testContinuationDefaultHNSWPopulation(t, deleted) })
+	}
+}
+
+func testContinuationDefaultHNSWPopulation(t *testing.T, deleted bool) {
 	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
 	service := NewServiceWithDimensions(engine, 2)
 	t.Cleanup(func() { require.NoError(t, service.Close()) })
@@ -188,6 +200,14 @@ func TestContinuationDefaultHNSWFinishesFinitePopulation(t *testing.T) {
 		_, err := engine.CreateNode(node)
 		require.NoError(t, err)
 		require.NoError(t, service.IndexNode(node))
+	}
+	want := 6
+	if deleted {
+		_, err := service.Search(context.Background(), "", []float32{1, 0}, &SearchOptions{Limit: 6})
+		require.NoError(t, err)
+		require.NoError(t, engine.DeleteNode("doc-5"))
+		require.NoError(t, service.RemoveNode("doc-5"))
+		want = 5
 	}
 	embedCalls := 0
 	embed := func(context.Context, string) ([]float32, error) { embedCalls++; return []float32{1, 0}, nil }
@@ -208,8 +228,46 @@ func TestContinuationDefaultHNSWFinishesFinitePopulation(t *testing.T) {
 		page, err = service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
 		require.NoError(t, err)
 	}
-	require.Len(t, ids, 6)
+	require.Len(t, ids, want)
 	require.Equal(t, 1, embedCalls)
+}
+
+type unavailableContinuationCandidates struct{}
+
+func (unavailableContinuationCandidates) SearchCandidates(context.Context, []float32, int, float64) ([]Candidate, error) {
+	return nil, errors.New("vector retrieval unavailable")
+}
+
+func TestContinuationUnavailableEmbeddingPreservesBM25Fallback(t *testing.T) {
+	for _, unavailable := range []string{"error", "empty", "retrieval"} {
+		t.Run(unavailable, func(t *testing.T) {
+			engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+			service := NewService(engine)
+			t.Cleanup(func() { require.NoError(t, service.Close()) })
+			node := &storage.Node{ID: "doc", Properties: map[string]any{"content": "library transcript"}}
+			_, err := engine.CreateNode(node)
+			require.NoError(t, err)
+			require.NoError(t, service.IndexNode(node))
+			if unavailable == "retrieval" {
+				service.vectorPipeline = NewVectorSearchPipeline(unavailableContinuationCandidates{}, &IdentityExactScorer{})
+			}
+			chunk := func(context.Context, string) ([]string, error) { return []string{"library", "transcript"}, nil }
+			embed := func(context.Context, string) ([]float32, error) {
+				if unavailable == "retrieval" {
+					return []float32{1}, nil
+				}
+				if unavailable == "error" {
+					return nil, errors.New("embedding provider unavailable")
+				}
+				return nil, nil
+			}
+			page, err := service.SearchTextContinuation(context.Background(), "library transcript", &SearchOptions{Limit: 2}, SearchContinuationRequest{Owner: "alice", N: 2}, chunk, embed, service.Search, ChunkedSearchErrorPolicy{})
+			require.NoError(t, err)
+			require.Len(t, page.Results, 1)
+			require.Equal(t, "doc", searchResultID(page.Results[0]))
+			require.False(t, page.HasMore)
+		})
+	}
 }
 
 func TestContinuationChunkExhaustionSurvivesFusionAndFallback(t *testing.T) {

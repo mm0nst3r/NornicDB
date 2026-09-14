@@ -443,7 +443,7 @@ func (p *VectorSearchPipeline) searchWithExhaustion(ctx context.Context, query [
 	// exhaustion from a short prefix. ANN may return short even when deeper
 	// exploration can discover more candidates.
 	switch p.candidateGen.(type) {
-	case *BruteForceCandidateGen, *FileStoreBruteForceCandidateGen:
+	case *BruteForceCandidateGen, *FileStoreBruteForceCandidateGen, *GPUBruteForceCandidateGen:
 		exhausted = len(candidates) < boundCandidateLimit(k)
 	}
 
