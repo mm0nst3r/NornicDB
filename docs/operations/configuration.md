@@ -337,6 +337,8 @@ Per-database settings win in both directions. An override of `true` turns on a g
 
 BM25 uses language-neutral NFKC normalization, Unicode case folding, and exact tokens by default. `NORNICDB_BM25_PREFIX_MAX_EXPANSIONS` optionally enables bounded prefix matching for every BM25 query term; its default is `0` (disabled). Enable it only when partial-token matching is required. `NORNICDB_BM25_PREFIX_MIN_LEN` (default `3`) sets the minimum Unicode character count for terms eligible for expansion.
 
+`NORNICDB_BM25_STEMMER` optionally selects Snowball stemming for both BM25 engines: `none` (default), `russian`/`ru`, or `english`/`en`. Set it before startup; the index captures the language for both documents and queries. Changing it rebuilds incompatible persisted BM25 indexes from original graph data. This is a process-wide setting, with no automatic language detection or new stopword policy. See [BM25 stemming](../user-guides/fulltext-stemming.md) for examples, library configuration, and persistence details.
+
 Behavior summary (all combinations supported):
 
 | BM25         | Vector       | First search request                                                         |
