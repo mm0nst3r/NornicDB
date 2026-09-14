@@ -155,19 +155,19 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 	out := make([]*gen.SearchHit, 0, len(resp.Results))
 	for _, r := range resp.Results {
 		props, _ := structpb.NewStruct(r.Properties)
-		passages := make([]*gen.SupportingPassage, 0, len(r.Passages))
-		for _, p := range r.Passages {
+		passages := make([]*gen.SupportingPassage, 0, len(r.SupportingPassages))
+		for _, p := range r.SupportingPassages {
 			passages = append(passages, &gen.SupportingPassage{NodeId: p.NodeID, ChunkIndex: uint32(p.ChunkIndex), Text: p.Text, MatchedBy: p.MatchedBy, Space: p.Space, SourceFingerprint: p.SourceFingerprint})
 		}
 		out = append(out, &gen.SearchHit{
-			NodeId:     string(r.NodeID),
-			Labels:     r.Labels,
-			Properties: props,
-			Score:      float32(r.Score),
-			RrfScore:   float32(r.RRFScore),
-			VectorRank: int32(r.VectorRank),
-			Bm25Rank:   int32(r.BM25Rank),
-			Passages:   passages,
+			NodeId:             string(r.NodeID),
+			Labels:             r.Labels,
+			Properties:         props,
+			Score:              float32(r.Score),
+			RrfScore:           float32(r.RRFScore),
+			VectorRank:         int32(r.VectorRank),
+			Bm25Rank:           int32(r.BM25Rank),
+			SupportingPassages: passages,
 		})
 	}
 

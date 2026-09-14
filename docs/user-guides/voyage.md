@@ -90,7 +90,7 @@ Text and image parts can be interleaved. Ordinary URL properties are not implici
 CALL db.rretrieve({query: $query, limit: 10})
 ```
 
-For native contextualized results, the additional `passages` column contains the exact provider-returned text, parent `node_id`, zero-based `chunk_index`, `matched_by`, `space` and `source_fingerprint`. Dense retrieval retains the winning chunk; lexical retrieval selects supporting text from the provider's chunks with the configured BM25 implementation. A hybrid result can include both supporting chunks. The source properties remain unchanged.
+For native contextualized results, the additional `supporting_passages` column contains the exact provider-returned text, parent `node_id`, zero-based `chunk_index`, `matched_by`, `space` and `source_fingerprint`. Dense retrieval retains the winning chunk; lexical retrieval selects supporting text from the provider's chunks with the configured BM25 implementation. A hybrid result can include both supporting chunks. The source properties remain unchanged.
 
 Native reranking runs once after candidate retrieval or query-result fusion. It receives complete supporting passages when available, or the existing searchable text for ordinary candidates. It preserves candidate IDs and original content. Provider ordering and scores determine the result; no flat-score heuristic replaces them. The default candidate pool is 100, with a maximum of 1,000 submitted candidates. Provider input limits produce an error unless the caller explicitly permits truncation.
 

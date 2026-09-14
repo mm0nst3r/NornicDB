@@ -224,15 +224,15 @@ var searchablePropertiesSet = func() map[string]struct{} {
 
 // SearchResult represents a unified search result.
 type SearchResult struct {
-	Passages       []SupportingPassage `json:"passages,omitempty"`
-	ID             string              `json:"id"`
-	NodeID         storage.NodeID      `json:"nodeId"`
-	Type           string              `json:"type"`
-	Labels         []string            `json:"labels"`
-	Title          string              `json:"title,omitempty"`
-	Description    string              `json:"description,omitempty"`
-	ContentPreview string              `json:"content_preview,omitempty"`
-	Properties     map[string]any      `json:"properties,omitempty"`
+	SupportingPassages []SupportingPassage `json:"supporting_passages,omitempty"`
+	ID                 string              `json:"id"`
+	NodeID             storage.NodeID      `json:"nodeId"`
+	Type               string              `json:"type"`
+	Labels             []string            `json:"labels"`
+	Title              string              `json:"title,omitempty"`
+	Description        string              `json:"description,omitempty"`
+	ContentPreview     string              `json:"content_preview,omitempty"`
+	Properties         map[string]any      `json:"properties,omitempty"`
 
 	// Scoring
 	Score      float64 `json:"score"`
@@ -6814,16 +6814,16 @@ func (s *Service) enrichResults(ctx context.Context, rrfResults []rrfResult, lim
 		}
 
 		result := SearchResult{
-			ID:         rrf.ID,
-			NodeID:     node.ID,
-			Labels:     node.Labels,
-			Properties: node.Properties,
-			Score:      rrf.RRFScore,
-			Similarity: rrf.OriginalScore,
-			RRFScore:   rrf.RRFScore,
-			VectorRank: rrf.VectorRank,
-			BM25Rank:   rrf.BM25Rank,
-			Passages:   s.supportingPassages(node, rrf.VectorMatchID, firstPassageQuery(queries)),
+			ID:                 rrf.ID,
+			NodeID:             node.ID,
+			Labels:             node.Labels,
+			Properties:         node.Properties,
+			Score:              rrf.RRFScore,
+			Similarity:         rrf.OriginalScore,
+			RRFScore:           rrf.RRFScore,
+			VectorRank:         rrf.VectorRank,
+			BM25Rank:           rrf.BM25Rank,
+			SupportingPassages: s.supportingPassages(node, rrf.VectorMatchID, firstPassageQuery(queries)),
 		}
 
 		// Extract common fields
@@ -6881,13 +6881,13 @@ func (s *Service) enrichIndexResults(ctx context.Context, indexResults []indexRe
 		}
 
 		result := SearchResult{
-			ID:         nodeIDStr, // Use original node ID, not chunk ID
-			NodeID:     node.ID,
-			Labels:     node.Labels,
-			Properties: node.Properties,
-			Score:      ir.Score,
-			Similarity: ir.Score,
-			Passages:   s.supportingPassages(node, matchID, firstPassageQuery(queries)),
+			ID:                 nodeIDStr, // Use original node ID, not chunk ID
+			NodeID:             node.ID,
+			Labels:             node.Labels,
+			Properties:         node.Properties,
+			Score:              ir.Score,
+			Similarity:         ir.Score,
+			SupportingPassages: s.supportingPassages(node, matchID, firstPassageQuery(queries)),
 		}
 
 		// Extract common fields
@@ -6931,13 +6931,13 @@ type indexResult struct {
 }
 
 type rrfResult struct {
-	VectorMatchID string
-	Passages      []SupportingPassage
-	ID            string
-	RRFScore      float64
-	VectorRank    int
-	BM25Rank      int
-	OriginalScore float64
+	VectorMatchID      string
+	SupportingPassages []SupportingPassage
+	ID                 string
+	RRFScore           float64
+	VectorRank         int
+	BM25Rank           int
+	OriginalScore      float64
 }
 
 func findResultIndex(results []indexResult, id string) int {

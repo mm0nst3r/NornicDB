@@ -877,7 +877,7 @@ func (db *DB) DeleteEdge(ctx context.Context, id string) error {
 
 // SearchResult holds a search result with score.
 type SearchResult struct {
-	Passages []search.SupportingPassage `json:"passages,omitempty"`
+	SupportingPassages []search.SupportingPassage `json:"supporting_passages,omitempty"`
 	// Rerank is present only when a native provider reported an outcome.
 	Rerank *search.RerankReport `json:"rerank,omitempty"`
 	Node   *Node                `json:"node"`
@@ -911,11 +911,11 @@ func mapSingleSearchResult(r search.SearchResult) *SearchResult {
 			Labels:     r.Labels,
 			Properties: r.Properties,
 		},
-		Score:      r.Score,
-		Passages:   r.Passages,
-		RRFScore:   r.RRFScore,
-		VectorRank: r.VectorRank,
-		BM25Rank:   r.BM25Rank,
+		Score:              r.Score,
+		SupportingPassages: r.SupportingPassages,
+		RRFScore:           r.RRFScore,
+		VectorRank:         r.VectorRank,
+		BM25Rank:           r.BM25Rank,
 	}
 }
 

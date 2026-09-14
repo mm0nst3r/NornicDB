@@ -303,9 +303,9 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 	}
 
 	if hasSupportingPassages(response.Results) {
-		result.Columns = append(result.Columns, "passages")
+		result.Columns = append(result.Columns, "supporting_passages")
 		for i, r := range response.Results {
-			result.Rows[i] = append(result.Rows[i], search.PassageMaps(r.Passages))
+			result.Rows[i] = append(result.Rows[i], search.PassageMaps(r.SupportingPassages))
 		}
 	}
 	appendRerankReport(result, response.Rerank)
@@ -704,7 +704,7 @@ func appendRerankReport(result *ExecuteResult, report *search.RerankReport) {
 
 func hasSupportingPassages(rows []search.SearchResult) bool {
 	for _, r := range rows {
-		if len(r.Passages) > 0 {
+		if len(r.SupportingPassages) > 0 {
 			return true
 		}
 	}

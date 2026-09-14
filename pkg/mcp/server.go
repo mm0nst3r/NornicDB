@@ -967,13 +967,13 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 					// Vector cosine is already bounded; lexical relevance is
 					// monotonically normalized before crossing the MCP boundary.
 					res := SearchResult{
-						ID:             normalizeNodeElementID(r.ID),
-						Type:           getLabelType(r.Labels),
-						Title:          r.Title,
-						ContentPreview: r.ContentPreview,
-						Similarity:     discoverResultSimilarity(r),
-						Passages:       r.Passages,
-						Properties:     sanitizePropertiesForLLM(props),
+						ID:                 normalizeNodeElementID(r.ID),
+						Type:               getLabelType(r.Labels),
+						Title:              r.Title,
+						ContentPreview:     r.ContentPreview,
+						Similarity:         discoverResultSimilarity(r),
+						SupportingPassages: r.SupportingPassages,
+						Properties:         sanitizePropertiesForLLM(props),
 					}
 					if depth > 1 {
 						res.Related = s.getRelatedNodes(ctx, res.ID, depth)
