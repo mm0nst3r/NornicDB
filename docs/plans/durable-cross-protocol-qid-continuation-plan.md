@@ -50,7 +50,9 @@ Properties of this contract:
 - Repeating the same durable qid is idempotent and returns the same page.
 - `DISCARD` releases the complete retained population, regardless of which
   position token from that population is supplied.
-- An exhausted response has `has_more: false` and no next qid.
+- A terminal response has `has_more: false` and no next qid; `completion`
+  identifies whether it ended by exhaustion, candidate budget, or catalogue
+  population exhaustion.
 - Pulling does not extend the fixed expiry time.
 - Later pulls never rerun chunking or embedding. They may deepen ANN and BM25
   retrieval and recompute fusion over the expanded candidate prefixes when the
@@ -393,8 +395,10 @@ operations: `mode`, per-row `phase`, optional `group_key`, optional nested
 `passages`, `ranked_count`,
 `eligible_count`, `ranked_pool_exhausted`, `collection_exhausted`, and
 `completion`. `completion` is one of `more_results`,
-`candidate_pool_exhausted`, or `eligible_population_exhausted`. A short ANN
-response never claims collection exhaustion.
+`candidate_pool_exhausted`, or `eligible_population_exhausted`.
+`candidate_pool_exhausted` means a configured candidate boundary stopped ranked
+expansion without proving full ranked exhaustion. A short ANN response never
+claims collection or ranked-pool exhaustion by itself.
 
 ### 6. Consistency Contract
 
@@ -496,11 +500,12 @@ The response adds `qid`, `has_more`, `position`, `returned`, `discovered`,
 `exhausted`, `expires_at`, `mode`, per-row `phase`, optional `group_key`,
 optional per-row `passages`,
 `ranked_count`, `eligible_count`, `ranked_pool_exhausted`,
-`collection_exhausted`, and `completion`. `total` is omitted until exhaustion
-for progressive `ranked` mode because the eventual searchable result count is
-not known. Complete modes know `total` and `eligible_count` after initial
-materialization. When no continuation fields are supplied, the current request
-and response behavior remains unchanged.
+`collection_exhausted`, and `completion`. `total` is omitted until terminal
+completion for progressive `ranked` mode because the eventual searchable result
+count is not known. `completion="candidate_pool_exhausted"` is terminal for the
+stream but does not prove `ranked_pool_exhausted`. Complete modes know `total`
+and `eligible_count` after initial materialization. When no continuation fields
+are supplied, the current request and response behavior remains unchanged.
 
 On pull and discard, the token selects its canonical database. If a request
 also supplies `database`, it must resolve to the same database or fail closed.

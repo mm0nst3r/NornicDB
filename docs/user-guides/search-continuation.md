@@ -15,7 +15,8 @@ principal, and canonical database.
 
 `n` is a page size. In `ranked` mode, `limit` is the initial retrieval depth,
 not a lifetime ceiling. `max_results` is the optional explicit lifetime
-ceiling. An exhausted response has `has_more: false` and no next qid.
+ceiling. A terminal response has `has_more: false` and no next qid; inspect
+`completion` to distinguish true exhaustion from a configured candidate budget.
 
 ## Modes
 
@@ -34,13 +35,18 @@ pagination: one logical asset consumes one page slot, while its ordered
 participating retrieval branches establish exhaustion without truncating their
 candidate prefixes. A short approximate, filtered, or fused result does not
 establish exhaustion. `ranked_limit` still selects a fixed ranked prefix; it
-does not prove that further ranked candidates do not exist.
+does not prove that further ranked candidates do not exist. When a producer
+reaches an explicit candidate budget, such as a Stage-2 rerank top-K boundary,
+the stream ends with `completion: "candidate_pool_exhausted"` and
+`ranked_pool_exhausted: false`.
 
 Progressive ranked continuation deepens short batches using the prepared query
-embeddings, including each chunk of a multi-chunk query. The engine does not
-impose an arbitrary candidate ceiling: retrieval may deepen to the searchable
-population. Go and Cypher callers may set `MaxCandidateLimit` to impose a lower
-per-request budget. If that budget is reached without proven exhaustion or the
+embeddings, including each chunk of a multi-chunk query. Short batches are not
+treated as completion unless the producer explicitly reports that a candidate
+budget was reached. The engine does not impose an arbitrary candidate ceiling:
+retrieval may deepen to the searchable population. Go and Cypher callers may set
+`MaxCandidateLimit` to impose a lower per-request budget. If that budget is
+reached without proven exhaustion, an explicit candidate-budget signal, or the
 requested `max_results`, the operation fails with the existing capacity error
 instead of returning a falsely exhausted page. HNSW establishes exhaustion only
 when its pre-filter candidate heap covers the live index (excluding deleted

@@ -1425,11 +1425,13 @@ components:
           nullable: true
         ranked_pool_exhausted:
           type: boolean
-          description: True only when the ranked branch is known to have fewer results than its requested depth; false when ranked_limit was filled.
+          description: True only when the ranked branch is known to be fully exhausted without truncating a candidate prefix. False for fixed ranked_limit prefixes and configured candidate-budget boundaries.
         collection_exhausted:
           type: boolean
+          description: True when the complete eligible population has been emitted for id and ranked_then_id modes.
         completion:
           type: string
+          description: Terminal reason for the stream. candidate_pool_exhausted means a configured candidate boundary, such as rerank top-K, stopped ranked expansion without proving full ranked exhaustion.
           enum:
             [
               more_results,

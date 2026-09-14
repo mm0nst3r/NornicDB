@@ -147,6 +147,11 @@ message SearchTextResponse {
 }
 ```
 
+`ranked_pool_exhausted` is true only when the ranked branch is known to be
+fully exhausted. `completion="candidate_pool_exhausted"` means a configured
+candidate boundary, such as rerank top-K, stopped ranked expansion without
+proving full ranked exhaustion.
+
 `SearchText` runs the same hybrid pipeline as the `db.retrieve` Cypher procedure: vector + BM25, fused with RRF, with adaptive weights based on query length. If embeddings are disabled, falls back to BM25-only and sets `fallback_triggered=true`.
 
 Supplying `n` or another continuation field starts a durable stream. Reuse the

@@ -113,10 +113,12 @@ message SearchTextResponse {
   string mode = 13;
   int64 ranked_count = 14;
   optional int64 eligible_count = 15;
-  // True only when the ranked branch returned fewer rows than its requested depth.
+  // True only when the ranked branch is known to be fully exhausted without
+  // truncating a candidate prefix.
   bool ranked_pool_exhausted = 16;
   bool collection_exhausted = 17;
   // more_results, candidate_pool_exhausted, or eligible_population_exhausted.
+  // candidate_pool_exhausted means a configured candidate boundary stopped
+  // ranked expansion without proving full ranked exhaustion.
   string completion = 18;
 }
-

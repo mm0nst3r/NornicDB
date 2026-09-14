@@ -76,7 +76,9 @@ CALL db.retrieve({qid: $qid, discard: true}) YIELD page RETURN page
 `passages` list. Page metadata includes `qid`, `has_more`, `position`,
 `returned`, `discovered`, `total`, `expires_at`, `released`, `mode`,
 `ranked_count`, `eligible_count`, `ranked_pool_exhausted`,
-`collection_exhausted`, and `completion`. See
+`collection_exhausted`, and `completion`. `candidate_pool_exhausted` means a
+configured candidate boundary ended ranked expansion without proving full ranked
+exhaustion. See
 [Search Continuation](../user-guides/search-continuation.md).
 
 ## `db.rretrieve` — retrieve + auto-rerank
