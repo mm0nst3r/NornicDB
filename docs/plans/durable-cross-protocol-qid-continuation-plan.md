@@ -22,11 +22,11 @@ The end state is:
 - Search calls that do not request continuation retain their current behavior
   and performance.
 
-This plan supersedes the API shape proposed by PR #353. That implementation is
-useful as a reference for signed tokens and admission limits, but its global
-locking, deep copying, broad mutation invalidation, full-collection modes, and
-separate `db.retrieve.page`/`db.retrieve.release` procedures are not carried
-forward.
+This plan supersedes the API shape proposed by PR #353. Its `ranked`,
+`ranked_then_id`, `id`, complete filtered scan, grouping, exhaustion, and
+mutation-epoch semantics are carried forward through the shared qid contract.
+Its separate `db.retrieve.page`/`db.retrieve.release` procedures, cursor store,
+global locking, and deep-copy-heavy population representation are not.
 
 ## Contract
 
@@ -55,6 +55,22 @@ Properties of this contract:
 - Later pulls never rerun chunking or embedding. They may deepen ANN and BM25
   retrieval and recompute fusion over the expanded candidate prefixes when the
   retained unseen-result buffer cannot satisfy `n`.
+
+The optional `mode` selects the declared population:
+
+- `ranked` (default) progressively enumerates canonical ranked search results.
+- `ranked_then_id` emits a ranked prefix followed by every other eligible
+  member in ascending logical-ID order. Tail rows are explicitly unscored.
+- `id` bypasses retrieval and enumerates every eligible member in ascending
+  logical-ID order.
+
+`group_by` optionally collapses eligible child nodes into logical parents
+before pagination. `ranked_limit` is an explicit boundary for the ranked phase;
+it is distinct from `limit`, `n`, and `max_results`. When `ranked_limit` is
+omitted, a ranked phase ends only when every retrieval branch reports
+exhaustion. This preserves the rule that the initial `limit` is never a silent
+lifetime ceiling. `ranked_then_id` cannot begin its catalogue tail before that
+rank boundary is known.
 
 "Infinite" continuation means that no initial client-selected batch or top-K
 silently becomes the stream's lifetime ceiling. It does not mean unbounded
@@ -290,13 +306,82 @@ cardinality. Candidate-generator implementations must report whether a returned
 prefix is exhausted; a short approximate response must not be presented as
 proof that the corpus is exhausted.
 
-Phase one supports ranked search only. It does not implement PR #353's
-`ranked_then_id`, `id`, complete storage scans, or grouping modes.
-
 If all retrieval branches establish exhaustion and the requested first page
 consumes every result, return it directly without registering a durable stream.
 
-### 5. Consistency Contract
+### 5. Complete Collection And Grouped Populations
+
+Complete collection modes use a separate materialized catalogue producer behind
+the same `resultstream.Stream` and registry. They do not alter qid encoding,
+authentication, replay, expiry, or protocol adapters.
+
+Population semantics are:
+
+| Mode             | Membership                                                      | Stable order                            | Collection exhaustive |
+| ---------------- | --------------------------------------------------------------- | --------------------------------------- | --------------------- |
+| `ranked`         | progressively discovered ranked hits                            | append-only canonical ranked expansions | no                    |
+| `ranked_then_id` | bounded/exhausted ranked phase plus every other eligible member | ranked phase, then unscored logical ID  | yes                   |
+| `id`             | every eligible member; no ANN, BM25, embedding, or reranking    | logical ID                              | yes                   |
+
+For `ranked_then_id`, a caller may set `ranked_limit` to request the original PR's
+fixed ranked-prefix behavior explicitly. Without it, the service progressively
+deepens retrieval until branch-native exhaustion before transitioning to the
+catalogue tail. `max_results` remains a total stream ceiling and must never be
+misinterpreted as ranked-phase completion.
+
+The initial complete-mode build:
+
+1. reserves a bounded build slot and snapshots the database mutation revision;
+2. prepares the ranked phase when the mode requires one;
+3. streams storage once with `storage.StreamNodesWithFallback`;
+4. applies canonical type, property, visibility, temporal, decay, and
+   result-authorization eligibility;
+5. records only compact IDs, group keys, phase, and ranking diagnostics;
+6. verifies the mutation revision is unchanged;
+7. sorts and publishes one immutable population through the shared registry.
+
+All scanned nodes count against `max_scanned_nodes`, including filter rejects.
+Member, byte, build-time, and concurrent-build limits fail the request; they do
+not truncate an allegedly complete population. Engines without a database-scoped
+`storage.GraphMutationVersionProvider` must reject complete modes unless a future
+engine-specific snapshot contract provides an equivalent guarantee. The
+`AllNodes` fallback is functionally valid but may materialize the source graph;
+production guidance must identify whether the selected engine truly streams.
+
+Complete populations bind their starting storage revision and policy generation
+to the stream. A revision change during construction prevents publication. A
+change before any later pull invalidates the stream instead of returning mixed
+membership or false `eligible_count` values. This stricter rule applies only to
+complete/grouped populations; ordinary progressive ranked streams retain their
+existing current-hydration behavior.
+
+Grouping occurs after eligibility and ranked-phase selection but before paging:
+
+- `group_by` names one flat property whose value must be a nonempty valid UTF-8
+  string on every eligible node;
+- filters and authorization apply to child nodes, not an implicit parent join;
+- a ranked group uses its highest-scoring ranked child; equal scores choose the
+  lowest child ID;
+- an unranked group uses its lowest eligible child ID;
+- ranked groups sort by score descending, then group key and representative ID;
+- catalogue groups sort by group key, then representative ID;
+- counts refer to distinct groups, while each row returns the representative
+  node ID and `group_key`.
+
+Missing, empty, non-string, or invalid grouping values fail the build instead of
+being skipped. Because a later ranked discovery can replace a group's best
+representative, grouped modes materialize the declared ranked phase and complete
+eligible scan before returning the first page. This is the deliberate latency
+tradeoff required for deterministic grouping and replay.
+
+Complete/grouped pages add protocol-neutral metadata without changing the qid
+operations: `mode`, per-row `phase`, optional `group_key`, `ranked_count`,
+`eligible_count`, `ranked_pool_exhausted`, `collection_exhausted`, and
+`completion`. `completion` is one of `more_results`,
+`candidate_pool_exhausted`, or `eligible_population_exhausted`. A short ANN
+response never claims collection exhaustion.
+
+### 6. Consistency Contract
 
 Continuation guarantees:
 
@@ -366,7 +451,10 @@ Initial request:
   "database": "nornic",
   "query": "sunset beach",
   "labels": ["Image"],
+  "mode": "ranked_then_id",
+  "group_by": "asset_id",
   "limit": 500,
+  "ranked_limit": 5000,
   "n": 50
 }
 ```
@@ -390,10 +478,13 @@ Discard request:
 ```
 
 The response adds `qid`, `has_more`, `position`, `returned`, `discovered`,
-`exhausted`, and `expires_at`. `total` is omitted until exhaustion because the
-eventual searchable result count is not known during progressive retrieval.
-When no continuation fields are supplied, the current request and response
-behavior remains unchanged.
+`exhausted`, `expires_at`, `mode`, per-row `phase`, optional `group_key`,
+`ranked_count`, `eligible_count`, `ranked_pool_exhausted`,
+`collection_exhausted`, and `completion`. `total` is omitted until exhaustion
+for progressive `ranked` mode because the eventual searchable result count is
+not known. Complete modes know `total` and `eligible_count` after initial
+materialization. When no continuation fields are supplied, the current request
+and response behavior remains unchanged.
 
 On pull and discard, the token selects its canonical database. If a request
 also supplies `database`, it must resolve to the same database or fail closed.
@@ -409,6 +500,9 @@ message SearchTextRequest {
   int32 n = 7;
   bool discard = 8;
   optional int64 max_results = 9;
+  string mode = 10;
+  string group_by = 11;
+  optional int64 ranked_limit = 12;
 }
 
 message SearchTextResponse {
@@ -420,8 +514,16 @@ message SearchTextResponse {
   optional int64 total = 10;
   google.protobuf.Timestamp expires_at = 11;
   bool released = 12;
+  string mode = 13;
+  int64 ranked_count = 14;
+  optional int64 eligible_count = 15;
+  bool ranked_pool_exhausted = 16;
+  bool collection_exhausted = 17;
+  string completion = 18;
 }
 ```
+
+Each returned search result also gains additive `phase` and `group_key` fields.
 
 Before enabling durable qids, native gRPC must expose an authenticated
 principal and canonical database through request context using the same server
@@ -434,6 +536,9 @@ Extend the existing request map:
 
 ```cypher
 CALL db.retrieve({query: $query, limit: 500, n: 50})
+CALL db.retrieve({query: $query, mode: 'ranked_then_id',
+                  group_by: 'asset_id', ranked_limit: 5000, n: 50})
+CALL db.retrieve({mode: 'id', filters: $filters, n: 50})
 CALL db.retrieve({qid: $qid, n: 50})
 CALL db.retrieve({qid: $qid, discard: true})
 ```
@@ -556,6 +661,27 @@ release, pull outcomes, and wrong-instance tokens.
       beyond one-shot candidate caps.
 - [ ] Preserve emitted-prefix stability while deduplicating expanded results.
 
+### Phase 2B: Complete And Grouped Populations
+
+- [ ] Add `mode`, `group_by`, and explicit `ranked_limit` to the normalized
+      continuation request shared by every adapter.
+- [ ] Add a bounded build-admission path separate from ordinary stream
+      admission.
+- [ ] Implement compact `ranked_then_id` and `id` catalogue builders behind the
+      shared stream interface.
+- [ ] Apply canonical eligibility and trusted result authorization during the
+      scan; never expose unauthorized IDs through results or counts.
+- [ ] Bind complete populations to database mutation and policy generations;
+      reject unsupported engines and invalidate changed populations.
+- [ ] Implement deterministic representative selection and grouping before
+      pagination.
+- [ ] Add ranked-pool and eligible-population exhaustion metadata consistently
+      to HTTP, gRPC, Cypher, and extension-aware Bolt.
+- [ ] Prove scan-order-independent grouping and exact 20,000-member enumeration
+      without duplicates.
+- [ ] Benchmark native streaming and `AllNodes` fallback separately; document
+      that fallback memory is not bounded by descriptor admission alone.
+
 ### Phase 3: Bolt Adapter
 
 - [ ] Wrap current materialized results in the shared stream interface.
@@ -629,6 +755,13 @@ Required microbenchmarks:
 - release and expiry cleanup;
 - parallel pulls of the same token;
 - concurrent starts, pulls, and releases across registry shards.
+- complete scans with 20,000, 100,000, and 1,000,000 source nodes at multiple
+  filter selectivities;
+- grouped and ungrouped population builds with ranked-prefix hit rates of 0%,
+  10%, and 100%;
+- representative replacement and final sort cost for high- and low-cardinality
+  group keys;
+- native `StreamingEngine` versus `AllNodes` fallback peak heap and build time.
 
 Required load tests:
 
@@ -672,8 +805,9 @@ Acceptance criteria:
 - Making standard numeric Bolt qids globally unique or reconnect-safe.
 - Retaining explicit database transactions across disconnections.
 - Surviving server process restart or instance failure.
-- Complete collection enumeration or export.
-- `ranked_then_id`, `id`, or grouped continuation modes.
+- Unbounded export: complete modes remain bounded materializations and fail
+  rather than silently truncate when scan, member, byte, or time limits are hit.
+- Graph-traversal grouping or parent joins; `group_by` is a flat child property.
 - Holding a snapshot of mutable node properties.
 - Claiming globally exact ranking across progressively discovered approximate
   candidates.
