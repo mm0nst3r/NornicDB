@@ -638,9 +638,7 @@ func (b *ASTBuilder) parseSetItems(text string) []ASTSetItem {
 			right := strings.TrimSpace(part[eqIdx+1:])
 
 			// Handle += operator
-			if strings.HasSuffix(left, "+") {
-				left = strings.TrimSuffix(left, "+")
-			}
+			left = strings.TrimSuffix(left, "+")
 
 			// Parse left side (variable.property or just variable)
 			if dotIdx := strings.LastIndex(left, "."); dotIdx > 0 {

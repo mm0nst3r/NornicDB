@@ -301,7 +301,7 @@ func (e *StorageExecutor) evaluateExpressionWithContextFullMath(
 			}
 		}
 		// Then check allPathNodes (for variable-length patterns without explicit path variable)
-		if allPathNodes != nil && len(allPathNodes) > 0 {
+		if len(allPathNodes) > 0 {
 			var result []interface{}
 			for _, node := range allPathNodes {
 				result = append(result, node)
@@ -333,7 +333,7 @@ func (e *StorageExecutor) evaluateExpressionWithContextFullMath(
 			}
 		}
 		// Then check allPathEdges (for variable-length patterns without explicit path variable)
-		if allPathEdges != nil && len(allPathEdges) > 0 {
+		if len(allPathEdges) > 0 {
 			var result []interface{}
 			for _, edge := range allPathEdges {
 				result = append(result, map[string]interface{}{

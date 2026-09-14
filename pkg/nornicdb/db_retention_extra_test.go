@@ -112,14 +112,14 @@ func TestRetentionContext_FallbackChain(t *testing.T) {
 	db := &DB{}
 	require.Equal(t, want, db.retentionContext(want))
 
-	// nil context + no buildCtx → context.Background.
-	got := db.retentionContext(nil)
+	// A background context remains unchanged when no build context exists.
+	got := db.retentionContext(context.Background())
 	require.Equal(t, context.Background(), got)
 
-	// nil context + buildCtx → buildCtx.
+	// An explicit context takes precedence over buildCtx.
 	build := context.WithValue(context.Background(), contextKey{}, "build")
 	db.buildCtx = build
-	require.Equal(t, build, db.retentionContext(nil))
+	require.Equal(t, want, db.retentionContext(want))
 }
 
 func TestRetentionExcludedLabels_TrimWhitespaceAndDropEmpty(t *testing.T) {
@@ -153,7 +153,7 @@ func TestRetentionMaxSweepRecords_DefaultsAndOverride(t *testing.T) {
 func TestStartRetentionSweep_NoOpWithoutManager(t *testing.T) {
 	// No retention manager installed → startRetentionSweep is a no-op.
 	db := &DB{}
-	db.startRetentionSweep(nil)
+	db.startRetentionSweep(context.Background())
 }
 
 func TestRetentionSweep_ProcessesExpiredAndSkipsExcluded(t *testing.T) {

@@ -11,6 +11,7 @@ var (
 	ErrClosed          = errors.New("result stream is closed")
 	ErrInvalidPageSize = errors.New("invalid result stream page size")
 	ErrInvalidPosition = errors.New("invalid result stream position")
+	ErrInvalidated     = errors.New("result stream was invalidated by a data or policy change")
 )
 
 // Page is an immutable view of one stream position. Rows must be treated as

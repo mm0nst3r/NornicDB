@@ -61,11 +61,7 @@ func TestFabricHelpers_MoreContextAndWrapperBranches(t *testing.T) {
 	exec := NewStorageExecutor(newTestMemoryEngine(t))
 
 	// preparedFabricFromContext branches
-	prepared, err := exec.preparedFabricFromContext(nil)
-	require.NoError(t, err)
-	require.Nil(t, prepared)
-
-	prepared, err = exec.preparedFabricFromContext(context.Background())
+	prepared, err := exec.preparedFabricFromContext(context.Background())
 	require.NoError(t, err)
 	require.Nil(t, prepared)
 

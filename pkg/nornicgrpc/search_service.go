@@ -95,8 +95,8 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 	if req == nil {
 		return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.RequestRequired())
 	}
-	continuationRequested := req.N > 0 || req.Qid != "" || req.Discard
-	if req.Query == "" && req.Qid == "" {
+	continuationRequested := req.N > 0 || req.Qid != "" || req.Discard || req.Mode != "" || req.GroupBy != "" || req.RankedLimit != nil
+	if req.Query == "" && req.Qid == "" && req.Mode != string(search.SearchContinuationID) {
 		return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.QueryRequired())
 	}
 	if continuationRequested {
@@ -118,9 +118,13 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		}
 		continuation := search.SearchContinuationRequest{
 			Owner: owner, Database: database, QID: req.Qid, N: n, Discard: req.Discard,
+			Mode: search.SearchContinuationMode(req.Mode), GroupBy: req.GroupBy,
 		}
 		if req.MaxResults != nil {
 			continuation.MaxResults = int(*req.MaxResults)
+		}
+		if req.RankedLimit != nil {
+			continuation.RankedLimit = int(*req.RankedLimit)
 		}
 		page, err := continuable.SearchTextContinuation(
 			ctx, req.Query, searchOptions(req, s.maxLimit, s.rerankEnabled), continuation,
@@ -216,6 +220,9 @@ func grpcContinuationResponse(page *search.SearchContinuationPage, elapsed time.
 		SearchMethod: page.SearchMethod, FallbackTriggered: page.FallbackTriggered,
 		Qid: page.QID, HasMore: page.HasMore, Position: page.Position,
 		Returned: uint32(page.Returned), Released: page.Released, TimeSeconds: elapsed.Seconds(),
+		Mode: string(page.Mode), RankedCount: int64(page.RankedCount),
+		RankedPoolExhausted: page.RankedPoolExhausted, CollectionExhausted: page.CollectionExhausted,
+		Completion: page.Completion,
 	}
 	if page.Total != nil {
 		total := *page.Total
@@ -223,6 +230,10 @@ func grpcContinuationResponse(page *search.SearchContinuationPage, elapsed time.
 	}
 	if !page.ExpiresAt.IsZero() {
 		response.ExpiresAt = timestamppb.New(page.ExpiresAt)
+	}
+	if page.EligibleCount != nil {
+		eligibleCount := int64(*page.EligibleCount)
+		response.EligibleCount = &eligibleCount
 	}
 	response.Hits = make([]*gen.SearchHit, 0, len(page.Results))
 	for index := range page.Results {
@@ -232,9 +243,26 @@ func grpcContinuationResponse(page *search.SearchContinuationPage, elapsed time.
 			NodeId: string(result.NodeID), Labels: result.Labels, Properties: properties,
 			Score: float32(result.Score), RrfScore: float32(result.RRFScore),
 			VectorRank: int32(result.VectorRank), Bm25Rank: int32(result.BM25Rank),
+			Phase: result.Phase, GroupKey: result.GroupKey,
+			Passages: grpcSearchPassages(result.Passages),
 		})
 	}
 	return response
+}
+
+func grpcSearchPassages(passages []search.SearchPassage) []*gen.SearchPassage {
+	out := make([]*gen.SearchPassage, len(passages))
+	for index := range passages {
+		passage := passages[index]
+		properties, _ := structpb.NewStruct(passage.Properties)
+		out[index] = &gen.SearchPassage{
+			NodeId: string(passage.NodeID), Labels: passage.Labels, Properties: properties,
+			Score: float32(passage.Score), RrfScore: float32(passage.RRFScore),
+			VectorRank: int32(passage.VectorRank), Bm25Rank: int32(passage.BM25Rank),
+			Phase: passage.Phase,
+		}
+	}
+	return out
 }
 
 func (s *Service) localizedStatus(ctx context.Context, code codes.Code, message localization.Message) error {

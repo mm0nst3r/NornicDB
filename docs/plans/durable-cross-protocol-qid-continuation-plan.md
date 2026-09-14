@@ -683,23 +683,23 @@ release, pull outcomes, and wrong-instance tokens.
 
 ### Phase 2B: Complete And Grouped Populations
 
-- [ ] Add `mode`, `group_by`, and explicit `ranked_limit` to the normalized
+- [x] Add `mode`, `group_by`, and explicit `ranked_limit` to the normalized
       continuation request shared by every adapter.
-- [ ] Add a bounded build-admission path separate from ordinary stream
+- [x] Add a bounded build-admission path separate from ordinary stream
       admission.
-- [ ] Implement compact `ranked_then_id` and `id` catalogue builders behind the
+- [x] Implement compact `ranked_then_id` and `id` catalogue builders behind the
       shared stream interface.
 - [ ] Apply canonical eligibility and trusted result authorization during the
       scan; never expose unauthorized IDs through results or counts.
-- [ ] Bind complete populations to database mutation and policy generations;
+- [x] Bind complete populations to database mutation and policy generations;
       reject unsupported engines and invalidate changed populations.
-- [ ] Implement deterministic representative selection and grouping before
+- [x] Implement deterministic representative selection and grouping before
       pagination.
-- [ ] Preserve every matching child passage under its grouped asset, with
+- [x] Preserve every matching child passage under its grouped asset, with
       deterministic passage ordering and byte accounting.
-- [ ] Add ranked-pool and eligible-population exhaustion metadata consistently
+- [x] Add ranked-pool and eligible-population exhaustion metadata consistently
       to HTTP, gRPC, Cypher, and extension-aware Bolt.
-- [ ] Prove scan-order-independent grouping and exact 20,000-member enumeration
+- [x] Prove scan-order-independent grouping and exact 20,000-member enumeration
       without duplicates.
 - [ ] Benchmark native streaming and `AllNodes` fallback separately; document
       that fallback memory is not bounded by descriptor admission alone.

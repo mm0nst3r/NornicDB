@@ -224,14 +224,17 @@ var searchablePropertiesSet = func() map[string]struct{} {
 
 // SearchResult represents a unified search result.
 type SearchResult struct {
-	ID             string         `json:"id"`
-	NodeID         storage.NodeID `json:"nodeId"`
-	Type           string         `json:"type"`
-	Labels         []string       `json:"labels"`
-	Title          string         `json:"title,omitempty"`
-	Description    string         `json:"description,omitempty"`
-	ContentPreview string         `json:"content_preview,omitempty"`
-	Properties     map[string]any `json:"properties,omitempty"`
+	ID             string          `json:"id"`
+	NodeID         storage.NodeID  `json:"nodeId"`
+	GroupKey       string          `json:"group_key,omitempty"`
+	Phase          string          `json:"phase,omitempty"`
+	Passages       []SearchPassage `json:"passages,omitempty"`
+	Type           string          `json:"type"`
+	Labels         []string        `json:"labels"`
+	Title          string          `json:"title,omitempty"`
+	Description    string          `json:"description,omitempty"`
+	ContentPreview string          `json:"content_preview,omitempty"`
+	Properties     map[string]any  `json:"properties,omitempty"`
 
 	// Scoring
 	Score      float64 `json:"score"`
@@ -242,6 +245,24 @@ type SearchResult struct {
 	RRFScore   float64 `json:"rrf_score,omitempty"`
 	VectorRank int     `json:"vector_rank"`
 	BM25Rank   int     `json:"bm25_rank"`
+}
+
+// SearchPassage is one matching child retained within a grouped search result.
+type SearchPassage struct {
+	ID             string         `json:"id"`
+	NodeID         storage.NodeID `json:"nodeId"`
+	Phase          string         `json:"phase,omitempty"`
+	Type           string         `json:"type,omitempty"`
+	Labels         []string       `json:"labels,omitempty"`
+	Title          string         `json:"title,omitempty"`
+	Description    string         `json:"description,omitempty"`
+	ContentPreview string         `json:"content_preview,omitempty"`
+	Properties     map[string]any `json:"properties,omitempty"`
+	Score          float64        `json:"score"`
+	Similarity     float64        `json:"similarity,omitempty"`
+	RRFScore       float64        `json:"rrf_score,omitempty"`
+	VectorRank     int            `json:"vector_rank"`
+	BM25Rank       int            `json:"bm25_rank"`
 }
 
 // SearchResponse is the response from a search operation.
@@ -710,6 +731,10 @@ type Service struct {
 	continuationMu       sync.Mutex
 	continuationRegistry continuationRegistry
 	continuationOwned    bool
+	completePolicyMu     sync.RWMutex
+	completePolicy       atomic.Value
+	completePolicyGen    atomic.Uint64
+	completeBuilds       atomic.Int64
 
 	nodeDecayFilter NodeDecayFilterFunc
 
@@ -936,6 +961,7 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 		lifecycleCtx:               lifecycleCtx,
 		lifecycleCancel:            lifecycleCancel,
 	}
+	svc.completePolicy.Store(defaultCompleteContinuationPolicy())
 	if options != nil {
 		svc.bm25MemoryMaxBytes = options.BM25MemoryMaxBytes
 		svc.vectorMemoryMaxBytes = options.VectorMemoryMaxBytes

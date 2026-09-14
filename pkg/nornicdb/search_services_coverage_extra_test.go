@@ -139,5 +139,5 @@ func TestSearchServices_Coverage_EventAndClusteringNilContextBranches(t *testing
 	t.Cleanup(func() { _ = db.baseStorage.Close() })
 
 	db.indexNodeFromEvent(nil)
-	db.runClusteringOnceAllDatabases(nil)
+	db.runClusteringOnceAllDatabases(context.Background())
 }

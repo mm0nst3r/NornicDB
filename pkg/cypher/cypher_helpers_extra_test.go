@@ -27,6 +27,22 @@ type typedResultFixture struct {
 	Score     float64
 }
 
+func replaceProcedureRegistryForTest(t *testing.T, registry *ProcedureRegistry) {
+	t.Helper()
+	ensureBuiltInProceduresRegistered()
+	originalRegistry := globalProcedureRegistry
+
+	globalProcedureRegistry = registry
+	builtinProcedureRegistryOnce = sync.Once{}
+	builtinProcedureRegistryOnce.Do(func() {})
+
+	t.Cleanup(func() {
+		globalProcedureRegistry = originalRegistry
+		builtinProcedureRegistryOnce = sync.Once{}
+		builtinProcedureRegistryOnce.Do(func() {})
+	})
+}
+
 type testTimeStringer string
 
 func (ts testTimeStringer) String() string { return string(ts) }
@@ -227,16 +243,7 @@ func TestCypherHelpers_ExecuteCall_DoesNotMiscountArgsWithTailFunctions(t *testi
 	exec := NewStorageExecutor(eng)
 	ctx := context.Background()
 
-	origRegistry := globalProcedureRegistry
-	origOnce := builtinProcedureRegistryOnce
-	doneOnce := sync.Once{}
-	doneOnce.Do(func() {})
-	globalProcedureRegistry = NewProcedureRegistry()
-	builtinProcedureRegistryOnce = doneOnce
-	defer func() {
-		globalProcedureRegistry = origRegistry
-		builtinProcedureRegistryOnce = origOnce
-	}()
+	replaceProcedureRegistryForTest(t, NewProcedureRegistry())
 
 	err := globalProcedureRegistry.RegisterUser(
 		ProcedureSpec{Name: "custom.echo", MinArgs: 3, MaxArgs: 3},
@@ -825,16 +832,7 @@ func TestCypherHelpers_ExecuteCallFallbackDispatch(t *testing.T) {
 
 	// Force executeCall to use legacy switch fallback (instead of registry-first dispatch)
 	// so we can validate and cover those branches while preserving production behavior.
-	origRegistry := globalProcedureRegistry
-	origOnce := builtinProcedureRegistryOnce
-	doneOnce := sync.Once{}
-	doneOnce.Do(func() {})
-	globalProcedureRegistry = NewProcedureRegistry()
-	builtinProcedureRegistryOnce = doneOnce
-	defer func() {
-		globalProcedureRegistry = origRegistry
-		builtinProcedureRegistryOnce = origOnce
-	}()
+	replaceProcedureRegistryForTest(t, NewProcedureRegistry())
 
 	cases := []struct {
 		query     string

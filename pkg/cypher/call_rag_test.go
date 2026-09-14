@@ -165,6 +165,51 @@ func TestCallDbRetrieveContinuesBeyondInitialLimit(t *testing.T) {
 	require.Len(t, page["results"], 3)
 }
 
+func TestCallDbRetrieveIDContinuationGroupsAllPassages(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewNamespacedEngine(newTestMemoryEngine(t), "test")
+	exec := NewStorageExecutor(store)
+
+	for _, node := range []*storage.Node{
+		{ID: "frame-c", Labels: []string{"Frame"}, Properties: map[string]interface{}{"collection": "summer", "asset_id": "asset-b"}},
+		{ID: "frame-b", Labels: []string{"Frame"}, Properties: map[string]interface{}{"collection": "summer", "asset_id": "asset-a"}},
+		{ID: "frame-a", Labels: []string{"Frame"}, Properties: map[string]interface{}{"collection": "summer", "asset_id": "asset-a"}},
+		{ID: "winter", Labels: []string{"Frame"}, Properties: map[string]interface{}{"collection": "winter", "asset_id": "asset-c"}},
+	} {
+		_, err := store.CreateNode(node)
+		require.NoError(t, err)
+	}
+
+	first, err := exec.Execute(ctx, `CALL db.retrieve({
+		mode: 'id', group_by: 'asset_id', types: ['Frame'],
+		filters: {collection: ['summer']}, n: 1
+	})`, nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"page"}, first.Columns)
+	page := first.Rows[0][0].(map[string]interface{})
+	require.Equal(t, "id", page["mode"])
+	require.Equal(t, int64(2), page["eligible_count"])
+	require.True(t, page["ranked_pool_exhausted"].(bool))
+	require.False(t, page["collection_exhausted"].(bool))
+	results := page["results"].([]interface{})
+	require.Len(t, results, 1)
+	asset := results[0].(map[string]interface{})
+	require.Equal(t, "asset-a", asset["group_key"])
+	require.Equal(t, search.SearchContinuationCatalogPhase, asset["phase"])
+	passages := asset["passages"].([]interface{})
+	require.Len(t, passages, 2)
+	require.Equal(t, storage.NodeID("frame-a"), passages[0].(map[string]interface{})["node"].(*storage.Node).ID)
+	require.Equal(t, storage.NodeID("frame-b"), passages[1].(map[string]interface{})["node"].(*storage.Node).ID)
+
+	second, err := exec.Execute(ctx, "CALL db.retrieve($request)", map[string]interface{}{
+		"request": map[string]interface{}{"qid": page["qid"], "n": int64(1)},
+	})
+	require.NoError(t, err)
+	page = second.Rows[0][0].(map[string]interface{})
+	require.True(t, page["collection_exhausted"].(bool))
+	require.Equal(t, search.SearchContinuationCollectionComplete, page["completion"])
+}
+
 func TestSearchContinuationOwnerUsesOnlyAuthenticatedPrincipal(t *testing.T) {
 	require.Empty(t, searchContinuationOwner(WithAuthToken(context.Background(), "Bearer secret")))
 	require.Equal(t, "sub:alice", searchContinuationOwner(WithAuthenticatedPrincipal(context.Background(), "sub:alice")))

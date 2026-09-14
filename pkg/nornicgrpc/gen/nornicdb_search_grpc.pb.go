@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v6.33.2
-// source: nornicdb_search.proto
+// source: pkg/nornicgrpc/proto/nornicdb_search.proto
 
 package gen
 
@@ -133,5 +133,5 @@ var NornicSearch_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "nornicdb_search.proto",
+	Metadata: "pkg/nornicgrpc/proto/nornicdb_search.proto",
 }

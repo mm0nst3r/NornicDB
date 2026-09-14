@@ -301,15 +301,18 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Database   string              `json:"database,omitempty"` // Optional: defaults to default database
-		Query      string              `json:"query"`
-		Labels     []string            `json:"labels,omitempty"`
-		Limit      int                 `json:"limit,omitempty"`
-		Filters    map[string][]string `json:"filters,omitempty"`
-		QID        string              `json:"qid,omitempty"`
-		N          int                 `json:"n,omitempty"`
-		Discard    bool                `json:"discard,omitempty"`
-		MaxResults int                 `json:"max_results,omitempty"`
+		Database    string              `json:"database,omitempty"` // Optional: defaults to default database
+		Query       string              `json:"query"`
+		Labels      []string            `json:"labels,omitempty"`
+		Limit       int                 `json:"limit,omitempty"`
+		Filters     map[string][]string `json:"filters,omitempty"`
+		QID         string              `json:"qid,omitempty"`
+		N           int                 `json:"n,omitempty"`
+		Discard     bool                `json:"discard,omitempty"`
+		MaxResults  int                 `json:"max_results,omitempty"`
+		Mode        string              `json:"mode,omitempty"`
+		GroupBy     string              `json:"group_by,omitempty"`
+		RankedLimit int                 `json:"ranked_limit,omitempty"`
 	}
 
 	if err := s.readJSON(r, &req); err != nil {
@@ -371,8 +374,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// EnsureWarm() and blocks until the build completes; that path is
 	// shared by every search entry point (Bolt, GraphQL, gRPC, Cypher
 	// procedures), not just HTTP.
+	mode := search.SearchContinuationMode(req.Mode)
+	idStart := req.QID == "" && mode == search.SearchContinuationID
 	searchStatus := s.db.GetDatabaseSearchStatus(dbName)
-	if !searchStatus.BM25Enabled && !searchStatus.VectorEnabled {
+	if !idStart && !searchStatus.BM25Enabled && !searchStatus.VectorEnabled {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"error":          "search is disabled for this database",
 			"database":       dbName,
@@ -391,7 +396,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// the build and blocks until ready. That preserves correctness for
 	// the first lazy request: by the time we reach EmbeddingCount() and
 	// the embedding decision, the in-memory ANN substrate is populated.
-	if !searchStatus.Ready && !searchStatus.LazyTriggerNeeded {
+	if !idStart && !searchStatus.Ready && !searchStatus.LazyTriggerNeeded {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"error":          search.ErrSearchIndexBuilding.Error(),
 			"database":       dbName,
@@ -421,27 +426,32 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// and return BM25-only results — even though vector search is enabled
 	// and embeddings exist. EnsureWarm is a fast no-op for already-warm
 	// services, so this is free for the steady-state hot path.
-	if err := searchSvc.EnsureWarm(ctx); err != nil {
-		s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-			"error":          "search index warming did not complete: " + err.Error(),
-			"database":       dbName,
-			"bm25_enabled":   searchStatus.BM25Enabled,
-			"vector_enabled": searchStatus.VectorEnabled,
-			"retryable":      true,
-			"http_code":      http.StatusServiceUnavailable,
-			"request_status": "search_index_warming_failed",
-		})
-		return
+	if !idStart {
+		if err := searchSvc.EnsureWarm(ctx); err != nil {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+				"error":          "search index warming did not complete: " + err.Error(),
+				"database":       dbName,
+				"bm25_enabled":   searchStatus.BM25Enabled,
+				"vector_enabled": searchStatus.VectorEnabled,
+				"retryable":      true,
+				"http_code":      http.StatusServiceUnavailable,
+				"request_status": "search_index_warming_failed",
+			})
+			return
+		}
 	}
 
-	continuationRequested := req.N != 0 || req.QID != "" || req.Discard
+	continuationRequested := req.N != 0 || req.QID != "" || req.Discard || req.Mode != "" || req.GroupBy != "" || req.RankedLimit != 0
 	continuationRequest := search.SearchContinuationRequest{
-		Owner:      transactionOwnerKey(r, getClaims(r)),
-		Database:   dbName,
-		QID:        req.QID,
-		N:          req.N,
-		Discard:    req.Discard,
-		MaxResults: req.MaxResults,
+		Owner:       transactionOwnerKey(r, getClaims(r)),
+		Database:    dbName,
+		QID:         req.QID,
+		N:           req.N,
+		Discard:     req.Discard,
+		MaxResults:  req.MaxResults,
+		Mode:        mode,
+		GroupBy:     req.GroupBy,
+		RankedLimit: req.RankedLimit,
 	}
 	if req.QID != "" {
 		page, continuationErr := searchSvc.SearchTextContinuation(ctx, "", nil, continuationRequest, nil, nil, nil, search.ChunkedSearchErrorPolicy{})
@@ -455,10 +465,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	const embedTimeout = 8 * time.Second
 
-	queryChunks, err := s.db.ChunkQueryForDB(ctx, dbName, req.Query)
-	if err != nil {
-		s.writeQueryChunkingFailed(w, r)
-		return
+	queryChunks := []string(nil)
+	if !idStart {
+		queryChunks, err = s.db.ChunkQueryForDB(ctx, dbName, req.Query)
+		if err != nil {
+			s.writeQueryChunkingFailed(w, r)
+			return
+		}
 	}
 
 	opts := search.GetAdaptiveRRFConfig(req.Query)
@@ -582,16 +595,22 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	results := nornicdb.MapSearchResponse(searchResponse)
 	if continuationPage != nil {
 		s.writeJSON(w, http.StatusOK, map[string]any{
-			"results":            results,
-			"qid":                continuationPage.QID,
-			"has_more":           continuationPage.HasMore,
-			"position":           continuationPage.Position,
-			"returned":           continuationPage.Returned,
-			"discovered":         continuationPage.Discovered,
-			"total":              continuationPage.Total,
-			"expires_at":         continuationPage.ExpiresAt,
-			"search_method":      continuationPage.SearchMethod,
-			"fallback_triggered": continuationPage.FallbackTriggered,
+			"results":               results,
+			"qid":                   continuationPage.QID,
+			"has_more":              continuationPage.HasMore,
+			"position":              continuationPage.Position,
+			"returned":              continuationPage.Returned,
+			"discovered":            continuationPage.Discovered,
+			"total":                 continuationPage.Total,
+			"expires_at":            continuationPage.ExpiresAt,
+			"search_method":         continuationPage.SearchMethod,
+			"fallback_triggered":    continuationPage.FallbackTriggered,
+			"mode":                  continuationPage.Mode,
+			"ranked_count":          continuationPage.RankedCount,
+			"eligible_count":        continuationPage.EligibleCount,
+			"ranked_pool_exhausted": continuationPage.RankedPoolExhausted,
+			"collection_exhausted":  continuationPage.CollectionExhausted,
+			"completion":            continuationPage.Completion,
 		})
 		return
 	}
@@ -621,17 +640,23 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) writeSearchContinuationPage(w http.ResponseWriter, page *search.SearchContinuationPage) {
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"results":            nornicdb.MapSearchResponse(&search.SearchResponse{Results: page.Results}),
-		"qid":                page.QID,
-		"has_more":           page.HasMore,
-		"position":           page.Position,
-		"returned":           page.Returned,
-		"discovered":         page.Discovered,
-		"total":              page.Total,
-		"expires_at":         page.ExpiresAt,
-		"released":           page.Released,
-		"search_method":      page.SearchMethod,
-		"fallback_triggered": page.FallbackTriggered,
+		"results":               nornicdb.MapSearchResponse(&search.SearchResponse{Results: page.Results}),
+		"qid":                   page.QID,
+		"has_more":              page.HasMore,
+		"position":              page.Position,
+		"returned":              page.Returned,
+		"discovered":            page.Discovered,
+		"total":                 page.Total,
+		"expires_at":            page.ExpiresAt,
+		"released":              page.Released,
+		"search_method":         page.SearchMethod,
+		"fallback_triggered":    page.FallbackTriggered,
+		"mode":                  page.Mode,
+		"ranked_count":          page.RankedCount,
+		"eligible_count":        page.EligibleCount,
+		"ranked_pool_exhausted": page.RankedPoolExhausted,
+		"collection_exhausted":  page.CollectionExhausted,
+		"completion":            page.Completion,
 	})
 }
 

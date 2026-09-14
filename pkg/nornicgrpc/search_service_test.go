@@ -237,6 +237,44 @@ func TestService_SearchText_ContinuationStartPullAndDiscard(t *testing.T) {
 	require.True(t, searcher.requests[2].Discard)
 }
 
+func TestService_SearchText_IDContinuationGroupsPassages(t *testing.T) {
+	eligibleCount := 2
+	searcher := &continuationStubSearcher{responses: []*search.SearchContinuationPage{{
+		Results: []search.SearchResult{{
+			ID: "frame-a", NodeID: "frame-a", GroupKey: "asset-a", Phase: search.SearchContinuationCatalogPhase,
+			Passages: []search.SearchPassage{
+				{ID: "frame-a", NodeID: "frame-a", Phase: search.SearchContinuationCatalogPhase},
+				{ID: "frame-b", NodeID: "frame-b", Phase: search.SearchContinuationCatalogPhase},
+			},
+		}},
+		QID: "qid-id", HasMore: true, Returned: 1,
+		Mode: search.SearchContinuationID, EligibleCount: &eligibleCount,
+		RankedPoolExhausted: true, Completion: search.SearchContinuationMoreResults,
+	}}}
+	svc, err := NewService(Config{OwnerFromContext: func(context.Context) string { return "sub:alice" }}, nil, nil, searcher)
+	require.NoError(t, err)
+
+	rankedLimit := uint64(25)
+	response, err := svc.SearchText(context.Background(), &gen.SearchTextRequest{
+		Mode: "id", GroupBy: "asset_id", RankedLimit: &rankedLimit, N: 1, Labels: []string{"Frame"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, search.SearchContinuationID, searcher.requests[0].Mode)
+	require.Equal(t, "asset_id", searcher.requests[0].GroupBy)
+	require.Equal(t, 25, searcher.requests[0].RankedLimit)
+	require.Len(t, response.Hits, 1)
+	require.Equal(t, "asset-a", response.Hits[0].GroupKey)
+	require.Equal(t, search.SearchContinuationCatalogPhase, response.Hits[0].Phase)
+	require.Len(t, response.Hits[0].Passages, 2)
+	require.Equal(t, "frame-a", response.Hits[0].Passages[0].NodeId)
+	require.Equal(t, "frame-b", response.Hits[0].Passages[1].NodeId)
+	require.Equal(t, "id", response.Mode)
+	require.NotNil(t, response.EligibleCount)
+	require.Equal(t, int64(2), *response.EligibleCount)
+	require.True(t, response.RankedPoolExhausted)
+	require.Equal(t, search.SearchContinuationMoreResults, response.Completion)
+}
+
 func TestService_SearchText_ErrorHandling(t *testing.T) {
 	t.Run("returns internal error when fallback search fails", func(t *testing.T) {
 		searcher := &stubSearcher{err: fmt.Errorf("search backend failed")}

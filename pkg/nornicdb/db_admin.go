@@ -877,8 +877,11 @@ func (db *DB) DeleteEdge(ctx context.Context, id string) error {
 
 // SearchResult holds a search result with score.
 type SearchResult struct {
-	Node  *Node   `json:"node"`
-	Score float64 `json:"score"`
+	Node     *Node           `json:"node"`
+	GroupKey string          `json:"group_key,omitempty"`
+	Phase    string          `json:"phase,omitempty"`
+	Passages []*SearchResult `json:"passages,omitempty"`
+	Score    float64         `json:"score"`
 
 	// RRF metadata (vector_rank/bm25_rank always emitted so clients see original
 	// ranks even when Stage-2 reranking is applied; 0 = not in that result set)
@@ -901,7 +904,7 @@ func MapSearchResponse(response *search.SearchResponse) []*SearchResult {
 }
 
 func mapSingleSearchResult(r search.SearchResult) *SearchResult {
-	return &SearchResult{
+	result := &SearchResult{
 		Node: &Node{
 			ID:         r.ID,
 			Labels:     r.Labels,
@@ -912,6 +915,20 @@ func mapSingleSearchResult(r search.SearchResult) *SearchResult {
 		VectorRank: r.VectorRank,
 		BM25Rank:   r.BM25Rank,
 	}
+	result.GroupKey = r.GroupKey
+	result.Phase = r.Phase
+	if len(r.Passages) > 0 {
+		result.Passages = make([]*SearchResult, len(r.Passages))
+		for index := range r.Passages {
+			passage := r.Passages[index]
+			result.Passages[index] = &SearchResult{
+				Node:  &Node{ID: passage.ID, Labels: passage.Labels, Properties: passage.Properties},
+				Phase: passage.Phase, Score: passage.Score, RRFScore: passage.RRFScore,
+				VectorRank: passage.VectorRank, BM25Rank: passage.BM25Rank,
+			}
+		}
+	}
+	return result
 }
 
 // Search performs full-text BM25 search.
@@ -1545,7 +1562,8 @@ func (db *DB) exportUserDataCSV(userData []map[string]interface{}) ([]byte, erro
 	// Write CSV header
 	headers := []string{"id", "labels", "created_at"}
 	headers = append(headers, sortedKeys...)
-	buf.WriteString(strings.Join(headers, ",") + "\n")
+	buf.WriteString(strings.Join(headers, ","))
+	buf.WriteByte('\n')
 
 	// Write data rows
 	for _, data := range userData {
@@ -1579,7 +1597,8 @@ func (db *DB) exportUserDataCSV(userData []map[string]interface{}) ([]byte, erro
 			}
 		}
 
-		buf.WriteString(strings.Join(row, ",") + "\n")
+		buf.WriteString(strings.Join(row, ","))
+		buf.WriteByte('\n')
 	}
 
 	return buf.Bytes(), nil

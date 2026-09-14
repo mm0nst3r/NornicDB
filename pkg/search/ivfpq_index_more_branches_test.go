@@ -22,7 +22,7 @@ func TestIVFPQIndex_SearchApproxMoreGuardBranches(t *testing.T) {
 		},
 	}
 
-	out, err := idx.SearchApprox(nil, []float32{1, 0}, -5, -1, -1)
+	out, err := idx.SearchApprox(context.Background(), []float32{1, 0}, -5, -1, -1)
 	require.NoError(t, err)
 	require.Empty(t, out)
 

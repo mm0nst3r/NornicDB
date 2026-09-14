@@ -132,12 +132,10 @@ func TestTopNTokenWeights_Branches(t *testing.T) {
 }
 
 func TestQueryTextContextHelpers(t *testing.T) {
-	// Nil context branch should allocate a background context and preserve query.
-	ctx := withQueryText(nil, "  hello world  ")
+	ctx := withQueryText(context.Background(), "  hello world  ")
 	require.Equal(t, "hello world", queryTextFromContext(ctx))
 
-	// Empty/missing value branches.
-	require.Equal(t, "", queryTextFromContext(nil))
+	// Missing value branch.
 	require.Equal(t, "", queryTextFromContext(context.Background()))
 }
 

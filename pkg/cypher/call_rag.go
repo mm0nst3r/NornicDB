@@ -186,14 +186,17 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 	qid := stringOr(req["qid"], "")
 	discard, _ := toBool(req["discard"])
 	n, nPresent := toInt(req["n"])
-	continuationRequested := qid != "" || discard || nPresent
+	mode := search.SearchContinuationMode(strings.ToLower(strings.TrimSpace(stringOr(req["mode"], ""))))
+	groupBy := stringOr(firstPresent(req, "groupBy", "group_by"), "")
+	rankedLimit, rankedLimitPresent := toInt(firstPresent(req, "rankedLimit", "ranked_limit"))
+	continuationRequested := qid != "" || discard || nPresent || mode != "" || groupBy != "" || rankedLimitPresent
 	if qid != "" && !nPresent {
 		n = 50
 	}
 	if continuationRequested && !discard && n <= 0 {
 		return nil, fmt.Errorf("n must be positive")
 	}
-	if strings.TrimSpace(query) == "" && qid == "" {
+	if strings.TrimSpace(query) == "" && qid == "" && mode != search.SearchContinuationID {
 		return nil, localizedError(localization.CypherSubqueriesQueryRequired(), nil)
 	}
 
@@ -248,6 +251,11 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 		QID:      qid,
 		N:        n,
 		Discard:  discard,
+		Mode:     mode,
+		GroupBy:  groupBy,
+	}
+	if rankedLimit > 0 {
+		continuationRequest.RankedLimit = rankedLimit
 	}
 	if maxResults, ok := toInt(firstPresent(req, "maxResults", "max_results")); ok && maxResults > 0 {
 		continuationRequest.MaxResults = maxResults
@@ -255,6 +263,15 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 	if qid != "" {
 		page, continuationErr := ensureSearchService(nil).SearchTextContinuation(
 			ctx, "", nil, continuationRequest, nil, nil, nil, search.ChunkedSearchErrorPolicy{},
+		)
+		if continuationErr != nil {
+			return nil, continuationErr
+		}
+		return executeSearchContinuationPage(page), nil
+	}
+	if mode == search.SearchContinuationID {
+		page, continuationErr := ensureSearchService(nil).SearchTextContinuation(
+			ctx, "", opts, continuationRequest, nil, nil, nil, search.ChunkedSearchErrorPolicy{},
 		)
 		if continuationErr != nil {
 			return nil, continuationErr
@@ -375,15 +392,34 @@ func executeSearchContinuationPage(page *search.SearchContinuationPage) *Execute
 	results := make([]interface{}, 0, len(page.Results))
 	for index := range page.Results {
 		result := page.Results[index]
-		results = append(results, map[string]interface{}{
+		mapped := map[string]interface{}{
 			"node":  &storage.Node{ID: storage.NodeID(result.ID), Labels: result.Labels, Properties: result.Properties},
 			"score": result.Score, "rrf_score": result.RRFScore,
 			"vector_rank": int64(result.VectorRank), "bm25_rank": int64(result.BM25Rank),
-		})
+			"group_key": result.GroupKey, "phase": result.Phase,
+		}
+		if len(result.Passages) > 0 {
+			passages := make([]interface{}, len(result.Passages))
+			for passageIndex := range result.Passages {
+				passage := result.Passages[passageIndex]
+				passages[passageIndex] = map[string]interface{}{
+					"node":  &storage.Node{ID: storage.NodeID(passage.ID), Labels: passage.Labels, Properties: passage.Properties},
+					"score": passage.Score, "rrf_score": passage.RRFScore,
+					"vector_rank": int64(passage.VectorRank), "bm25_rank": int64(passage.BM25Rank),
+					"phase": passage.Phase,
+				}
+			}
+			mapped["passages"] = passages
+		}
+		results = append(results, mapped)
 	}
 	var total interface{}
 	if page.Total != nil {
 		total = int64(*page.Total)
+	}
+	var eligibleCount interface{}
+	if page.EligibleCount != nil {
+		eligibleCount = int64(*page.EligibleCount)
 	}
 	return &ExecuteResult{
 		Columns: []string{"page"},
@@ -394,6 +430,9 @@ func executeSearchContinuationPage(page *search.SearchContinuationPage) *Execute
 			"expires_at": page.ExpiresAt.UTC().Format(time.RFC3339Nano),
 			"released":   page.Released, "search_method": page.SearchMethod,
 			"fallback_triggered": page.FallbackTriggered,
+			"mode":               string(page.Mode), "ranked_count": int64(page.RankedCount),
+			"eligible_count": eligibleCount, "ranked_pool_exhausted": page.RankedPoolExhausted,
+			"collection_exhausted": page.CollectionExhausted, "completion": page.Completion,
 		}}},
 	}
 }

@@ -3,36 +3,61 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/orneryd/nornicdb/pkg/resultstream"
 )
 
+type SearchContinuationMode string
+
+const (
+	SearchContinuationRanked       SearchContinuationMode = "ranked"
+	SearchContinuationRankedThenID SearchContinuationMode = "ranked_then_id"
+	SearchContinuationID           SearchContinuationMode = "id"
+
+	SearchContinuationRankedPhase  = "ranked"
+	SearchContinuationCatalogPhase = "catalog"
+
+	SearchContinuationMoreResults        = "more_results"
+	SearchContinuationCandidateComplete  = "candidate_pool_exhausted"
+	SearchContinuationCollectionComplete = "eligible_population_exhausted"
+)
+
 // SearchContinuationRequest controls one start, pull, or discard operation.
 // Limit belongs to SearchOptions and is only the initial retrieval depth.
 type SearchContinuationRequest struct {
-	Owner      string
-	Database   string
-	QID        string
-	N          int
-	Discard    bool
-	MaxResults int
+	Owner       string
+	Database    string
+	QID         string
+	N           int
+	Discard     bool
+	MaxResults  int
+	Mode        SearchContinuationMode
+	GroupBy     string
+	RankedLimit int
 }
 
 // SearchContinuationPage is the protocol-neutral continued-search response.
 type SearchContinuationPage struct {
-	Results           []SearchResult
-	QID               string
-	HasMore           bool
-	Position          uint64
-	Returned          int
-	Discovered        int
-	Total             *uint64
-	ExpiresAt         time.Time
-	Released          bool
-	SearchMethod      string
-	FallbackTriggered bool
+	Results             []SearchResult
+	QID                 string
+	HasMore             bool
+	Position            uint64
+	Returned            int
+	Discovered          int
+	Total               *uint64
+	ExpiresAt           time.Time
+	Released            bool
+	SearchMethod        string
+	FallbackTriggered   bool
+	Mode                SearchContinuationMode
+	RankedCount         int
+	EligibleCount       *int
+	RankedPoolExhausted bool
+	CollectionExhausted bool
+	Completion          string
 }
 
 type continuationRegistry interface {
@@ -103,6 +128,65 @@ func (s *Service) SearchTextContinuation(
 			return nil, err
 		}
 		return searchPageFromResultStream(page)
+	}
+	if request.Mode == "" {
+		request.Mode = SearchContinuationRanked
+	}
+	if request.Mode == SearchContinuationID {
+		if opts == nil {
+			opts = DefaultSearchOptions()
+		}
+		stream, err := s.newIDContinuationStream(ctx, cloneContinuationSearchOptions(opts), request)
+		if err != nil {
+			return nil, err
+		}
+		page, err := registry.Start(ctx, scope, stream, request.N)
+		if err != nil {
+			return nil, err
+		}
+		return searchPageFromResultStream(page)
+	}
+	if request.Mode == SearchContinuationRankedThenID {
+		if searchQuery == nil {
+			return nil, errors.New("ranked_then_id continuation requires a search function")
+		}
+		if opts == nil {
+			opts = DefaultSearchOptions()
+		}
+		ownedOptions := cloneContinuationSearchOptions(opts)
+		rankedLimit := request.RankedLimit
+		if rankedLimit <= 0 {
+			rankedLimit = ownedOptions.MaxCandidateLimit
+			if rankedLimit <= 0 {
+				rankedLimit = DefaultSearchOptions().MaxCandidateLimit
+			}
+		}
+		ownedOptions.Limit = rankedLimit
+		preparation := &cachedTextPreparation{embeds: make(map[string]cachedEmbedding)}
+		ranked, err := SearchTextChunksWithErrorPolicy(
+			ctx,
+			query,
+			&ownedOptions,
+			preparation.chunker(chunkQuery),
+			preparation.embedder(embedQuery),
+			searchQuery,
+			errorPolicy,
+		)
+		if err != nil {
+			return nil, err
+		}
+		stream, err := s.newCompleteContinuationStream(ctx, ownedOptions, request, ranked)
+		if err != nil {
+			return nil, err
+		}
+		page, err := registry.Start(ctx, scope, stream, request.N)
+		if err != nil {
+			return nil, err
+		}
+		return searchPageFromResultStream(page)
+	}
+	if request.Mode != SearchContinuationRanked {
+		return nil, fmt.Errorf("unsupported continuation mode %q", request.Mode)
 	}
 	if searchQuery == nil {
 		return nil, errors.New("search continuation requires a search function")
@@ -292,6 +376,16 @@ func searchPageFromResultStream(page *resultstream.Page) (*SearchContinuationPag
 		out.SearchMethod, _ = page.Metadata["search_method"].(string)
 		out.FallbackTriggered, _ = page.Metadata["fallback_triggered"].(bool)
 		out.Discovered, _ = page.Metadata["discovered"].(int)
+		if mode, ok := page.Metadata["mode"].(SearchContinuationMode); ok {
+			out.Mode = mode
+		} else if mode, ok := page.Metadata["mode"].(string); ok {
+			out.Mode = SearchContinuationMode(mode)
+		}
+		out.RankedCount, _ = page.Metadata["ranked_count"].(int)
+		out.EligibleCount, _ = page.Metadata["eligible_count"].(*int)
+		out.RankedPoolExhausted, _ = page.Metadata["ranked_pool_exhausted"].(bool)
+		out.CollectionExhausted, _ = page.Metadata["collection_exhausted"].(bool)
+		out.Completion, _ = page.Metadata["completion"].(string)
 	}
 	return out, nil
 }

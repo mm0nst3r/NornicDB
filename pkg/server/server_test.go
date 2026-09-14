@@ -1526,6 +1526,89 @@ func TestHandleSearchContinuationBeyondInitialLimit(t *testing.T) {
 	require.True(t, released.Released)
 }
 
+func TestHandleSearchIDContinuationGroupsAllPassages(t *testing.T) {
+	server, auth := setupTestServer(t)
+	token := getAuthToken(t, auth, "admin")
+	database := server.dbManager.DefaultDatabaseName()
+	engine, err := server.dbManager.GetStorage(database)
+	require.NoError(t, err)
+
+	for _, node := range []*storage.Node{
+		{ID: "frame-c", Labels: []string{"Frame"}, Properties: map[string]any{"collection": "summer", "asset_id": "asset-b"}},
+		{ID: "frame-b", Labels: []string{"Frame"}, Properties: map[string]any{"collection": "summer", "asset_id": "asset-a"}},
+		{ID: "frame-a", Labels: []string{"Frame"}, Properties: map[string]any{"collection": "summer", "asset_id": "asset-a"}},
+		{ID: "winter", Labels: []string{"Frame"}, Properties: map[string]any{"collection": "winter", "asset_id": "asset-c"}},
+	} {
+		_, err := engine.CreateNode(node)
+		require.NoError(t, err)
+	}
+
+	start := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]any{
+		"database": database,
+		"mode":     "id",
+		"group_by": "asset_id",
+		"labels":   []string{"Frame"},
+		"filters":  map[string][]string{"collection": {"summer"}},
+		"n":        1,
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	var first struct {
+		Results []struct {
+			Node struct {
+				ID string `json:"id"`
+			} `json:"node"`
+			GroupKey string `json:"group_key"`
+			Phase    string `json:"phase"`
+			Passages []struct {
+				Node struct {
+					ID string `json:"id"`
+				} `json:"node"`
+				Phase string `json:"phase"`
+			} `json:"passages"`
+		} `json:"results"`
+		QID                 string `json:"qid"`
+		Mode                string `json:"mode"`
+		EligibleCount       int    `json:"eligible_count"`
+		CollectionExhausted bool   `json:"collection_exhausted"`
+		RankedPoolExhausted bool   `json:"ranked_pool_exhausted"`
+	}
+	require.NoError(t, json.NewDecoder(start.Body).Decode(&first))
+	require.Len(t, first.Results, 1)
+	require.Equal(t, "frame-a", first.Results[0].Node.ID)
+	require.Equal(t, "asset-a", first.Results[0].GroupKey)
+	require.Equal(t, "catalog", first.Results[0].Phase)
+	require.Equal(t, []string{"frame-a", "frame-b"}, []string{
+		first.Results[0].Passages[0].Node.ID,
+		first.Results[0].Passages[1].Node.ID,
+	})
+	require.Equal(t, "id", first.Mode)
+	require.Equal(t, 2, first.EligibleCount)
+	require.True(t, first.RankedPoolExhausted)
+	require.False(t, first.CollectionExhausted)
+	require.NotEmpty(t, first.QID)
+
+	pull := makeRequest(t, server, http.MethodPost, "/nornicdb/search", map[string]any{
+		"database": database,
+		"qid":      first.QID,
+		"n":        1,
+	}, "Bearer "+token)
+	require.Equal(t, http.StatusOK, pull.Code, pull.Body.String())
+	var last struct {
+		Results []struct {
+			GroupKey string `json:"group_key"`
+		} `json:"results"`
+		QID                 string `json:"qid"`
+		Completion          string `json:"completion"`
+		CollectionExhausted bool   `json:"collection_exhausted"`
+	}
+	require.NoError(t, json.NewDecoder(pull.Body).Decode(&last))
+	require.Len(t, last.Results, 1)
+	require.Equal(t, "asset-b", last.Results[0].GroupKey)
+	require.Empty(t, last.QID)
+	require.Equal(t, "eligible_population_exhausted", last.Completion)
+	require.True(t, last.CollectionExhausted)
+}
+
 // TestHandleSearch_FiltersParameter verifies that the `filters` field is accepted in the
 // request body and that results are restricted to nodes matching the filter.
 func TestHandleSearch_FiltersParameter(t *testing.T) {

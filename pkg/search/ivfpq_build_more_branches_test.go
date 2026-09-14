@@ -13,7 +13,7 @@ import (
 func TestBuildIVFPQFromVectorStore_InputValidationBranches(t *testing.T) {
 	profile := IVFPQProfile{Dimensions: 4, IVFLists: 2, PQSegments: 2, PQBits: 2, TrainingSampleMax: 4, KMeansMaxIterations: 2}
 
-	_, _, err := BuildIVFPQFromVectorStore(nil, nil, profile, nil)
+	_, _, err := BuildIVFPQFromVectorStore(context.Background(), nil, profile, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "vector file store")
 
