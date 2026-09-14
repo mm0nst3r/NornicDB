@@ -42,7 +42,7 @@ func (s coverageExactScorer) ScoreCandidates(ctx context.Context, query []float3
 func TestVectorPipelineExtraCandidateLimitAndScorers(t *testing.T) {
 	require.Equal(t, 0, boundCandidateLimit(0))
 	require.Equal(t, 5, boundCandidateLimit(5))
-	require.Equal(t, MaxCandidates, boundCandidateLimit(MaxCandidates+1))
+	require.Equal(t, 10_000, boundCandidateLimit(10_000))
 
 	identity := &IdentityExactScorer{}
 	scored, err := identity.ScoreCandidates(context.Background(), nil, []Candidate{{ID: "low", Score: 0.1}, {ID: "high", Score: 0.9}})

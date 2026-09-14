@@ -30,9 +30,25 @@ flat property containing a nonempty UTF-8 string. Grouping happens before
 pagination: one logical asset consumes one page slot, while its ordered
 `passages` collection retains matching child nodes.
 
-`ranked_pool_exhausted` is conservative. It is `true` for `id` mode and when a
-ranked branch returns fewer rows than its requested depth. It remains `false`
-when `ranked_limit` is filled because more ranked candidates may exist.
+`ranked_pool_exhausted` is conservative. It is `true` for `id` mode or when all
+participating retrieval branches establish exhaustion without truncating their
+candidate prefixes. A short approximate, filtered, or fused result does not
+establish exhaustion. `ranked_limit` still selects a fixed ranked prefix; it
+does not prove that further ranked candidates do not exist.
+
+Progressive ranked continuation deepens short batches using the prepared query
+embeddings, including each chunk of a multi-chunk query. The engine does not
+impose an arbitrary candidate ceiling: retrieval may deepen to the searchable
+population. Go and Cypher callers may set `MaxCandidateLimit` to impose a lower
+per-request budget. If that budget is reached without proven exhaustion or the
+requested `max_results`, the operation fails with the existing capacity error
+instead of returning a falsely exhausted page. HNSW establishes exhaustion only
+when its pre-filter candidate heap covers the live index (excluding deleted
+entries) and the returned prefix is not truncated. Unavailable embedding or
+retrieval branches do not prevent an exact, selected BM25 fallback from
+completing. Other approximate generators that cannot establish coverage may
+reach a configured capacity limit even when a deeper request returns no
+additional results. Replaying that request does not increase its budget.
 
 ## HTTP
 

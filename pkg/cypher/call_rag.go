@@ -398,6 +398,9 @@ func executeSearchContinuationPage(page *search.SearchContinuationPage) *Execute
 			"vector_rank": int64(result.VectorRank), "bm25_rank": int64(result.BM25Rank),
 			"group_key": result.GroupKey, "phase": result.Phase,
 		}
+		for key, value := range continuationResultMetadata(result) {
+			mapped[key] = value
+		}
 		if len(result.Passages) > 0 {
 			passages := make([]interface{}, len(result.Passages))
 			for passageIndex := range result.Passages {
@@ -407,6 +410,9 @@ func executeSearchContinuationPage(page *search.SearchContinuationPage) *Execute
 					"score": passage.Score, "rrf_score": passage.RRFScore,
 					"vector_rank": int64(passage.VectorRank), "bm25_rank": int64(passage.BM25Rank),
 					"phase": passage.Phase,
+				}
+				for key, value := range continuationResultMetadata(passage) {
+					passages[passageIndex].(map[string]interface{})[key] = value
 				}
 			}
 			mapped["passages"] = passages
@@ -435,8 +441,16 @@ func executeSearchContinuationPage(page *search.SearchContinuationPage) *Execute
 			"collection_exhausted": page.CollectionExhausted, "completion": page.Completion,
 		}}},
 	}
+	metadata := continuationResultMetadata(page.SearchResponse())
+	for key, value := range metadata {
+		result.Rows[0][0].(map[string]interface{})[key] = value
+	}
+	result.Metadata = metadata
 	if page.QID != "" {
-		result.Metadata = map[string]interface{}{"durable_qid": page.QID}
+		if result.Metadata == nil {
+			result.Metadata = make(map[string]interface{})
+		}
+		result.Metadata["durable_qid"] = page.QID
 	}
 	return result
 }
@@ -585,7 +599,7 @@ func isIntegral(value float64) bool {
 
 func validateFailClosedNumericPolicy(req map[string]interface{}) error {
 	inCandidateRange := func(v float64) bool {
-		return isIntegral(v) && v >= 1 && v <= float64(search.MaxCandidates)
+		return isIntegral(v) && v >= 1 && v <= float64(int(^uint(0)>>1))
 	}
 	checks := []struct {
 		field string
@@ -770,4 +784,11 @@ func parseRerankCandidates(raw interface{}) ([]search.RerankCandidate, error) {
 		})
 	}
 	return out, nil
+}
+
+func continuationResultMetadata(value any) map[string]any {
+	if provider, ok := value.(interface{ ResultMetadata() map[string]any }); ok {
+		return provider.ResultMetadata()
+	}
+	return nil
 }

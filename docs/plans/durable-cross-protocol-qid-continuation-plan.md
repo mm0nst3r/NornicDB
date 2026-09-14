@@ -303,12 +303,12 @@ does not retain index locks or mutable index iterators across requests. It must
 be hidden behind a producer interface so BM25 keyset iteration and safe
 vector-index frontier snapshots can replace repeated work after profiling.
 
-The current `MaxCandidates` and `maxChunkCandidateLimit` constants are ordinary
-one-shot search safeguards, not valid lifetime ceilings for a continued stream.
-Continuation uses separate checked depth limits up to the current searchable
-cardinality. Candidate-generator implementations must report whether a returned
-prefix is exhausted; a short approximate response must not be presented as
-proof that the corpus is exhausted.
+The `maxChunkCandidateLimit` constant is an ordinary one-shot search safeguard,
+not a valid lifetime ceiling for a continued stream. Candidate depth may grow to
+the current searchable cardinality unless a caller supplies a lower
+`MaxCandidateLimit`. Candidate-generator implementations must report whether a
+returned prefix is exhausted; a short approximate response must not be
+presented as proof that the corpus is exhausted.
 
 If all retrieval branches establish exhaustion and the requested first page
 consumes every result, return it directly without registering a durable stream.

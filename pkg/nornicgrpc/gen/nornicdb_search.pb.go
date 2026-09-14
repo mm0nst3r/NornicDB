@@ -37,19 +37,24 @@ type SearchTextRequest struct {
 	// Optional similarity threshold for vector search. When unset, the server's
 	// configured default threshold applies.
 	MinSimilarity *float32 `protobuf:"fixed32,5,opt,name=min_similarity,json=minSimilarity,proto3,oneof" json:"min_similarity,omitempty"`
-	// Opaque durable result-stream identifier. Empty starts a new search.
+	// Opaque signed result-stream token returned by a partial page. Empty starts
+	// a new search. The token is bound to the authenticated owner and database.
 	Qid string `protobuf:"bytes,6,opt,name=qid,proto3" json:"qid,omitempty"`
-	// Maximum records to return from this start or pull operation.
+	// Maximum logical results to return from this start or pull operation. This
+	// is a page size, not the ranked retrieval depth or lifetime result ceiling.
 	N uint32 `protobuf:"varint,7,opt,name=n,proto3" json:"n,omitempty"`
-	// Release the stream identified by qid without returning records.
+	// Release the complete stream identified by qid without returning records.
 	Discard bool `protobuf:"varint,8,opt,name=discard,proto3" json:"discard,omitempty"`
 	// Optional caller-selected cumulative result ceiling. Zero means no caller ceiling.
 	MaxResults *uint64 `protobuf:"varint,9,opt,name=max_results,json=maxResults,proto3,oneof" json:"max_results,omitempty"`
-	// Continuation mode: ranked, ranked_then_id, or id.
+	// Continuation mode: ranked progressively deepens ranked retrieval;
+	// ranked_then_id emits a ranked prefix then the eligible catalogue; id
+	// bypasses ranking and enumerates the eligible catalogue.
 	Mode string `protobuf:"bytes,10,opt,name=mode,proto3" json:"mode,omitempty"`
-	// Optional string property used to collapse child records into logical assets.
+	// Optional flat nonempty UTF-8 string property used to collapse eligible
+	// child records into logical assets before pagination.
 	GroupBy string `protobuf:"bytes,11,opt,name=group_by,json=groupBy,proto3" json:"group_by,omitempty"`
-	// Optional ranked candidate boundary for ranked_then_id mode.
+	// Optional fixed ranked-prefix boundary for ranked_then_id mode.
 	RankedLimit   *uint64 `protobuf:"varint,12,opt,name=ranked_limit,json=rankedLimit,proto3,oneof" json:"ranked_limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -170,15 +175,16 @@ func (x *SearchTextRequest) GetRankedLimit() uint64 {
 }
 
 type SearchPassage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Labels        []string               `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty"`
-	Properties    *structpb.Struct       `protobuf:"bytes,3,opt,name=properties,proto3" json:"properties,omitempty"`
-	Score         float32                `protobuf:"fixed32,4,opt,name=score,proto3" json:"score,omitempty"`
-	RrfScore      float32                `protobuf:"fixed32,5,opt,name=rrf_score,json=rrfScore,proto3" json:"rrf_score,omitempty"`
-	VectorRank    int32                  `protobuf:"varint,6,opt,name=vector_rank,json=vectorRank,proto3" json:"vector_rank,omitempty"`
-	Bm25Rank      int32                  `protobuf:"varint,7,opt,name=bm25_rank,json=bm25Rank,proto3" json:"bm25_rank,omitempty"`
-	Phase         string                 `protobuf:"bytes,8,opt,name=phase,proto3" json:"phase,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	NodeId     string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Labels     []string               `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty"`
+	Properties *structpb.Struct       `protobuf:"bytes,3,opt,name=properties,proto3" json:"properties,omitempty"`
+	Score      float32                `protobuf:"fixed32,4,opt,name=score,proto3" json:"score,omitempty"`
+	RrfScore   float32                `protobuf:"fixed32,5,opt,name=rrf_score,json=rrfScore,proto3" json:"rrf_score,omitempty"`
+	VectorRank int32                  `protobuf:"varint,6,opt,name=vector_rank,json=vectorRank,proto3" json:"vector_rank,omitempty"`
+	Bm25Rank   int32                  `protobuf:"varint,7,opt,name=bm25_rank,json=bm25Rank,proto3" json:"bm25_rank,omitempty"`
+	// ranked for a ranked child or catalog for an unscored catalogue child.
+	Phase         string `protobuf:"bytes,8,opt,name=phase,proto3" json:"phase,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -277,11 +283,14 @@ type SearchHit struct {
 	// Unified score used for ranking (usually RRF score for hybrid search).
 	Score float32 `protobuf:"fixed32,4,opt,name=score,proto3" json:"score,omitempty"`
 	// Optional metadata for explainability/diagnostics.
-	RrfScore      float32          `protobuf:"fixed32,5,opt,name=rrf_score,json=rrfScore,proto3" json:"rrf_score,omitempty"`
-	VectorRank    int32            `protobuf:"varint,6,opt,name=vector_rank,json=vectorRank,proto3" json:"vector_rank,omitempty"`
-	Bm25Rank      int32            `protobuf:"varint,7,opt,name=bm25_rank,json=bm25Rank,proto3" json:"bm25_rank,omitempty"`
-	Phase         string           `protobuf:"bytes,8,opt,name=phase,proto3" json:"phase,omitempty"`
-	GroupKey      string           `protobuf:"bytes,9,opt,name=group_key,json=groupKey,proto3" json:"group_key,omitempty"`
+	RrfScore   float32 `protobuf:"fixed32,5,opt,name=rrf_score,json=rrfScore,proto3" json:"rrf_score,omitempty"`
+	VectorRank int32   `protobuf:"varint,6,opt,name=vector_rank,json=vectorRank,proto3" json:"vector_rank,omitempty"`
+	Bm25Rank   int32   `protobuf:"varint,7,opt,name=bm25_rank,json=bm25Rank,proto3" json:"bm25_rank,omitempty"`
+	Phase      string  `protobuf:"bytes,8,opt,name=phase,proto3" json:"phase,omitempty"`
+	// Logical property value when group_by was requested.
+	GroupKey string `protobuf:"bytes,9,opt,name=group_key,json=groupKey,proto3" json:"group_key,omitempty"`
+	// Matching child results. One parent hit consumes one page slot regardless
+	// of the number of passages.
 	Passages      []*SearchPassage `protobuf:"bytes,10,rep,name=passages,proto3" json:"passages,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -388,27 +397,31 @@ func (x *SearchHit) GetPassages() []*SearchPassage {
 }
 
 type SearchTextResponse struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	SearchMethod        string                 `protobuf:"bytes,1,opt,name=search_method,json=searchMethod,proto3" json:"search_method,omitempty"`
-	Hits                []*SearchHit           `protobuf:"bytes,2,rep,name=hits,proto3" json:"hits,omitempty"`
-	FallbackTriggered   bool                   `protobuf:"varint,3,opt,name=fallback_triggered,json=fallbackTriggered,proto3" json:"fallback_triggered,omitempty"`
-	Message             string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
-	TimeSeconds         float64                `protobuf:"fixed64,5,opt,name=time_seconds,json=timeSeconds,proto3" json:"time_seconds,omitempty"`
-	Qid                 string                 `protobuf:"bytes,6,opt,name=qid,proto3" json:"qid,omitempty"`
-	HasMore             bool                   `protobuf:"varint,7,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
-	Position            uint64                 `protobuf:"varint,8,opt,name=position,proto3" json:"position,omitempty"`
-	Returned            uint32                 `protobuf:"varint,9,opt,name=returned,proto3" json:"returned,omitempty"`
-	Total               *uint64                `protobuf:"varint,10,opt,name=total,proto3,oneof" json:"total,omitempty"`
-	ExpiresAt           *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	Released            bool                   `protobuf:"varint,12,opt,name=released,proto3" json:"released,omitempty"`
-	Mode                string                 `protobuf:"bytes,13,opt,name=mode,proto3" json:"mode,omitempty"`
-	RankedCount         int64                  `protobuf:"varint,14,opt,name=ranked_count,json=rankedCount,proto3" json:"ranked_count,omitempty"`
-	EligibleCount       *int64                 `protobuf:"varint,15,opt,name=eligible_count,json=eligibleCount,proto3,oneof" json:"eligible_count,omitempty"`
-	RankedPoolExhausted bool                   `protobuf:"varint,16,opt,name=ranked_pool_exhausted,json=rankedPoolExhausted,proto3" json:"ranked_pool_exhausted,omitempty"`
-	CollectionExhausted bool                   `protobuf:"varint,17,opt,name=collection_exhausted,json=collectionExhausted,proto3" json:"collection_exhausted,omitempty"`
-	Completion          string                 `protobuf:"bytes,18,opt,name=completion,proto3" json:"completion,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	SearchMethod      string                 `protobuf:"bytes,1,opt,name=search_method,json=searchMethod,proto3" json:"search_method,omitempty"`
+	Hits              []*SearchHit           `protobuf:"bytes,2,rep,name=hits,proto3" json:"hits,omitempty"`
+	FallbackTriggered bool                   `protobuf:"varint,3,opt,name=fallback_triggered,json=fallbackTriggered,proto3" json:"fallback_triggered,omitempty"`
+	Message           string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	TimeSeconds       float64                `protobuf:"fixed64,5,opt,name=time_seconds,json=timeSeconds,proto3" json:"time_seconds,omitempty"`
+	// Token for the next position; empty when exhausted or released.
+	Qid      string `protobuf:"bytes,6,opt,name=qid,proto3" json:"qid,omitempty"`
+	HasMore  bool   `protobuf:"varint,7,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
+	Position uint64 `protobuf:"varint,8,opt,name=position,proto3" json:"position,omitempty"`
+	Returned uint32 `protobuf:"varint,9,opt,name=returned,proto3" json:"returned,omitempty"`
+	// Known for complete modes; omitted while progressive ranked cardinality is unknown.
+	Total         *uint64                `protobuf:"varint,10,opt,name=total,proto3,oneof" json:"total,omitempty"`
+	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	Released      bool                   `protobuf:"varint,12,opt,name=released,proto3" json:"released,omitempty"`
+	Mode          string                 `protobuf:"bytes,13,opt,name=mode,proto3" json:"mode,omitempty"`
+	RankedCount   int64                  `protobuf:"varint,14,opt,name=ranked_count,json=rankedCount,proto3" json:"ranked_count,omitempty"`
+	EligibleCount *int64                 `protobuf:"varint,15,opt,name=eligible_count,json=eligibleCount,proto3,oneof" json:"eligible_count,omitempty"`
+	// True only when the ranked branch returned fewer rows than its requested depth.
+	RankedPoolExhausted bool `protobuf:"varint,16,opt,name=ranked_pool_exhausted,json=rankedPoolExhausted,proto3" json:"ranked_pool_exhausted,omitempty"`
+	CollectionExhausted bool `protobuf:"varint,17,opt,name=collection_exhausted,json=collectionExhausted,proto3" json:"collection_exhausted,omitempty"`
+	// more_results, candidate_pool_exhausted, or eligible_population_exhausted.
+	Completion    string `protobuf:"bytes,18,opt,name=completion,proto3" json:"completion,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SearchTextResponse) Reset() {

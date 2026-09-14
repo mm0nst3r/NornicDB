@@ -189,7 +189,7 @@ func TestBoundCandidateLimit(t *testing.T) {
 		{"small k", 5, 5},
 		{"medium k", 20, 20},
 		{"large k", 100, 100},
-		{"very large k", 5001, MaxCandidates},
+		{"above former engine ceiling", 5001, 5001},
 		{"zero k", 0, 0},
 		{"negative k", -1, 0},
 	}

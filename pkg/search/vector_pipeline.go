@@ -25,9 +25,6 @@ const (
 	// search. Zero makes HNSW the default unless NORNICDB_VECTOR_CPU_BRUTE_MAX_N
 	// opts into CPU brute-force for datasets below that threshold.
 	NSmallMax = 0
-
-	// MaxCandidates is the hard cap on candidate set size.
-	MaxCandidates = 5000
 )
 
 func cpuBruteForceMaxN() int {
@@ -204,6 +201,11 @@ func NewHNSWCandidateGen(hnswIndex *HNSWIndex) *HNSWCandidateGen {
 
 // SearchCandidates generates candidates using HNSW approximate search.
 func (h *HNSWCandidateGen) SearchCandidates(ctx context.Context, query []float32, k int, minSimilarity float64) ([]Candidate, error) {
+	candidates, _, err := h.searchCandidatesWithExhaustion(ctx, query, k, minSimilarity)
+	return candidates, err
+}
+
+func (h *HNSWCandidateGen) searchCandidatesWithExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64) ([]Candidate, bool, error) {
 	candidateLimit := boundCandidateLimit(k)
 	resultLimit := candidateLimit
 	searchBeam := h.hnswIndex.config.EfSearch
@@ -211,9 +213,9 @@ func (h *HNSWCandidateGen) SearchCandidates(ctx context.Context, query []float32
 		searchBeam = resultLimit
 	}
 
-	results, err := h.hnswIndex.SearchWithEf(ctx, query, resultLimit, minSimilarity, searchBeam)
+	results, exhausted, err := h.hnswIndex.searchWithEfExhaustion(ctx, query, resultLimit, minSimilarity, searchBeam)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	candidates := make([]Candidate, len(results))
@@ -224,7 +226,7 @@ func (h *HNSWCandidateGen) SearchCandidates(ctx context.Context, query []float32
 		}
 	}
 
-	return candidates, nil
+	return candidates, exhausted, nil
 }
 
 // VectorGetter is implemented by *VectorIndex and by adapters for VectorLookup (e.g. file-backed store).
@@ -382,7 +384,7 @@ func boundCandidateLimit(k int) int {
 	if k <= 0 {
 		return 0
 	}
-	return min(k, MaxCandidates)
+	return k
 }
 
 // VectorSearchPipeline implements the unified vector search pipeline.
@@ -417,20 +419,39 @@ func NewVectorSearchPipeline(candidateGen CandidateGenerator, exactScorer ExactS
 //   - candidates: Top-k candidates with exact scores
 //   - error: Context cancellation or other errors
 func (p *VectorSearchPipeline) Search(ctx context.Context, query []float32, k int, minSimilarity float64) ([]ScoredCandidate, error) {
+	results, _, err := p.searchWithExhaustion(ctx, query, k, minSimilarity)
+	return results, err
+}
+
+func (p *VectorSearchPipeline) searchWithExhaustion(ctx context.Context, query []float32, k int, minSimilarity float64) ([]ScoredCandidate, bool, error) {
 	// Stage 1: Candidate generation
-	candidates, err := p.candidateGen.SearchCandidates(ctx, query, k, minSimilarity)
+	var candidates []Candidate
+	var exhausted bool
+	var err error
+	if generator, ok := p.candidateGen.(*HNSWCandidateGen); ok {
+		candidates, exhausted, err = generator.searchCandidatesWithExhaustion(ctx, query, k, minSimilarity)
+	} else {
+		candidates, err = p.candidateGen.SearchCandidates(ctx, query, k, minSimilarity)
+	}
 	if err != nil {
-		return nil, localizedError(localization.SearchCandidateGenerationFailed(err), err)
+		return nil, false, localizedError(localization.SearchCandidateGenerationFailed(err), err)
+	}
+	// Only generators that scan the whole vector population can establish
+	// exhaustion from a short prefix. ANN may return short even when deeper
+	// exploration can discover more candidates.
+	switch p.candidateGen.(type) {
+	case *BruteForceCandidateGen, *FileStoreBruteForceCandidateGen, *GPUBruteForceCandidateGen:
+		exhausted = len(candidates) < boundCandidateLimit(k)
 	}
 
 	if len(candidates) == 0 {
-		return []ScoredCandidate{}, nil
+		return []ScoredCandidate{}, exhausted, nil
 	}
 
 	// Stage 2: Exact scoring
 	scored, err := p.exactScorer.ScoreCandidates(ctx, query, candidates)
 	if err != nil {
-		return nil, localizedError(localization.SearchExactScoringFailed(err), err)
+		return nil, false, localizedError(localization.SearchExactScoringFailed(err), err)
 	}
 
 	// Stage 3+4: Since scored is descending, apply threshold and top-k in one pass.
@@ -451,5 +472,5 @@ func (p *VectorSearchPipeline) Search(ctx context.Context, query []float32, k in
 			break
 		}
 	}
-	return filtered, nil
+	return filtered, exhausted, nil
 }

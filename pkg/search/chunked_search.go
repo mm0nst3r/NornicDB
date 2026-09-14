@@ -94,6 +94,12 @@ func SearchTextChunksWithErrorPolicy(
 
 	chunkOpts := *opts
 	chunkOpts.Limit = chunkCandidateLimit(opts.Limit)
+	if opts.continuation {
+		// Continued queries deepen every chunk, rather than repeatedly searching
+		// the same one-shot top-100 prefix.
+		chunkOpts.Limit = max(chunkOpts.Limit, opts.Limit)
+	}
+	exhausted := true
 	var (
 		fusedIndexes map[string]int
 		fused        []fusedResult
@@ -104,6 +110,8 @@ func SearchTextChunksWithErrorPolicy(
 			return nil, err
 		}
 		if err != nil || len(embedding) == 0 {
+			// Unavailable preparation does not participate in the selected search;
+			// the canonical fallback (or other successful chunks) owns its result.
 			continue
 		}
 		response, err := searchQuery(ctx, chunk, embedding, &chunkOpts)
@@ -113,6 +121,7 @@ func SearchTextChunksWithErrorPolicy(
 		if err != nil || response == nil {
 			continue
 		}
+		exhausted = exhausted && response.RetrievalExhausted
 		if fusedIndexes == nil && len(response.Results) > 0 {
 			candidatesPerChunk := chunkOpts.Limit
 			if len(response.Results) > candidatesPerChunk {
@@ -145,14 +154,22 @@ func SearchTextChunksWithErrorPolicy(
 	if len(fused) == 0 {
 		if opts.FallbackEnabled != nil && !*opts.FallbackEnabled {
 			return &SearchResponse{
-				Status:            "success",
-				Query:             query,
-				Results:           []SearchResult{},
-				SearchMethod:      "chunked_rrf_hybrid",
-				FallbackTriggered: false,
+				RetrievalExhausted: exhausted,
+				Status:             "success",
+				Query:              query,
+				Results:            []SearchResult{},
+				SearchMethod:       "chunked_rrf_hybrid",
+				FallbackTriggered:  false,
 			}, nil
 		}
-		return searchQuery(ctx, query, nil, opts)
+		response, err := searchQuery(ctx, query, nil, opts)
+		if response != nil {
+			// The callback may return a cached response shared with other callers.
+			copy := *response
+			copy.RetrievalExhausted = exhausted && response.RetrievalExhausted
+			response = &copy
+		}
+		return response, err
 	}
 
 	slices.SortFunc(fused, func(left, right fusedResult) int {
@@ -162,17 +179,19 @@ func SearchTextChunksWithErrorPolicy(
 		return cmp.Compare(searchResultID(*left.best), searchResultID(*right.best))
 	})
 	if opts.Limit > 0 && len(fused) > opts.Limit {
+		exhausted = false
 		fused = fused[:opts.Limit]
 	}
 
 	response := &SearchResponse{
-		Status:            "success",
-		Query:             query,
-		Results:           make([]SearchResult, 0, len(fused)),
-		TotalCandidates:   len(fusedIndexes),
-		Returned:          len(fused),
-		SearchMethod:      "chunked_rrf_hybrid",
-		FallbackTriggered: false,
+		RetrievalExhausted: exhausted,
+		Status:             "success",
+		Query:              query,
+		Results:            make([]SearchResult, 0, len(fused)),
+		TotalCandidates:    len(fusedIndexes),
+		Returned:           len(fused),
+		SearchMethod:       "chunked_rrf_hybrid",
+		FallbackTriggered:  false,
 	}
 	for _, fusedResult := range fused {
 		result := *fusedResult.best

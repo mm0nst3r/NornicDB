@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -136,7 +137,7 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 	if ranked != nil {
 		searchMethod = ranked.SearchMethod
 		fallbackTriggered = ranked.FallbackTriggered
-		rankedPoolExhausted = len(ranked.Results) < options.Limit
+		rankedPoolExhausted = ranked.RetrievalExhausted
 		for _, result := range ranked.Results {
 			result.Phase = SearchContinuationRankedPhase
 			rankedByID[searchResultID(result)] = result
@@ -302,6 +303,7 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 		policyID:      policyID,
 		metadata: map[string]any{
 			"search_method":         searchMethod,
+			"response":              searchResponseMetadata(ranked),
 			"fallback_triggered":    fallbackTriggered,
 			"discovered":            eligibleCount,
 			"mode":                  request.Mode,
@@ -314,16 +316,18 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 }
 
 func compactContinuationResultBytes(result SearchResult) int64 {
-	const fixedBytes = int64(8*5 + 8*4)
-	return fixedBytes + int64(len(result.ID)+len(result.NodeID)+len(result.GroupKey)+len(result.Phase))
+	return int64(unsafe.Sizeof(result)) + int64(len(result.ID)+len(result.NodeID)+len(result.GroupKey)+len(result.Phase))
 }
 
 func compactContinuationResult(result SearchResult) SearchResult {
-	return SearchResult{
-		ID: result.ID, NodeID: result.NodeID, GroupKey: result.GroupKey, Phase: result.Phase,
-		Score: result.Score, Similarity: result.Similarity, RRFScore: result.RRFScore,
-		VectorRank: result.VectorRank, BM25Rank: result.BM25Rank,
-	}
+	result.Type = ""
+	result.Labels = nil
+	result.Title = ""
+	result.Description = ""
+	result.ContentPreview = ""
+	result.Properties = nil
+	result.Passages = nil
+	return result
 }
 
 func hydrateContinuationResult(ranked, stored SearchResult) SearchResult {
@@ -338,13 +342,9 @@ func hydrateContinuationResult(ranked, stored SearchResult) SearchResult {
 }
 
 func searchPassageFromResult(result SearchResult) SearchPassage {
-	return SearchPassage{
-		ID: result.ID, NodeID: result.NodeID, Phase: result.Phase, Type: result.Type,
-		Labels: result.Labels, Title: result.Title, Description: result.Description,
-		ContentPreview: result.ContentPreview, Properties: result.Properties,
-		Score: result.Score, Similarity: result.Similarity, RRFScore: result.RRFScore,
-		VectorRank: result.VectorRank, BM25Rank: result.BM25Rank,
-	}
+	result.GroupKey = ""
+	result.Passages = nil
+	return result
 }
 
 func betterContinuationRepresentative(candidate, current SearchResult) bool {
@@ -520,11 +520,7 @@ func hydrateContinuationResults(engine storage.Engine, compact []SearchResult, a
 			if passageNode == nil {
 				return nil, resultstream.ErrInvalidated
 			}
-			passageResult := SearchResult{
-				ID: passage.ID, NodeID: passage.NodeID, Phase: passage.Phase,
-				Score: passage.Score, Similarity: passage.Similarity, RRFScore: passage.RRFScore,
-				VectorRank: passage.VectorRank, BM25Rank: passage.BM25Rank,
-			}
+			passageResult := passage
 			passageResult = hydrateContinuationResult(passageResult, searchResultFromContinuationNode(passageNode))
 			results[index].Passages[passageIndex] = searchPassageFromResult(passageResult)
 		}

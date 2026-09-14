@@ -271,7 +271,7 @@ func TestApplyAdaptiveCandidateOptions(t *testing.T) {
 		"initial_overfetch_ratio": 2.0,
 		"maxOverfetchRatio":       8.0,
 		"overfetch_growth_factor": 1.5,
-		"maxCandidateLimit":       int64(1200),
+		"maxCandidateLimit":       int64(10_000),
 	})
 
 	require.False(t, opts.AdaptiveOverfetch)
@@ -279,7 +279,21 @@ func TestApplyAdaptiveCandidateOptions(t *testing.T) {
 	require.Equal(t, 2.0, opts.InitialOverfetchRatio)
 	require.Equal(t, 8.0, opts.MaxOverfetchRatio)
 	require.Equal(t, 1.5, opts.OverfetchGrowthFactor)
-	require.Equal(t, 1200, opts.MaxCandidateLimit)
+	require.Equal(t, 10_000, opts.MaxCandidateLimit)
+}
+
+func TestFailClosedCandidatePolicyAllowsValuesAboveDefaultBudget(t *testing.T) {
+	opts := search.DefaultSearchOptions()
+	failClosed, err := applyRetrievalPolicyOptions(opts, map[string]interface{}{
+		"failClosed":        true,
+		"candidateTarget":   int64(8_000),
+		"maxCandidateLimit": int64(10_000),
+	})
+
+	require.NoError(t, err)
+	require.True(t, failClosed)
+	require.Equal(t, 8_000, opts.CandidateTarget)
+	require.Equal(t, 10_000, opts.MaxCandidateLimit)
 }
 
 func TestApplyRetrievalPolicyOptions(t *testing.T) {

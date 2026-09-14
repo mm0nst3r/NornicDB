@@ -896,8 +896,8 @@ func TestResolveAdaptiveOverfetchBoundaries(t *testing.T) {
 		{limit: -5, wantTarget: 20, wantInitial: 30},
 		{limit: 1, wantTarget: 20, wantInitial: 30},
 		{limit: 100, wantTarget: 200, wantInitial: 300},
-		{limit: 5000, wantTarget: MaxCandidates, wantInitial: MaxCandidates},
-		{limit: int(^uint(0) >> 1), wantTarget: MaxCandidates, wantInitial: MaxCandidates},
+		{limit: 5000, wantTarget: 10000, wantInitial: 15000},
+		{limit: int(^uint(0) >> 1), wantTarget: int(^uint(0) >> 1), wantInitial: int(^uint(0) >> 1)},
 	}
 	for _, tc := range cases {
 		opts := DefaultSearchOptions()

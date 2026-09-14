@@ -95,6 +95,20 @@ func TestHNSWIndex_Add(t *testing.T) {
 	})
 }
 
+func TestHNSWSearchBoundsOversizedRequestByLivePopulation(t *testing.T) {
+	index := NewHNSWIndex(2, DefaultHNSWConfig())
+	require.NoError(t, index.Add("first", []float32{1, 0}))
+	require.NoError(t, index.Add("second", []float32{0, 1}))
+
+	results, exhausted, err := index.searchWithEfExhaustion(
+		context.Background(), []float32{1, 0}, int(^uint(0)>>1), 0, int(^uint(0)>>1),
+	)
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	require.True(t, exhausted)
+}
+
 func TestHNSWIndex_Remove(t *testing.T) {
 	t.Run("removes existing vector", func(t *testing.T) {
 		index := NewHNSWIndex(4, DefaultHNSWConfig())

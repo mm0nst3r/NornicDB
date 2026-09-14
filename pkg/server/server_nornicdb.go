@@ -539,14 +539,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			errorPolicy,
 		)
 		if continuationPage != nil {
-			searchResponse = &search.SearchResponse{
-				Status:            "success",
-				Query:             req.Query,
-				Results:           continuationPage.Results,
-				Returned:          continuationPage.Returned,
-				SearchMethod:      continuationPage.SearchMethod,
-				FallbackTriggered: continuationPage.FallbackTriggered,
-			}
+			searchResponse = continuationPage.SearchResponse()
 		}
 	} else {
 		searchResponse, err = search.SearchTextChunksWithErrorPolicy(
@@ -667,8 +660,14 @@ func (s *Server) writeSearchContinuationError(w http.ResponseWriter, _ *http.Req
 }
 
 func (s *Server) writeSearchContinuationPage(w http.ResponseWriter, page *search.SearchContinuationPage) {
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"results":               nornicdb.MapSearchResponse(&search.SearchResponse{Results: page.Results}),
+	response := page.SearchResponse()
+	if provider, ok := any(response).(interface{ ResponseHeaders() map[string]string }); ok {
+		for key, value := range provider.ResponseHeaders() {
+			w.Header().Set(key, value)
+		}
+	}
+	body := map[string]any{
+		"results":               nornicdb.MapSearchResponse(page.SearchResponse()),
 		"qid":                   page.QID,
 		"has_more":              page.HasMore,
 		"position":              page.Position,
@@ -685,7 +684,13 @@ func (s *Server) writeSearchContinuationPage(w http.ResponseWriter, page *search
 		"ranked_pool_exhausted": page.RankedPoolExhausted,
 		"collection_exhausted":  page.CollectionExhausted,
 		"completion":            page.Completion,
-	})
+	}
+	if provider, ok := any(response).(interface{ ResultMetadata() map[string]any }); ok {
+		for key, value := range provider.ResultMetadata() {
+			body[key] = value
+		}
+	}
+	s.writeJSON(w, http.StatusOK, body)
 }
 
 func runEmbedWithTimeout(parent context.Context, timeout time.Duration, fn func(context.Context) ([]float32, error)) ([]float32, error) {

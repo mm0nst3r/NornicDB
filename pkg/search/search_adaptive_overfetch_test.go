@@ -92,6 +92,21 @@ func TestAdaptiveVectorSearchStopsAtConfiguredCap(t *testing.T) {
 	require.Equal(t, 1, stats.retries)
 }
 
+func TestResolveAdaptiveOverfetchAllowsConfiguredBudgetAboveDefault(t *testing.T) {
+	opts := DefaultSearchOptions()
+	opts.Limit = 6_000
+	opts.CandidateTarget = 6_000
+	opts.InitialOverfetchRatio = 1
+	opts.MaxOverfetchRatio = 2
+	opts.MaxCandidateLimit = 10_000
+
+	config := resolveAdaptiveOverfetch(opts)
+
+	require.Equal(t, 6_000, config.target)
+	require.Equal(t, 6_000, config.initialLimit)
+	require.Equal(t, 10_000, config.maxLimit)
+}
+
 func TestAdaptiveVectorSearchAppliesIVFPQRerankCapAtServiceLayer(t *testing.T) {
 	index := &IVFPQIndex{
 		profile:      IVFPQProfile{Dimensions: 1, NProbe: 1, RerankTopK: 2},

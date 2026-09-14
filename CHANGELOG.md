@@ -7,21 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
-- Add signed, authorization-bound search continuation across HTTP, native gRPC,
-  Cypher, and Bolt metadata, including progressive ranked retrieval, complete
-  ID populations, deterministic grouped passages, bounded per-owner registry
-  admission, and page-only hydration.
+### Added
 
 ## [v1.3.3] - 9/13/2026
 
 ### Added
 
 - Publish a design RFC for pluggable Snowball stemming in BM25 indexes.
+- Add signed, authorization-bound search continuation across HTTP, native gRPC,
+  Cypher, and Bolt metadata, including progressive ranked retrieval, complete
+  ID populations, deterministic grouped passages, bounded per-owner registry
+  admission, and page-only hydration.
 
 ### Fixed
 
+- Prevent ranked continuation from treating short approximate, filtered, or fused batches as exhaustion. Propagate retrieval exhaustion evidence, deepen chunk candidates beyond one-shot limits, remove the arbitrary 5,000-candidate engine ceiling, and report caller-selected budget limits explicitly instead of silently ending the stream.
 - Bound database-manager startup memory by scanning only leaked system-record ID prefixes and streaming node/edge size reconciliation. In a cold 2,000-node persistent-store benchmark, cleanup fell from about 3.23 ms and 7.81 MB per operation to 25 us and 3.5 KB; reconciliation allocations fell about 5% without changing serialized-size accounting.
 - Preserve exact cosine-vector fast-path semantics for inline node properties, filtered top-k queries, exact LIMIT results, and WITH projections ordered before RETURN.
 - Skip empty k-means clusters during vector routing and load legacy vector files without query metadata when storage is empty.

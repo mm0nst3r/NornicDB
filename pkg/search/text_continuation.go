@@ -47,6 +47,7 @@ type SearchContinuationRequest struct {
 
 // SearchContinuationPage is the protocol-neutral continued-search response.
 type SearchContinuationPage struct {
+	response            *SearchResponse
 	Results             []SearchResult
 	QID                 string
 	HasMore             bool
@@ -88,6 +89,7 @@ type cachedEmbedding struct {
 }
 
 type searchContinuationState struct {
+	response          *SearchResponse
 	mu                sync.RWMutex
 	results           []SearchResult
 	seen              map[string]struct{}
@@ -201,6 +203,7 @@ func (s *Service) SearchTextContinuation(
 		opts = DefaultSearchOptions()
 	}
 	ownedOptions := cloneContinuationSearchOptions(opts)
+	ownedOptions.continuation = true
 	if ownedOptions.Limit <= 0 {
 		ownedOptions.Limit = 50
 	}
@@ -214,7 +217,12 @@ func (s *Service) SearchTextContinuation(
 	if err != nil {
 		return nil, err
 	}
+	maxResults := request.MaxResults
+	if maxResults > 0 && len(initial.Results) > maxResults {
+		initial.Results = initial.Results[:maxResults]
+	}
 	state := &searchContinuationState{
+		response:          searchResponseMetadata(initial),
 		results:           append([]SearchResult(nil), initial.Results...),
 		seen:              make(map[string]struct{}, len(initial.Results)),
 		searchMethod:      initial.SearchMethod,
@@ -224,21 +232,33 @@ func (s *Service) SearchTextContinuation(
 		state.seen[searchResultID(state.results[index])] = struct{}{}
 	}
 	initialRows := continuationRows(state.results)
-	maxResults := request.MaxResults
-	initialExhausted := len(initial.Results) < ownedOptions.Limit ||
+	initialExhausted := initial.RetrievalExhausted ||
 		(maxResults > 0 && len(initial.Results) >= maxResults)
+	depthLimit := ownedOptions.MaxCandidateLimit
+	if depthLimit <= 0 {
+		depthLimit = int(^uint(0) >> 1)
+	}
+	lastDepth := ownedOptions.Limit
 	expand := func(expandCtx context.Context, depth int) ([][]any, bool, error) {
-		if maxResults > 0 && depth > maxResults {
-			depth = maxResults
+		// A candidate budget is not evidence that retrieval is exhausted. Fail
+		// explicitly when no deeper supported request can be made. max_results
+		// limits emitted members, not how deeply we may search to find them.
+		if lastDepth >= depthLimit {
+			return nil, false, fmt.Errorf("continuation retrieval depth limit reached: %w", resultstream.ErrCapacity)
 		}
+		depth = min(depth, depthLimit)
 		expandedOptions := cloneContinuationSearchOptions(&ownedOptions)
 		expandedOptions.Limit = depth
 		response, expandErr := SearchTextChunksWithErrorPolicy(expandCtx, query, &expandedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
 		if expandErr != nil {
 			return nil, false, expandErr
 		}
+		lastDepth = depth
 		state.mu.Lock()
 		defer state.mu.Unlock()
+		state.response = searchResponseMetadata(response)
+		state.searchMethod = response.SearchMethod
+		state.fallbackTriggered = response.FallbackTriggered
 		for index := range response.Results {
 			result := response.Results[index]
 			id := searchResultID(result)
@@ -248,7 +268,7 @@ func (s *Service) SearchTextContinuation(
 			state.seen[id] = struct{}{}
 			state.results = append(state.results, result)
 		}
-		exhausted := len(response.Results) < depth ||
+		exhausted := response.RetrievalExhausted ||
 			(maxResults > 0 && len(state.results) >= maxResults)
 		if maxResults > 0 && len(state.results) > maxResults {
 			state.results = state.results[:maxResults]
@@ -346,6 +366,7 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 	s.state.mu.RLock()
 	page.Metadata = map[string]any{
 		"search_method":      s.state.searchMethod,
+		"response":           s.state.response,
 		"fallback_triggered": s.state.fallbackTriggered,
 		"discovered":         len(s.state.results),
 	}
@@ -383,6 +404,7 @@ func searchPageFromResultStream(page *resultstream.Page) (*SearchContinuationPag
 		ExpiresAt: page.ExpiresAt,
 	}
 	if page.Metadata != nil {
+		out.response, _ = page.Metadata["response"].(*SearchResponse)
 		out.SearchMethod, _ = page.Metadata["search_method"].(string)
 		out.FallbackTriggered, _ = page.Metadata["fallback_triggered"].(bool)
 		out.Discovered, _ = page.Metadata["discovered"].(int)
@@ -418,4 +440,23 @@ func cloneContinuationSearchOptions(options *SearchOptions) SearchOptions {
 		}
 	}
 	return clone
+}
+
+// SearchResponse restores the canonical search response with this page's rows.
+func (p *SearchContinuationPage) SearchResponse() *SearchResponse {
+	response := searchResponseMetadata(p.response)
+	response.Results = p.Results
+	response.Returned = p.Returned
+	response.SearchMethod = p.SearchMethod
+	response.FallbackTriggered = p.FallbackTriggered
+	return response
+}
+
+func searchResponseMetadata(response *SearchResponse) *SearchResponse {
+	if response == nil {
+		return &SearchResponse{}
+	}
+	clone := *response
+	clone.Results = nil
+	return &clone
 }

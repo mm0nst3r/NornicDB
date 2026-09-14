@@ -11,6 +11,7 @@ import (
 	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/orneryd/nornicdb/pkg/search"
 	"golang.org/x/text/language"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -135,6 +136,11 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		if err != nil {
 			return nil, s.continuationStatus(ctx, err)
 		}
+		if provider, ok := any(page.SearchResponse()).(interface{ ResponseTrailers() map[string]string }); ok {
+			for key, value := range provider.ResponseTrailers() {
+				grpc.SetTrailer(ctx, metadata.Pairs(key, value))
+			}
+		}
 		return grpcContinuationResponse(page, time.Since(start)), nil
 	}
 
@@ -177,16 +183,7 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 
 	out := make([]*gen.SearchHit, 0, len(resp.Results))
 	for _, r := range resp.Results {
-		props, _ := structpb.NewStruct(r.Properties)
-		out = append(out, &gen.SearchHit{
-			NodeId:     string(r.NodeID),
-			Labels:     r.Labels,
-			Properties: props,
-			Score:      float32(r.Score),
-			RrfScore:   float32(r.RRFScore),
-			VectorRank: int32(r.VectorRank),
-			Bm25Rank:   int32(r.BM25Rank),
-		})
+		out = append(out, grpcSearchHit(r))
 	}
 
 	return &gen.SearchTextResponse{
@@ -254,23 +251,24 @@ func grpcContinuationResponse(page *search.SearchContinuationPage, elapsed time.
 	}
 	response.Hits = make([]*gen.SearchHit, 0, len(page.Results))
 	for index := range page.Results {
-		result := page.Results[index]
-		properties, _ := structpb.NewStruct(result.Properties)
-		response.Hits = append(response.Hits, &gen.SearchHit{
-			NodeId: string(result.NodeID), Labels: result.Labels, Properties: properties,
-			Score: float32(result.Score), RrfScore: float32(result.RRFScore),
-			VectorRank: int32(result.VectorRank), Bm25Rank: int32(result.BM25Rank),
-			Phase: result.Phase, GroupKey: result.GroupKey,
-			Passages: grpcSearchPassages(result.Passages),
-		})
+		response.Hits = append(response.Hits, grpcSearchHit(page.Results[index]))
 	}
 	return response
 }
 
+func grpcSearchHit(r search.SearchResult) *gen.SearchHit {
+	props, _ := structpb.NewStruct(r.Properties)
+	return &gen.SearchHit{
+		NodeId: string(r.NodeID), Labels: r.Labels, Properties: props,
+		Score: float32(r.Score), RrfScore: float32(r.RRFScore),
+		VectorRank: int32(r.VectorRank), Bm25Rank: int32(r.BM25Rank),
+		Phase: r.Phase, GroupKey: r.GroupKey, Passages: grpcSearchPassages(r.Passages),
+	}
+}
+
 func grpcSearchPassages(passages []search.SearchPassage) []*gen.SearchPassage {
 	out := make([]*gen.SearchPassage, len(passages))
-	for index := range passages {
-		passage := passages[index]
+	for index, passage := range passages {
 		properties, _ := structpb.NewStruct(passage.Properties)
 		out[index] = &gen.SearchPassage{
 			NodeId: string(passage.NodeID), Labels: passage.Labels, Properties: properties,
