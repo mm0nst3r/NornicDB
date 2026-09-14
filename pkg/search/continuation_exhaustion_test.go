@@ -14,8 +14,14 @@ import (
 )
 
 func TestContinuationShortApproximateBatchDoesNotEndSearch(t *testing.T) {
-	service := NewService(storage.NewMemoryEngine())
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
 	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for i := 0; i < 3; i++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%d", i))
+		_, err := engine.CreateNode(&storage.Node{ID: id, Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
 	var depths []int
 	search := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
 		depths = append(depths, opts.Limit)
@@ -25,7 +31,8 @@ func TestContinuationShortApproximateBatchDoesNotEndSearch(t *testing.T) {
 		}
 		results := make([]SearchResult, count)
 		for i := range results {
-			results[i] = SearchResult{ID: fmt.Sprintf("doc-%d", i)}
+			id := fmt.Sprintf("doc-%d", i)
+			results[i] = SearchResult{ID: id, NodeID: storage.NodeID(id)}
 		}
 		return &SearchResponse{Results: results}, nil
 	}
@@ -105,14 +112,21 @@ func TestContinuationUnknownExhaustionReachesExplicitBudget(t *testing.T) {
 }
 
 func TestContinuationCanDeepenBeyondFormerEngineCeiling(t *testing.T) {
-	service := NewService(storage.NewMemoryEngine())
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
 	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for i := 0; i < 8_000; i++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%d", i))
+		_, err := engine.CreateNode(&storage.Node{ID: id, Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
 	var depths []int
 	search := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
 		depths = append(depths, opts.Limit)
 		results := make([]SearchResult, opts.Limit)
 		for index := range results {
-			results[index] = SearchResult{ID: fmt.Sprintf("doc-%d", index)}
+			id := fmt.Sprintf("doc-%d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id)}
 		}
 		return &SearchResponse{Results: results}, nil
 	}
@@ -131,8 +145,14 @@ func TestContinuationCanDeepenBeyondFormerEngineCeiling(t *testing.T) {
 }
 
 func TestContinuationShortExpansionDoesNotEndSearch(t *testing.T) {
-	service := NewService(storage.NewMemoryEngine())
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
 	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for i := 0; i < 7; i++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%d", i))
+		_, err := engine.CreateNode(&storage.Node{ID: id, Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
 	search := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
 		count := 4
 		if opts.Limit >= 8 {
@@ -143,7 +163,8 @@ func TestContinuationShortExpansionDoesNotEndSearch(t *testing.T) {
 		}
 		results := make([]SearchResult, count)
 		for i := range results {
-			results[i] = SearchResult{ID: fmt.Sprintf("doc-%d", i)}
+			id := fmt.Sprintf("doc-%d", i)
+			results[i] = SearchResult{ID: id, NodeID: storage.NodeID(id)}
 		}
 		return &SearchResponse{Results: results}, nil
 	}
@@ -327,13 +348,20 @@ func TestContinuationChunkExhaustionSurvivesFusionAndFallback(t *testing.T) {
 }
 
 func TestContinuationChunkDepthIsNotCappedAtOneShotLimit(t *testing.T) {
-	service := NewService(storage.NewMemoryEngine())
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
 	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for i := 0; i < 600; i++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%04d", i))
+		_, err := engine.CreateNode(&storage.Node{ID: id, Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
 	embeds := 0
 	search := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
 		results := make([]SearchResult, min(opts.Limit, 600))
 		for i := range results {
-			results[i] = SearchResult{ID: fmt.Sprintf("doc-%04d", i)}
+			id := fmt.Sprintf("doc-%04d", i)
+			results[i] = SearchResult{ID: id, NodeID: storage.NodeID(id)}
 		}
 		return &SearchResponse{Results: results}, nil
 	}

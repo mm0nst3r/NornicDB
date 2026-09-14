@@ -212,7 +212,10 @@ func (r *Registry) Start(ctx context.Context, scope Scope, stream Stream, n int)
 	if guarded, ok := stream.(RetainedBytesGrowthGuard); ok {
 		guarded.SetRetainedBytesGrowthGuard(func() bool {
 			reporter, reportsBytes := stream.(RetainedBytesReporter)
-			return reportsBytes && r.resize(entry, reporter.RetainedBytes())
+			if !reportsBytes {
+				return true
+			}
+			return r.resize(entry, reporter.RetainedBytes())
 		})
 	}
 	r.observe("start")

@@ -53,8 +53,14 @@ func (e *blockingContinuationEngine) StreamNodeChunks(ctx context.Context, chunk
 }
 
 func TestSearchTextContinuationExpandsWithoutReembedding(t *testing.T) {
-	service := NewService(storage.NewMemoryEngine())
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
 	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 30; index++ {
+		id := storage.NodeID(fmt.Sprintf("node-%03d", index))
+		_, err := engine.CreateNode(&storage.Node{ID: id, Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
 
 	var chunkCalls atomic.Int32
 	var embedCalls atomic.Int32
@@ -72,7 +78,8 @@ func TestSearchTextContinuationExpandsWithoutReembedding(t *testing.T) {
 	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
 		results := make([]SearchResult, opts.Limit)
 		for index := range results {
-			results[index] = SearchResult{ID: fmt.Sprintf("node-%03d", index), Score: float64(opts.Limit - index)}
+			id := fmt.Sprintf("node-%03d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(opts.Limit - index)}
 		}
 		return &SearchResponse{Status: "success", Results: results, SearchMethod: "test"}, nil
 	}
@@ -109,13 +116,20 @@ func TestSearchTextContinuationExpandsWithoutReembedding(t *testing.T) {
 }
 
 func TestSearchTextContinuationMaxResultsCapsInitialPage(t *testing.T) {
-	service := NewService(storage.NewMemoryEngine())
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
 	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 10; index++ {
+		id := storage.NodeID(fmt.Sprintf("node-%03d", index))
+		_, err := engine.CreateNode(&storage.Node{ID: id, Labels: []string{"Document"}})
+		require.NoError(t, err)
+	}
 
 	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
 		results := make([]SearchResult, opts.Limit)
 		for index := range results {
-			results[index] = SearchResult{ID: fmt.Sprintf("node-%03d", index)}
+			id := fmt.Sprintf("node-%03d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id)}
 		}
 		return &SearchResponse{Status: "success", Results: results, SearchMethod: "test"}, nil
 	}
