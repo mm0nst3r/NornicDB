@@ -216,8 +216,12 @@ func (s *Server) getExecutorForDatabase(dbName string) (*cypher.StorageExecutor,
 		s.executorsMu.RUnlock()
 		// Executors can be created before the embedding model finishes loading.
 		// Ensure cached executors pick up the latest query embedder lazily.
-		if baseExec := s.db.GetCypherExecutor(); baseExec != nil {
-			if emb := baseExec.GetEmbedder(); emb != nil && executor.GetEmbedder() == nil {
+		if executor.GetEmbedder() == nil {
+			emb, err := s.db.GetEmbedderForDB(dbName)
+			if err != nil {
+				return nil, err
+			}
+			if emb != nil {
 				executor.SetEmbedder(emb)
 			}
 		}
@@ -275,7 +279,11 @@ func (s *Server) getExecutorForDatabaseWithAuth(dbName string, authToken string)
 	}
 
 	if baseExec := s.db.GetCypherExecutor(); baseExec != nil {
-		if emb := baseExec.GetEmbedder(); emb != nil {
+		emb, embedErr := s.db.GetEmbedderForDB(dbName)
+		if embedErr != nil {
+			return nil, embedErr
+		}
+		if emb != nil {
 			executor.SetEmbedder(emb)
 		}
 		if inferMgr := baseExec.GetInferenceManager(); inferMgr != nil {
@@ -330,7 +338,11 @@ func (s *Server) newExecutorForDatabase(dbName string) (*cypher.StorageExecutor,
 
 	// Copy query embedder from the base DB executor so string-input vector procedures work.
 	if baseExec := s.db.GetCypherExecutor(); baseExec != nil {
-		if emb := baseExec.GetEmbedder(); emb != nil {
+		emb, embedErr := s.db.GetEmbedderForDB(dbName)
+		if embedErr != nil {
+			return nil, embedErr
+		}
+		if emb != nil {
 			executor.SetEmbedder(emb)
 		}
 		if inferMgr := baseExec.GetInferenceManager(); inferMgr != nil {
@@ -937,9 +949,10 @@ type TransactionInfo struct {
 
 // QueryResult is a single query result.
 type QueryResult struct {
-	Columns []string    `json:"columns"`
-	Data    []ResultRow `json:"data"`
-	Stats   *QueryStats `json:"stats,omitempty"`
+	Rerank  map[string]interface{} `json:"rerank,omitempty"`
+	Columns []string               `json:"columns"`
+	Data    []ResultRow            `json:"data"`
+	Stats   *QueryStats            `json:"stats,omitempty"`
 }
 
 // ResultRow is a row of results with metadata.
@@ -1291,6 +1304,7 @@ func (s *Server) handleImplicitTransaction(w http.ResponseWriter, r *http.Reques
 
 		// Convert result to Neo4j format with metadata
 		qr := QueryResult{
+			Rerank:  nativeRerankMetadata(result.Metadata),
 			Columns: result.Columns,
 			Data:    make([]ResultRow, len(result.Rows)),
 		}
@@ -1464,6 +1478,7 @@ func (s *Server) handleSingleStatementFastPath(w http.ResponseWriter, r *http.Re
 
 	// Build response with minimal allocation.
 	qr := QueryResult{
+		Rerank:  nativeRerankMetadata(result.Metadata),
 		Columns: result.Columns,
 		Data:    make([]ResultRow, len(result.Rows)),
 	}
@@ -1778,6 +1793,7 @@ func (s *Server) appendStatementResult(response *TransactionResponse, result *cy
 		columns = []string{}
 	}
 	qr := QueryResult{
+		Rerank:  nativeRerankMetadata(result.Metadata),
 		Columns: columns,
 		Data:    make([]ResultRow, len(result.Rows)),
 	}
@@ -2086,4 +2102,9 @@ func (s *Server) handleRollbackTransaction(w http.ResponseWriter, r *http.Reques
 	}
 	s.applyMVCCPressureWarnings(w, dbName, &response)
 	s.writeJSON(w, http.StatusOK, response)
+}
+
+func nativeRerankMetadata(metadata map[string]interface{}) map[string]interface{} {
+	report, _ := metadata["rerank"].(map[string]interface{})
+	return report
 }

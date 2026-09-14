@@ -232,6 +232,14 @@ func ensureBuiltInProceduresRegistered() {
 			func(ctx context.Context, e *StorageExecutor, cypher string, args []interface{}) (*ExecuteResult, error) {
 				return e.callDbRRetrieve(ctx, cypher)
 			})
+		registerBuiltInProcedure("db.embedding.status", "db.embedding.status(request :: MAP) :: (status :: MAP)", localization.CypherProcedureMetadata("db.embedding.status"), ProcedureModeRead, 1, 1, false,
+			func(ctx context.Context, e *StorageExecutor, query string, args []interface{}) (*ExecuteResult, error) {
+				return e.callDbEmbeddingWork(ctx, query, false)
+			})
+		registerBuiltInProcedure("db.embedding.control", "db.embedding.control(request :: MAP) :: (status :: MAP)", localization.CypherProcedureMetadata("db.embedding.control"), ProcedureModeWrite, 1, 1, false,
+			func(ctx context.Context, e *StorageExecutor, query string, args []interface{}) (*ExecuteResult, error) {
+				return e.callDbEmbeddingWork(ctx, query, true)
+			})
 		registerBuiltInProcedure("db.rerank", "db.rerank(request :: MAP) :: (id :: STRING, content :: STRING, original_rank :: INTEGER, new_rank :: INTEGER, bi_score :: FLOAT, cross_score :: FLOAT, final_score :: FLOAT)", localization.CypherProcedureMetadata("db.rerank"), ProcedureModeRead, 1, 1, false,
 			func(ctx context.Context, e *StorageExecutor, cypher string, args []interface{}) (*ExecuteResult, error) {
 				return e.callDbRerank(ctx, cypher)

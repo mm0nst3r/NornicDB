@@ -4,6 +4,7 @@ package nornicdb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -22,9 +23,10 @@ type deterministicTextChunker interface {
 // EmbedWorker manages async embedding generation using a pull-based model.
 // On each cycle, it scans for nodes without embeddings and processes them.
 type EmbedWorker struct {
-	embedder embed.Embedder
-	storage  storage.Engine
-	config   *EmbedWorkerConfig
+	embedder         embed.Embedder
+	embedderResolver func(storage.NodeID) (embed.Embedder, error)
+	storage          storage.Engine
+	config           *EmbedWorkerConfig
 
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -67,6 +69,7 @@ type EmbedWorker struct {
 
 	// claimMu serializes find+claim so only one worker can take a node at a time (prevents double-processing).
 	claimMu sync.Mutex
+	claimed map[storage.NodeID]bool
 
 	// workersStarted is true once StartWorkers() has been called (used when DeferWorkerStart is true).
 	workersStarted bool
@@ -595,6 +598,10 @@ func (ew *EmbedWorker) processUntilEmpty() {
 // Returns true if it did useful work (processed or permanently skipped a node).
 // Returns false if there was nothing to process or if a node was temporarily skipped.
 func (ew *EmbedWorker) processNextBatch() bool {
+	if leader, ok := ew.storage.(interface{ IsLeader() bool }); ok && !leader.IsLeader() {
+		return false
+	}
+
 	// Check for cancellation at the start
 	select {
 	case <-ew.ctx.Done():
@@ -657,38 +664,18 @@ func (ew *EmbedWorker) processNextBatch() bool {
 	// Update node with latest data from storage
 	node = existingNode
 
-	// Check if this node was recently processed (prevents re-processing before DB commit is visible)
-	ew.mu.Lock()
-	if ew.recentlyProcessed == nil {
-		ew.recentlyProcessed = make(map[string]time.Time)
+	if ew.claimed == nil {
+		ew.claimed = make(map[storage.NodeID]bool)
 	}
-	if ew.loggedSkip == nil {
-		ew.loggedSkip = make(map[string]bool)
+	if ew.claimed[node.ID] {
+		ew.markNodeEmbedded(node.ID)
+		ew.claimMu.Unlock()
+		return true
 	}
-	if lastProcessed, ok := ew.recentlyProcessed[string(node.ID)]; ok {
-		if time.Since(lastProcessed) < 30*time.Second {
-			if !ew.loggedSkip[string(node.ID)] {
-				ew.loggedSkip[string(node.ID)] = true
-				fmt.Printf("⏭️  Skipping node %s: recently processed (waiting for DB sync)\n", node.ID)
-			}
-			ew.mu.Unlock()
-			ew.claimMu.Unlock()
-			return false // Temporary skip - don't continue looping
-		}
-		delete(ew.loggedSkip, string(node.ID))
-	}
-	// Clean up old entries (older than 1 minute)
-	for id, t := range ew.recentlyProcessed {
-		if time.Since(t) > time.Minute {
-			delete(ew.recentlyProcessed, id)
-			delete(ew.loggedSkip, id)
-		}
-	}
-	ew.mu.Unlock()
-
-	// Claim the node so no other worker can pick it (remove from pending index now; re-queue on failure).
+	ew.claimed[node.ID] = true
 	ew.markNodeEmbedded(node.ID)
 	ew.claimMu.Unlock()
+	defer func() { ew.claimMu.Lock(); delete(ew.claimed, node.ID); ew.claimMu.Unlock() }()
 
 	fmt.Printf("🔄 Processing node %s for embedding...\n", node.ID)
 
@@ -696,35 +683,86 @@ func (ew *EmbedWorker) processNextBatch() bool {
 	// The node from storage may be accessed by other goroutines (e.g., HTTP handlers)
 	// Modifying the Properties map directly causes "concurrent map iteration and map write"
 	node = copyNodeForEmbedding(node)
+	sourceSnapshot := storage.CopyNode(node)
 
 	// Build text for embedding (labels and properties per config include/exclude)
-	opts := embeddingutil.EmbedTextOptionsFromFields(ew.config.PropertiesInclude, ew.config.PropertiesExclude, ew.config.IncludeLabels)
-	text := embeddingutil.BuildText(node.Properties, node.Labels, opts)
-
-	chunker, ok := ew.embedder.(deterministicTextChunker)
-	if !ok {
-		fmt.Printf("⚠️  Failed to chunk node %s: embedder %T does not support deterministic token chunking\n", node.ID, ew.embedder)
-		ew.addNodeToPendingEmbeddings(node.ID)
-		ew.failed.Add(1)
-		return true
+	ew.mu.Lock()
+	activeEmbedder := ew.embedder
+	resolver := ew.embedderResolver
+	ew.mu.Unlock()
+	if resolver != nil {
+		var resolveErr error
+		activeEmbedder, resolveErr = resolver(node.ID)
+		if resolveErr != nil || activeEmbedder == nil {
+			// A configured provider failure is a durable failed operation, not
+			// an unbounded pending loop or silent use of the default provider.
+			if err := embeddingutil.ApplyEmbeddingWorkEvent(node, embeddingutil.EmbeddingWorkEvent{Action: "begin", Provider: "configured"}); err == nil {
+				err = embeddingutil.ApplyEmbeddingWorkEvent(node, embeddingutil.EmbeddingWorkEvent{Action: "fail", ErrorCode: "provider_configuration"})
+				if err == nil {
+					err = ew.persistEmbeddingState(node, sourceSnapshot)
+				}
+				if err != nil {
+					fmt.Printf("embedding configuration failure state could not be persisted: %v\n", err)
+				}
+			}
+			ew.failed.Add(1)
+			return true
+		}
 	}
+	managedProvider, isManaged := embed.ManagedProvider(activeEmbedder)
+	var managedResult embed.ManagedDocumentResult
+	var embeddings [][]float32
+	if isManaged {
+		if err := ew.beginManagedAttempt(node, activeEmbedder.Model()); err != nil {
+			if !errors.Is(err, storage.ErrEmbeddingSourceChanged) && !errors.Is(err, storage.ErrNotFound) {
+				ew.failed.Add(1)
+				fmt.Printf("managed embedding attempt could not start for %s: %v\n", node.ID, err)
+			}
+			return true
+		}
+		sourceSnapshot = storage.CopyNode(node)
+		input, inputErr := ew.managedNodeInput(managedProvider, node)
+		if inputErr == nil {
+			managedResult, inputErr = managedProvider.EmbedDocument(ew.ctx, input)
+		}
+		if inputErr != nil {
+			if persistErr := ew.recordManagedFailure(node, sourceSnapshot, inputErr); persistErr != nil && !errors.Is(persistErr, storage.ErrEmbeddingSourceChanged) && !errors.Is(persistErr, storage.ErrNotFound) {
+				fmt.Printf("managed embedding failure could not be persisted for %s: %v\n", node.ID, persistErr)
+			}
+			ew.failed.Add(1)
+			return true
+		}
+		embeddings = managedResult.Embeddings
+	} else {
+		opts := embeddingutil.EmbedTextOptionsFromFields(ew.config.PropertiesInclude, ew.config.PropertiesExclude, ew.config.IncludeLabels)
+		text := embeddingutil.BuildText(node.Properties, node.Labels, opts)
 
-	// Chunk text using the embedder's tokenizer so every chunk respects the true token cap.
-	chunks, err := chunker.ChunkText(text, ew.config.ChunkSize, ew.config.ChunkOverlap)
-	if err != nil {
-		fmt.Printf("⚠️  Failed to chunk node %s: %v\n", node.ID, err)
-		ew.addNodeToPendingEmbeddings(node.ID)
-		ew.failed.Add(1)
-		return true
-	}
+		chunker, ok := activeEmbedder.(deterministicTextChunker)
+		if !ok {
+			fmt.Printf("⚠️  Failed to chunk node %s: embedder %T does not support deterministic token chunking\n", node.ID, ew.embedder)
+			ew.addNodeToPendingEmbeddings(node.ID)
+			ew.failed.Add(1)
+			return true
+		}
 
-	// Embed chunks in micro-batches to avoid oversized single requests for large files.
-	embeddings, err := ew.embedChunksInBatches(chunks, node.ID)
-	if err != nil {
-		fmt.Printf("⚠️  Failed to embed node %s: %v\n", node.ID, err)
-		ew.addNodeToPendingEmbeddings(node.ID) // Re-queue so another worker can retry
-		ew.failed.Add(1)
-		return true
+		// Chunk text using the embedder's tokenizer so every chunk respects the true token cap.
+		chunks, err := chunker.ChunkText(text, ew.config.ChunkSize, ew.config.ChunkOverlap)
+		if err != nil {
+			fmt.Printf("⚠️  Failed to chunk node %s: %v\n", node.ID, err)
+			ew.addNodeToPendingEmbeddings(node.ID)
+			ew.failed.Add(1)
+			return true
+		}
+
+		// Embed chunks in micro-batches to avoid oversized single requests for large files.
+		embeddings, err = ew.embedChunksInBatches(activeEmbedder, chunks, node.ID)
+		if err != nil {
+			fmt.Printf("⚠️  Failed to embed node %s: %v\n", node.ID, err)
+			ew.addNodeToPendingEmbeddings(node.ID) // Re-queue so another worker can retry
+			ew.failed.Add(1)
+			return true
+		}
+
 	}
 
 	// Validate embeddings were generated
@@ -736,57 +774,23 @@ func (ew *EmbedWorker) processNextBatch() bool {
 	}
 
 	// Persist worker-managed embedding fields in a shared canonical shape.
-	embeddingutil.ApplyManagedEmbedding(node, embeddings, ew.embedder.Model(), ew.embedder.Dimensions(), time.Now())
-
-	// CRITICAL: Double-check node still exists before updating
-	// This prevents creating orphaned nodes if the node was deleted between
-	// the initial check and now. Reload from storage to get latest version.
-	// BUT: Preserve the embeddings we just generated!
-	chunkEmbeddingsToSave := node.ChunkEmbeddings // Save the chunk embeddings we just generated
-	embedMetaToSave := make(map[string]any)
-	if node.EmbedMeta != nil {
-		// Save embedding metadata
-		for k, v := range node.EmbedMeta {
-			embedMetaToSave[k] = v
+	if !isManaged {
+		embeddingutil.ApplyManagedEmbedding(node, embeddings, activeEmbedder.Model(), activeEmbedder.Dimensions(), time.Now())
+	}
+	if isManaged {
+		if err := embed.ApplyManagedDocumentResult(node, managedResult); err != nil {
+			ew.addNodeToPendingEmbeddings(node.ID)
+			ew.failed.Add(1)
+			return true
 		}
 	}
 
-	existingNode, err = ew.storage.GetNode(node.ID)
-	if err != nil {
-		// Node was deleted - remove from pending index and skip
-		fmt.Printf("⚠️  Node %s was deleted before embedding could be saved - skipping\n", node.ID)
-		ew.markNodeEmbedded(node.ID)
-		return false // Skip this node, try next one
-	}
-
-	// CRITICAL: Preserve the embeddings we just generated!
-	// Don't overwrite node with existingNode - that would lose the embeddings
-	// Instead, update the existing node's embedding field while preserving other fields
-	node = existingNode                          // Get latest data from storage
-	node.ChunkEmbeddings = chunkEmbeddingsToSave // Restore chunk embeddings (struct field, opaque to users)
-	node.UpdatedAt = time.Now()                  // Update timestamp
-
-	// Restore embedding metadata (in EmbedMeta, not Properties)
-	node.EmbedMeta = embedMetaToSave
-
-	// Save the parent node (either with embedding for single chunk, or metadata for chunked files)
-	// CRITICAL: Use UpdateNodeEmbedding if available (only updates existing nodes, doesn't create)
-	// This prevents creating orphaned nodes when the pending index has stale entries
-	var updateErr error
-	if embedUpdater, ok := ew.storage.(interface{ UpdateNodeEmbedding(*storage.Node) error }); ok {
-		// UpdateNodeEmbedding only updates existing nodes - returns ErrNotFound if node doesn't exist
-		updateErr = embedUpdater.UpdateNodeEmbedding(node)
-		if updateErr == storage.ErrNotFound {
-			// Node was deleted - remove from pending index and skip
-			fmt.Printf("⚠️  Node %s was deleted - skipping update to prevent orphaned node\n", node.ID)
-			ew.markNodeEmbedded(node.ID)
-			return false
-		}
-	} else {
-		// Fallback: UpdateNode has upsert behavior which can create orphaned nodes
-		// This should only happen if the storage engine doesn't support UpdateNodeEmbedding
-		// For safety, we've already verified the node exists above
-		updateErr = ew.storage.UpdateNode(node)
+	// The storage owner atomically verifies source and operation identity while
+	// updating only embedding fields. It never recreates a deleted source.
+	updateErr := ew.persistEmbeddingState(node, sourceSnapshot)
+	if errors.Is(updateErr, storage.ErrEmbeddingSourceChanged) {
+		ew.addNodeToPendingEmbeddings(node.ID)
+		return true
 	}
 	if updateErr != nil {
 		// If update failed because node doesn't exist, skip it (already claimed, don't re-queue)
@@ -809,14 +813,6 @@ func (ew *EmbedWorker) processNextBatch() bool {
 	ew.markNodeEmbedded(node.ID)
 
 	ew.processed.Add(1)
-	// Track this node as recently processed to prevent re-processing before DB commit is visible
-	ew.mu.Lock()
-	if ew.recentlyProcessed == nil {
-		ew.recentlyProcessed = make(map[string]time.Time)
-	}
-	ew.recentlyProcessed[string(node.ID)] = time.Now()
-	ew.mu.Unlock()
-
 	// Log success with appropriate message
 	if len(node.ChunkEmbeddings) > 0 {
 		dims := 0
@@ -904,7 +900,7 @@ func (ew *EmbedWorker) addNodeToPendingEmbeddings(nodeID storage.NodeID) {
 
 // embedChunksInBatches embeds chunks using bounded request sizes.
 // This avoids sending massive single EmbedBatch requests for large files.
-func (ew *EmbedWorker) embedChunksInBatches(chunks []string, nodeID storage.NodeID) ([][]float32, error) {
+func (ew *EmbedWorker) embedChunksInBatches(provider embed.Embedder, chunks []string, nodeID storage.NodeID) ([][]float32, error) {
 	if len(chunks) == 0 {
 		return nil, nil
 	}
@@ -919,7 +915,7 @@ func (ew *EmbedWorker) embedChunksInBatches(chunks []string, nodeID storage.Node
 			end = len(chunks)
 		}
 		batch := chunks[start:end]
-		batchEmbeddings, err := ew.embedBatchWithRetry(batch)
+		batchEmbeddings, err := ew.embedBatchWithRetry(provider, batch)
 		if err != nil {
 			return nil, localizedError(localization.NornicDBCoreEmbedBatchFailed(start+1, end, len(chunks), string(nodeID), err), err)
 		}
@@ -932,7 +928,7 @@ func (ew *EmbedWorker) embedChunksInBatches(chunks []string, nodeID storage.Node
 }
 
 // embedBatchWithRetry retries a single micro-batch with backoff.
-func (ew *EmbedWorker) embedBatchWithRetry(chunks []string) ([][]float32, error) {
+func (ew *EmbedWorker) embedBatchWithRetry(provider embed.Embedder, chunks []string) ([][]float32, error) {
 	var embeddings [][]float32
 	var err error
 	for attempt := 1; attempt <= ew.config.MaxRetries; attempt++ {
@@ -942,7 +938,7 @@ func (ew *EmbedWorker) embedBatchWithRetry(chunks []string) ([][]float32, error)
 		}
 		resultCh := make(chan embedResult, 1)
 		go func() {
-			embs, embedErr := ew.embedder.EmbedBatch(ew.ctx, chunks)
+			embs, embedErr := provider.EmbedBatch(ew.ctx, chunks)
 			resultCh <- embedResult{embeddings: embs, err: embedErr}
 		}()
 		select {
@@ -1014,39 +1010,8 @@ func (s WorkerStats) MarshalJSON() ([]byte, error) {
 //   - All scalar fields (ID, Labels, Embedding, etc.)
 //   - Deep copy of Properties map
 func copyNodeForEmbedding(src *storage.Node) *storage.Node {
-	if src == nil {
-		return nil
-	}
-
-	// Create a new node with copied scalar fields
-	dst := &storage.Node{
-		ID:        src.ID,
-		Labels:    make([]string, len(src.Labels)),
-		CreatedAt: src.CreatedAt,
-		UpdatedAt: src.UpdatedAt,
-	}
-
-	// Copy labels
-	copy(dst.Labels, src.Labels)
-
-	// Copy chunk embeddings if present (always stored in ChunkEmbeddings, even single chunk = array of 1)
-	if len(src.ChunkEmbeddings) > 0 {
-		dst.ChunkEmbeddings = make([][]float32, len(src.ChunkEmbeddings))
-		for i, emb := range src.ChunkEmbeddings {
-			dst.ChunkEmbeddings[i] = make([]float32, len(emb))
-			copy(dst.ChunkEmbeddings[i], emb)
-		}
-	}
-
-	// Deep copy Properties map - this is the critical part to avoid race condition
-	if src.Properties != nil {
-		dst.Properties = make(map[string]any, len(src.Properties))
-		for k, v := range src.Properties {
-			dst.Properties[k] = v // Shallow copy of values is OK for our use case
-		}
-	}
-
-	return dst
+	// Preserve controls, attempts and named vectors through the canonical owner.
+	return storage.CopyNode(src)
 }
 
 // Legacy aliases for compatibility with existing code
@@ -1065,4 +1030,11 @@ func NewEmbedQueue(embedder embed.Embedder, storage storage.Engine, config *Embe
 // Enqueue is now just a trigger - tells worker to check for work.
 func (ew *EmbedWorker) Enqueue(nodeID string) {
 	ew.Trigger()
+}
+
+// SetEmbedderResolver shares the database's provider registry with background work.
+func (ew *EmbedWorker) SetEmbedderResolver(resolver func(storage.NodeID) (embed.Embedder, error)) {
+	ew.mu.Lock()
+	ew.embedderResolver = resolver
+	ew.mu.Unlock()
 }

@@ -81,6 +81,7 @@ message SearchHit {
   // Matching child results. One parent hit consumes one page slot regardless
   // of the number of passages.
   repeated SearchHit passages = 10;
+  repeated SupportingPassage supporting_passages = 11;
 }
 
 message SearchTextResponse {
@@ -108,3 +109,13 @@ message SearchTextResponse {
   string completion = 18;
 }
 
+
+// Complete provider-returned supporting text, with its source and model identity.
+message SupportingPassage {
+ string node_id = 1;
+ uint32 chunk_index = 2;
+ string text = 3;
+ repeated string matched_by = 4;
+ string space = 5;
+ string source_fingerprint = 6;
+}

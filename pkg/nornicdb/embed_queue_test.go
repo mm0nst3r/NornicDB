@@ -1847,7 +1847,7 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 			config:   &EmbedWorkerConfig{MaxRetries: 2},
 			ctx:      context.Background(),
 		}
-		out, err := ew.embedBatchWithRetry([]string{"a", "b"})
+		out, err := ew.embedBatchWithRetry(ew.embedder, []string{"a", "b"})
 		require.NoError(t, err)
 		require.Len(t, out, 2)
 		emb.mu.Lock()
@@ -1864,7 +1864,7 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 			config:   &EmbedWorkerConfig{MaxRetries: 3},
 			ctx:      ctx,
 		}
-		out, err := ew.embedBatchWithRetry([]string{"a"})
+		out, err := ew.embedBatchWithRetry(ew.embedder, []string{"a"})
 		require.Error(t, err)
 		require.ErrorIs(t, err, context.Canceled)
 		require.Nil(t, out)
@@ -1881,7 +1881,7 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 			config:   &EmbedWorkerConfig{EmbedBatchSize: 2, MaxRetries: 1},
 			ctx:      context.Background(),
 		}
-		out, err := ew.embedChunksInBatches([]string{"c1", "c2", "c3"}, storage.NodeID("n1"))
+		out, err := ew.embedChunksInBatches(ew.embedder, []string{"c1", "c2", "c3"}, storage.NodeID("n1"))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "embedding count mismatch")
 		require.Nil(t, out)

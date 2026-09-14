@@ -2,6 +2,7 @@ package nornicgrpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -48,9 +49,13 @@ type Service struct {
 	searcher         Searcher
 	localizer        *localization.Manager
 	ownerFromContext func(context.Context) string
+	resolveSearcher  func() (Searcher, error)
 }
 
 type Config struct {
+	// ResolveSearcher selects the current configured search service for each request.
+	// Server bindings use this when configuration can replace the cached service.
+	ResolveSearcher func() (Searcher, error)
 	DefaultDatabase string
 	MaxLimit        int
 	// RerankEnabled enables Stage-2 reranking for search when a reranker is configured.
@@ -89,6 +94,7 @@ func NewService(cfg Config, embedQuery EmbedQueryFunc, chunkQuery ChunkQueryFunc
 		searcher:         searcher,
 		localizer:        cfg.Localizer,
 		ownerFromContext: cfg.OwnerFromContext,
+		resolveSearcher:  cfg.ResolveSearcher,
 	}, nil
 }
 
@@ -102,8 +108,27 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 	if req.Query == "" && req.Qid == "" && req.Mode != string(search.SearchContinuationID) {
 		return nil, s.localizedStatus(ctx, codes.InvalidArgument, localization.QueryRequired())
 	}
+	searcher := s.searcher
+	if s.resolveSearcher != nil {
+		var err error
+		searcher, err = s.resolveSearcher()
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		if searcher == nil {
+			return nil, s.localizedStatus(ctx, codes.Internal, localization.SearcherRequired())
+		}
+	}
+	opts := searchOptions(req, s.maxLimit, s.rerankEnabled)
+	if native, ok := searcher.(interface {
+		NativeRerankEnabled() bool
+		RerankSearchResponse(context.Context, string, *search.SearchResponse, *search.SearchOptions) error
+	}); ok && native.NativeRerankEnabled() {
+		opts.RerankEnabled = true
+		opts.RerankAfterFusion = native.RerankSearchResponse
+	}
 	if continuationRequested {
-		continuable, ok := s.searcher.(continuationSearcher)
+		continuable, ok := searcher.(continuationSearcher)
 		if !ok {
 			return nil, status.Error(codes.Unimplemented, "search continuation is unavailable")
 		}
@@ -130,8 +155,8 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 			continuation.RankedLimit = int(*req.RankedLimit)
 		}
 		page, err := continuable.SearchTextContinuation(
-			ctx, req.Query, searchOptions(req, s.maxLimit, s.rerankEnabled), continuation,
-			search.ChunkQueryFunc(s.chunkQuery), search.EmbedQueryFunc(s.embedQuery), s.searcher.Search, search.ChunkedSearchErrorPolicy{},
+			ctx, req.Query, opts, continuation,
+			search.ChunkQueryFunc(s.chunkQuery), search.EmbedQueryFunc(s.embedQuery), searcher.Search, search.ChunkedSearchErrorPolicy{},
 		)
 		if err != nil {
 			return nil, s.continuationStatus(ctx, err)
@@ -144,25 +169,6 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		return grpcContinuationResponse(page, time.Since(start)), nil
 	}
 
-	limit := int(req.Limit)
-	if limit <= 0 {
-		limit = 10
-	}
-	if limit > s.maxLimit {
-		limit = s.maxLimit
-	}
-
-	opts := search.DefaultSearchOptions()
-	opts.Limit = limit
-	opts.RerankEnabled = s.rerankEnabled
-	if len(req.Labels) > 0 {
-		opts.Types = req.Labels
-	}
-	if req.MinSimilarity != nil {
-		v := float64(*req.MinSimilarity)
-		opts.MinSimilarity = &v
-	}
-
 	chunkQuery := search.ChunkQueryFunc(nil)
 	if s.chunkQuery != nil {
 		chunkQuery = func(ctx context.Context, query string) ([]string, error) {
@@ -173,7 +179,7 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 			return chunks, nil
 		}
 	}
-	resp, err := search.SearchTextChunks(ctx, req.Query, opts, chunkQuery, search.EmbedQueryFunc(s.embedQuery), s.searcher.Search)
+	resp, err := search.SearchTextChunks(ctx, req.Query, opts, chunkQuery, search.EmbedQueryFunc(s.embedQuery), searcher.Search)
 	if err != nil {
 		if status.Code(err) != codes.Unknown {
 			return nil, err
@@ -186,6 +192,10 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		out = append(out, grpcSearchHit(r))
 	}
 
+	if resp.Rerank != nil {
+		report, _ := json.Marshal(resp.Rerank)
+		grpc.SetTrailer(ctx, metadata.Pairs("nornicdb-rerank", string(report)))
+	}
 	return &gen.SearchTextResponse{
 		SearchMethod:      resp.SearchMethod,
 		Hits:              out,
@@ -256,16 +266,6 @@ func grpcContinuationResponse(page *search.SearchContinuationPage, elapsed time.
 	return response
 }
 
-func grpcSearchHit(r search.SearchResult) *gen.SearchHit {
-	props, _ := structpb.NewStruct(r.Properties)
-	return &gen.SearchHit{
-		NodeId: string(r.NodeID), Labels: r.Labels, Properties: props,
-		Score: float32(r.Score), RrfScore: float32(r.RRFScore),
-		VectorRank: int32(r.VectorRank), Bm25Rank: int32(r.BM25Rank),
-		Phase: r.Phase, GroupKey: r.GroupKey, Passages: grpcSearchPassages(r.Passages),
-	}
-}
-
 func grpcSearchPassages(passages []search.SearchPassage) []*gen.SearchHit {
 	out := make([]*gen.SearchHit, len(passages))
 	for index, passage := range passages {
@@ -291,4 +291,23 @@ func (s *Service) localizedStatus(ctx context.Context, code codes.Code, message 
 		text = message.Fallback
 	}
 	return status.Error(code, text)
+}
+
+func grpcSearchHit(r search.SearchResult) *gen.SearchHit {
+	props, _ := structpb.NewStruct(r.Properties)
+	passages := make([]*gen.SupportingPassage, 0, len(r.SupportingPassages))
+	for _, p := range r.SupportingPassages {
+		passages = append(passages, &gen.SupportingPassage{NodeId: p.NodeID, ChunkIndex: uint32(p.ChunkIndex), Text: p.Text, MatchedBy: p.MatchedBy, Space: p.Space, SourceFingerprint: p.SourceFingerprint})
+	}
+	return &gen.SearchHit{
+		NodeId:             string(r.NodeID),
+		Labels:             r.Labels,
+		Properties:         props,
+		Score:              float32(r.Score),
+		RrfScore:           float32(r.RRFScore),
+		VectorRank:         int32(r.VectorRank),
+		Bm25Rank:           int32(r.BM25Rank),
+		SupportingPassages: passages,
+		Phase:              r.Phase, GroupKey: r.GroupKey, Passages: grpcSearchPassages(r.Passages),
+	}
 }

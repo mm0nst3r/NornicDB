@@ -2028,6 +2028,16 @@ func ReplayWALEntry(engine Engine, entry WALEntry) error {
 	namespacedEngine := NewNamespacedEngine(baseEngine, dbName)
 
 	switch entry.Operation {
+	case OpUpdateEmbeddingState:
+		var data WALNodeData
+		if err := json.Unmarshal(entry.Data, &data); err != nil {
+			return err
+		}
+		err := namespacedEngine.UpdateNodeEmbeddingIfCurrent(data.Node, data.OldNode)
+		if errors.Is(err, ErrEmbeddingSourceChanged) || errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
 	case OpCreateNode:
 		var data WALNodeData
 		if err := json.Unmarshal(entry.Data, &data); err != nil {
@@ -2264,7 +2274,7 @@ func UndoWALEntry(engine Engine, entry WALEntry) error {
 		}
 		return engine.BulkCreateEdges(data.OldEdges)
 
-	case OpCheckpoint, OpTxBegin, OpTxCommit, OpTxAbort, OpUpdateEmbedding:
+	case OpCheckpoint, OpTxBegin, OpTxCommit, OpTxAbort, OpUpdateEmbedding, OpUpdateEmbeddingState:
 		// These don't need undo
 		return nil
 

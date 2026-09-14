@@ -12,6 +12,7 @@ import (
 
 // NodePayload is the replication-safe representation of storage.Node, including embeddings.
 type NodePayload struct {
+	EmbedMeta       map[string]any
 	ID              string
 	Labels          []string
 	Properties      map[string]any
@@ -37,6 +38,7 @@ func init() {
 	// Register common concrete types used in Properties to help gob handle interface{} values.
 	gob.Register(map[string]any{})
 	gob.Register([]any{})
+	gob.Register([]map[string]any{})
 	gob.Register([]string{})
 	gob.Register([]float64{})
 	gob.Register([]float32{})
@@ -70,6 +72,7 @@ func encodeNodePayload(node *storage.Node) ([]byte, error) {
 		Properties:      node.Properties,
 		NamedEmbeddings: node.NamedEmbeddings,
 		ChunkEmbeddings: node.ChunkEmbeddings,
+		EmbedMeta:       node.EmbedMeta,
 		CreatedAtUnixNs: node.CreatedAt.UnixNano(),
 		UpdatedAtUnixNs: node.UpdatedAt.UnixNano(),
 	}
@@ -85,6 +88,7 @@ func decodeNodePayload(data []byte) (*storage.Node, error) {
 			Properties:      payload.Properties,
 			NamedEmbeddings: payload.NamedEmbeddings,
 			ChunkEmbeddings: payload.ChunkEmbeddings,
+			EmbedMeta:       payload.EmbedMeta,
 		}
 		if payload.CreatedAtUnixNs != 0 {
 			node.CreatedAt = time.Unix(0, payload.CreatedAtUnixNs)
