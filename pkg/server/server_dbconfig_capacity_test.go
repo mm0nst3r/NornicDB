@@ -22,10 +22,12 @@ func openPersistentDBConfigTestServer(t *testing.T, dataDir string) (*Server, *a
 	database, err := nornicdb.Open(dataDir, dbConfig)
 	require.NoError(t, err)
 
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
 	authenticator, err := auth.NewAuthenticator(auth.AuthConfig{
 		SecurityEnabled: true,
 		JWTSecret:       []byte("test-secret-key-for-testing-only-32b"),
-	}, storage.NewMemoryEngine())
+	}, authStorage)
 	require.NoError(t, err)
 	_, err = authenticator.CreateUser("admin", "password123", []auth.Role{auth.RoleAdmin})
 	require.NoError(t, err)
@@ -36,6 +38,7 @@ func openPersistentDBConfigTestServer(t *testing.T, dataDir string) (*Server, *a
 	serverConfig.ProcessConfig = dbConfig
 	server, err := New(database, authenticator, serverConfig)
 	require.NoError(t, err)
+	t.Cleanup(func() { stopTestServer(t, server) })
 	return server, authenticator, database
 }
 
@@ -135,13 +138,15 @@ func TestAdminDatabaseConfigUsesInjectedProcessConfig(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, database.Close()) })
 
-	authenticator, err := auth.NewAuthenticator(auth.AuthConfig{SecurityEnabled: false}, storage.NewMemoryEngine())
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
+	authenticator, err := auth.NewAuthenticator(auth.AuthConfig{SecurityEnabled: false}, authStorage)
 	require.NoError(t, err)
 	serverConfig := DefaultConfig()
 	serverConfig.ProcessConfig = dbConfig
 	server, err := New(database, authenticator, serverConfig)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = server.Stop(context.Background()) })
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	response := makeRequest(t, server, http.MethodGet, "/admin/databases/nornic/config", nil, "")
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())

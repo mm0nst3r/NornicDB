@@ -31,6 +31,7 @@ func TestMCPServer_EnabledByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Server creation failed: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	if server == nil {
 		t.Fatal("Server should not be nil")
@@ -59,6 +60,7 @@ func TestMCPServer_DisabledByConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Server creation failed: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	if server == nil {
 		t.Fatal("Server should not be nil")
@@ -88,6 +90,7 @@ func TestMCPServer_DisabledStillAllowsHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Server creation failed: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	// Server should still be functional for HTTP API
 	if server.db == nil {

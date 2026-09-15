@@ -43,6 +43,16 @@ func setupTestServer(t *testing.T) (*Server, *auth.Authenticator) {
 	return setupTestServerWithConfig(t, nil)
 }
 
+func stopTestServer(t testing.TB, server *Server) {
+	t.Helper()
+	if server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = server.Stop(ctx)
+}
+
 func setupTestServerWithConfig(t *testing.T, configure func(*Config)) (*Server, *auth.Authenticator) {
 	t.Helper()
 
@@ -80,6 +90,7 @@ func setupTestServerWithConfig(t *testing.T, configure func(*Config)) (*Server, 
 	}
 	// Use memory storage for tests
 	memoryStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = memoryStorage.Close() })
 	authenticator, err := auth.NewAuthenticator(authConfig, memoryStorage)
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
@@ -116,6 +127,7 @@ func setupTestServerWithConfig(t *testing.T, configure func(*Config)) (*Server, 
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	return server, authenticator
 }
@@ -354,6 +366,8 @@ func TestNew(t *testing.T) {
 				}
 				if server == nil {
 					t.Error("expected server, got nil")
+				} else {
+					t.Cleanup(func() { stopTestServer(t, server) })
 				}
 			}
 		})
@@ -895,12 +909,20 @@ func TestHandleOpenTransaction_CompositeRemoteOpenSucceeds(t *testing.T) {
 	server, auth := setupTestServer(t)
 	token := getAuthToken(t, auth, "admin")
 
+	var remoteEngines []storage.Engine
+	t.Cleanup(func() {
+		for _, engine := range remoteEngines {
+			_ = engine.Close()
+		}
+	})
 	dbManager, err := multidb.NewDatabaseManager(server.db.GetBaseStorageForManager(), &multidb.Config{
 		DefaultDatabase: "nornic",
 		SystemDatabase:  "system",
 		RemoteEngineFactory: func(_ multidb.ConstituentRef, authToken string) (storage.Engine, error) {
 			_ = authToken
-			return storage.NewMemoryEngine(), nil
+			engine := storage.NewMemoryEngine()
+			remoteEngines = append(remoteEngines, engine)
+			return engine, nil
 		},
 	})
 	require.NoError(t, err)
@@ -1027,12 +1049,20 @@ func TestGetExecutorForDatabaseWithAuthBranches(t *testing.T) {
 	require.False(t, server.databaseHasRemoteConstituent("missing_db"))
 
 	var tokenSeen string
+	var remoteEngines []storage.Engine
+	t.Cleanup(func() {
+		for _, engine := range remoteEngines {
+			_ = engine.Close()
+		}
+	})
 	dbManager, err := multidb.NewDatabaseManager(server.db.GetBaseStorageForManager(), &multidb.Config{
 		DefaultDatabase: "nornic",
 		SystemDatabase:  "system",
 		RemoteEngineFactory: func(_ multidb.ConstituentRef, authToken string) (storage.Engine, error) {
 			tokenSeen = authToken
-			return storage.NewMemoryEngine(), nil
+			engine := storage.NewMemoryEngine()
+			remoteEngines = append(remoteEngines, engine)
+			return engine, nil
 		},
 	})
 	require.NoError(t, err)
@@ -2525,10 +2555,12 @@ func TestHandleImplicitTransaction_AsyncWriteAccepted(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
 	authn, err := auth.NewAuthenticator(auth.AuthConfig{
 		SecurityEnabled: true,
 		JWTSecret:       []byte("test-secret-key-for-testing-only-32b"),
-	}, storage.NewMemoryEngine())
+	}, authStorage)
 	require.NoError(t, err)
 	_, _ = authn.CreateUser("admin", "password123", []auth.Role{auth.RoleAdmin})
 
@@ -2536,7 +2568,7 @@ func TestHandleImplicitTransaction_AsyncWriteAccepted(t *testing.T) {
 	cfg.Port = 0
 	srv, err := New(db, authn, cfg)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	t.Cleanup(func() { stopTestServer(t, srv) })
 
 	req := httptest.NewRequest(http.MethodPost, "/db/nornic/tx/commit", strings.NewReader(`{"statements":[{"statement":"CREATE (n:Doc {name:'async'})"}]}`))
 	req = req.WithContext(context.WithValue(context.Background(), contextKeyClaims, &auth.JWTClaims{
@@ -2565,10 +2597,12 @@ func TestHandleImplicitTransaction_AsyncEnabledSyncFallbackReturnsOK(t *testing.
 	require.NoError(t, err)
 	defer db.Close()
 
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
 	authn, err := auth.NewAuthenticator(auth.AuthConfig{
 		SecurityEnabled: true,
 		JWTSecret:       []byte("test-secret-key-for-testing-only-32b"),
-	}, storage.NewMemoryEngine())
+	}, authStorage)
 	require.NoError(t, err)
 	_, _ = authn.CreateUser("admin", "password123", []auth.Role{auth.RoleAdmin})
 
@@ -2576,7 +2610,7 @@ func TestHandleImplicitTransaction_AsyncEnabledSyncFallbackReturnsOK(t *testing.
 	cfg.Port = 0
 	srv, err := New(db, authn, cfg)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	t.Cleanup(func() { stopTestServer(t, srv) })
 
 	req := httptest.NewRequest(http.MethodPost, "/db/nornic/tx/commit", strings.NewReader(`{"statements":[{"statement":"CREATE (n:Doc {name:'sync'}) SET n.updatedAt = datetime() RETURN n.name"}]}`))
 	req = req.WithContext(context.WithValue(context.Background(), contextKeyClaims, &auth.JWTClaims{
@@ -3584,6 +3618,7 @@ func TestTokenAuthDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	// Token endpoint should fail when auth is not configured
 	resp := makeRequest(t, server, "POST", "/auth/token", map[string]interface{}{
@@ -4567,6 +4602,7 @@ func TestNew_SearchRerankProviderBranches(t *testing.T) {
 		s, err := New(db, nil, cfg)
 		require.NoError(t, err)
 		require.NotNil(t, s)
+		t.Cleanup(func() { stopTestServer(t, s) })
 	})
 
 	t.Run("external provider with missing api url logs disabled path", func(t *testing.T) {
@@ -4580,6 +4616,7 @@ func TestNew_SearchRerankProviderBranches(t *testing.T) {
 		s, err := New(db, nil, cfg)
 		require.NoError(t, err)
 		require.NotNil(t, s)
+		t.Cleanup(func() { stopTestServer(t, s) })
 	})
 }
 

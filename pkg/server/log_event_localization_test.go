@@ -371,8 +371,9 @@ func testServerLogAcrossLocales(t *testing.T, eventID, english, spanish string, 
 				configure(config)
 			}
 
-			_, err = New(db, nil, config)
+			server, err := New(db, nil, config)
 			require.NoError(t, err)
+			t.Cleanup(func() { stopTestServer(t, server) })
 
 			record := findJSONLogRecord(t, output.Bytes(), eventID, english)
 			require.Equal(t, test.message, record["msg"])

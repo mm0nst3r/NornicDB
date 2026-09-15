@@ -31,10 +31,12 @@ func setupRetentionTestServer(t *testing.T) (*Server, *auth.Authenticator) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
 	authenticator, err := auth.NewAuthenticator(auth.AuthConfig{
 		SecurityEnabled: true,
 		JWTSecret:       []byte("test-secret-key-for-testing-only-32b"),
-	}, storage.NewMemoryEngine())
+	}, authStorage)
 	require.NoError(t, err)
 	_, err = authenticator.CreateUser("admin", "password123", []auth.Role{auth.RoleAdmin})
 	require.NoError(t, err)
@@ -49,6 +51,7 @@ func setupRetentionTestServer(t *testing.T) (*Server, *auth.Authenticator) {
 
 	server, err := New(db, authenticator, serverConfig)
 	require.NoError(t, err)
+	t.Cleanup(func() { stopTestServer(t, server) })
 	return server, authenticator
 }
 

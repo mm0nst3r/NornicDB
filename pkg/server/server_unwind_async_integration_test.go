@@ -30,10 +30,12 @@ func setupAsyncUnwindServer(t *testing.T) *Server {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
 	authn, err := auth.NewAuthenticator(auth.AuthConfig{
 		SecurityEnabled: true,
 		JWTSecret:       []byte("test-secret-key-for-testing-only-32b"),
-	}, storage.NewMemoryEngine())
+	}, authStorage)
 	require.NoError(t, err)
 	_, _ = authn.CreateUser("admin", "password123", []auth.Role{auth.RoleAdmin})
 
@@ -41,6 +43,7 @@ func setupAsyncUnwindServer(t *testing.T) *Server {
 	cfg.Port = 0
 	srv, err := New(db, authn, cfg)
 	require.NoError(t, err)
+	t.Cleanup(func() { stopTestServer(t, srv) })
 	return srv
 }
 
@@ -54,10 +57,12 @@ func setupAsyncUnwindServerWithDir(t *testing.T, dir string) (*Server, *nornicdb
 	db, err := nornicdb.Open(dir, dbCfg)
 	require.NoError(t, err)
 
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
 	authn, err := auth.NewAuthenticator(auth.AuthConfig{
 		SecurityEnabled: true,
 		JWTSecret:       []byte("test-secret-key-for-testing-only-32b"),
-	}, storage.NewMemoryEngine())
+	}, authStorage)
 	require.NoError(t, err)
 	_, _ = authn.CreateUser("admin", "password123", []auth.Role{auth.RoleAdmin})
 
@@ -65,6 +70,7 @@ func setupAsyncUnwindServerWithDir(t *testing.T, dir string) (*Server, *nornicdb
 	cfg.Port = 0
 	srv, err := New(db, authn, cfg)
 	require.NoError(t, err)
+	t.Cleanup(func() { stopTestServer(t, srv) })
 	return srv, db
 }
 
@@ -259,6 +265,7 @@ func TestImplicitTx_UnwindBulkCreate_ArchitecturePayload_PersistsAcrossRestart(t
 	got := pollLabelCount(t, srv, "NornicArchitectureBulk", total, 90*time.Second)
 	require.Equal(t, int64(total), got, "pre-restart count mismatch")
 
+	stopTestServer(t, srv)
 	require.NoError(t, db.Close())
 
 	// Re-open from the same on-disk path and verify rows persisted to disk.

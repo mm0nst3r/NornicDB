@@ -439,6 +439,7 @@ func TestMultiDatabase_GetExecutorForDatabase(t *testing.T) {
 
 	server, err := New(db, nil, nil)
 	require.NoError(t, err)
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	// Test with existing database
 	executor, err := server.getExecutorForDatabase("nornic")

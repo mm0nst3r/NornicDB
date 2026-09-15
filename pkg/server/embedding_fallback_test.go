@@ -27,6 +27,7 @@ func TestEmbeddingFallback_UnavailableEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Server creation should not fail with unavailable embeddings: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	if server == nil {
 		t.Fatal("Server should not be nil")
@@ -55,6 +56,7 @@ func TestEmbeddingFallback_DisabledByConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Server creation failed: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	if server == nil {
 		t.Fatal("Server should not be nil")

@@ -383,6 +383,7 @@ func TestCORSWildcardDoesNotSendCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	req := httptest.NewRequest("OPTIONS", "/", nil)
 	req.Header.Set("Origin", "http://evil.com")
@@ -429,6 +430,7 @@ func TestCORSSpecificOriginAllowsCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	req := httptest.NewRequest("OPTIONS", "/", nil)
 	req.Header.Set("Origin", "http://trusted.com")
@@ -475,6 +477,7 @@ func TestCORSDisallowedOriginNoHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	req := httptest.NewRequest("OPTIONS", "/", nil)
 	req.Header.Set("Origin", "http://evil.com")
@@ -568,7 +571,7 @@ func TestRateLimitMiddleware_Returns429WhenLimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer server.rateLimiter.Stop()
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	router := server.buildRouter()
 
@@ -627,7 +630,7 @@ func TestRateLimitMiddleware_SkipsHealthEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer server.rateLimiter.Stop()
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	router := server.buildRouter()
 
@@ -950,7 +953,9 @@ func TestNewAdditionalInitializationCoverage(t *testing.T) {
 		SecurityEnabled: true,
 		JWTSecret:       []byte("test-secret-key-for-testing-only-32b"),
 	}
-	authenticator, err := auth.NewAuthenticator(authConfig, storage.NewMemoryEngine())
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
+	authenticator, err := auth.NewAuthenticator(authConfig, authStorage)
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
@@ -964,6 +969,7 @@ func TestNewAdditionalInitializationCoverage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
+		t.Cleanup(func() { stopTestServer(t, server) })
 		if server.oauthManager != nil {
 			t.Fatal("oauthManager should be nil without authenticator")
 		}
@@ -988,10 +994,10 @@ func TestNewAdditionalInitializationCoverage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
+		t.Cleanup(func() { stopTestServer(t, server) })
 		if server.rateLimiter == nil {
 			t.Fatal("expected rate limiter to be initialized")
 		}
-		defer server.rateLimiter.Stop()
 		if server.oauthManager == nil {
 			t.Fatal("expected oauthManager with authenticator")
 		}
@@ -1199,7 +1205,9 @@ func TestDBConfigHandlers(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 
 	// configured store branches
-	server.dbConfigStore = dbconfig.NewStore(storage.NewMemoryEngine())
+	configStoreEngine := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = configStoreEngine.Close() })
+	server.dbConfigStore = dbconfig.NewStore(configStoreEngine)
 	_ = server.dbConfigStore.Load(context.Background())
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/databases//config", nil)
@@ -1449,6 +1457,7 @@ func TestHeimdallRouterAndHelpers(t *testing.T) {
 
 	// related nodes traversal
 	mem := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = mem.Close() })
 	_, err = mem.CreateNode(&storage.Node{ID: "nornic:n1", Labels: []string{"A"}})
 	assert.NoError(t, err)
 	_, err = mem.CreateNode(&storage.Node{ID: "nornic:n2", Labels: []string{"B"}})
@@ -2191,10 +2200,12 @@ func TestGrantAccessAndRBACResolverBranches(t *testing.T) {
 
 func setupAuthForHelper(t *testing.T) *auth.Authenticator {
 	t.Helper()
+	authStorage := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = authStorage.Close() })
 	a, err := auth.NewAuthenticator(auth.AuthConfig{
 		SecurityEnabled: true,
 		JWTSecret:       []byte("test-secret-key-for-testing-only-32b"),
-	}, storage.NewMemoryEngine())
+	}, authStorage)
 	assert.NoError(t, err)
 	return a
 }
@@ -2727,6 +2738,7 @@ func TestStartQdrantGRPCInvalidPermissionBranch(t *testing.T) {
 	if server == nil {
 		return
 	}
+	t.Cleanup(func() { stopTestServer(t, server) })
 
 	startErr := server.Start()
 	assert.Error(t, startErr)
