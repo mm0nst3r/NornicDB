@@ -58,20 +58,23 @@ population for `id` and `ranked_then_id`, so clients can distinguish a caller
 ceiling from true collection exhaustion.
 
 Progressive ranked continuation deepens short batches using the prepared query
-embeddings, including each chunk of a multi-chunk query. Short batches are not
-treated as completion unless the producer explicitly reports that a candidate
-budget was reached. The engine does not impose an arbitrary candidate ceiling:
+embeddings, including each chunk of a multi-chunk query. A single short batch is
+not treated as completion. If repeated deeper requests do not increase an
+approximate vector or hybrid ranked producer's prefix, the stream stops at the
+stable prefix and reports `completion: "candidate_pool_exhausted"` with
+`ranked_pool_exhausted: false`. Exact BM25 producers and opaque integrations
+still require proven exhaustion, an explicit candidate-budget signal, or an
+explicit ceiling. The engine does not impose an arbitrary candidate ceiling:
 retrieval may deepen to the searchable population. Go and Cypher callers may set
 `MaxCandidateLimit` to impose a lower per-request budget. If that budget is
-reached without proven exhaustion, an explicit candidate-budget signal, or the
-requested `max_results`, the operation fails with the existing capacity error
-instead of returning a falsely exhausted page. HNSW establishes exhaustion only
-when its pre-filter candidate heap covers the live index (excluding deleted
-entries) and the returned prefix is not truncated. Unavailable embedding or
-retrieval branches do not prevent an exact, selected BM25 fallback from
-completing. Other approximate generators that cannot establish coverage may
-reach a configured capacity limit even when a deeper request returns no
-additional results. Replaying that request does not increase its budget.
+reached without proven exhaustion, an explicit candidate-budget signal, repeated
+approximate-producer non-growth, or the requested `max_results`, the operation
+fails with the existing capacity error instead of returning a falsely exhausted
+page. HNSW establishes exhaustion only when its pre-filter candidate heap covers
+the live index (excluding deleted entries) and the returned prefix is not
+truncated. Unavailable embedding or retrieval branches do not prevent an exact,
+selected BM25 fallback from completing. Replaying a candidate-budgeted request
+does not increase its budget.
 
 ## HTTP
 

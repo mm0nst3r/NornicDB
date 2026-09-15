@@ -302,8 +302,11 @@ increases retrieval depth geometrically, reruns the search branches with the
 retained vectors and normalized options, performs canonical outer RRF over the
 larger prefixes, removes IDs already emitted or buffered, and appends newly
 discovered results. Expansion stops when enough rows are buffered, all branches
-report exhaustion, the optional `max_results` is reached, or a server resource
-budget rejects the operation.
+report exhaustion, repeated deeper requests stop increasing an approximate
+vector or hybrid ranked prefix, the optional `max_results` is reached, or a
+server resource budget rejects the operation. A repeated non-growing approximate
+prefix is reported as a candidate-budget boundary, not as eligible-population
+exhaustion.
 
 Repeated deepening is the first correctness-oriented implementation because it
 does not retain index locks or mutable index iterators across requests. It must
@@ -315,7 +318,12 @@ not a valid lifetime ceiling for a continued stream. Candidate depth may grow to
 the current searchable cardinality unless a caller supplies a lower
 `MaxCandidateLimit`. Candidate-generator implementations must report whether a
 returned prefix is exhausted; a short approximate response must not be
-presented as proof that the corpus is exhausted.
+presented as proof that the corpus is exhausted. Repeated non-growth from an
+approximate vector or hybrid producer during deeper continuation requests is
+treated as an honest bounded candidate pool so continuation does not repeat
+equivalent producer work indefinitely. Exact BM25 and opaque producers still
+need proven exhaustion, an explicit candidate-budget signal, or an explicit
+ceiling.
 
 If all retrieval branches establish exhaustion and the requested first page
 consumes every result, return it directly without registering a durable stream.

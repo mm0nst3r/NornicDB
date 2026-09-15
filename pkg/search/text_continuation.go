@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,8 @@ const (
 	SearchContinuationCandidateComplete  = "candidate_pool_exhausted"
 	SearchContinuationCollectionComplete = "eligible_population_exhausted"
 	SearchContinuationMaxResultsComplete = "max_results_reached"
+
+	continuationNonGrowingExpansionLimit = 2
 )
 
 // NodeAuthorizationFunc decides whether the current caller may read a node.
@@ -94,9 +97,62 @@ type searchContinuationState struct {
 	mu                sync.RWMutex
 	results           []SearchResult
 	seen              map[string]struct{}
+	plateau           continuationPlateauTracker
 	searchMethod      string
 	fallbackTriggered bool
 	maxResultsReached bool
+}
+
+type continuationPlateauTracker struct {
+	lastCount  int
+	nonGrowing int
+}
+
+func newContinuationPlateauTracker(initialCount int) continuationPlateauTracker {
+	return continuationPlateauTracker{lastCount: initialCount}
+}
+
+func (t *continuationPlateauTracker) budgetReached(response *SearchResponse) bool {
+	if response == nil {
+		return false
+	}
+	resultCount := len(response.Results)
+	retrievalExhausted := response.RetrievalExhausted
+	candidateBudgetReached := response.CandidateBudgetReached
+	if retrievalExhausted || candidateBudgetReached {
+		t.lastCount = resultCount
+		t.nonGrowing = 0
+		return candidateBudgetReached
+	}
+	if !continuationCanInferCandidateBudget(response.SearchMethod) {
+		return false
+	}
+	if resultCount <= t.lastCount {
+		t.nonGrowing++
+	} else {
+		t.nonGrowing = 0
+	}
+	t.lastCount = resultCount
+	return t.nonGrowing >= continuationNonGrowingExpansionLimit
+}
+
+func continuationCanInferCandidateBudget(searchMethod string) bool {
+	method := strings.ToLower(searchMethod)
+	return strings.Contains(method, "rrf_hybrid") ||
+		strings.HasPrefix(method, "vector_hnsw") ||
+		strings.HasPrefix(method, "vector_clustered") ||
+		strings.HasPrefix(method, "vector_ivf_hnsw") ||
+		strings.HasPrefix(method, "vector_ivfpq")
+}
+
+func markContinuationCandidateBudget(response *SearchResponse) *SearchResponse {
+	if response == nil {
+		return nil
+	}
+	copy := *response
+	copy.CandidateBudgetReached = true
+	copy.RetrievalExhausted = false
+	return &copy
 }
 
 // SearchTextContinuation starts or resumes a progressively deepened canonical
@@ -178,6 +234,10 @@ func (s *Service) SearchTextContinuation(
 			ownedOptions.Limit = rankedLimit
 		}
 		ranked, err := SearchTextChunksWithErrorPolicy(ctx, query, &ownedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
+		plateau := newContinuationPlateauTracker(0)
+		if err == nil && ranked != nil {
+			plateau = newContinuationPlateauTracker(len(ranked.Results))
+		}
 		for err == nil && rankedLimit <= 0 && !ranked.RetrievalExhausted {
 			if ranked.CandidateBudgetReached {
 				break
@@ -195,6 +255,9 @@ func (s *Service) SearchTextContinuation(
 			}
 			ownedOptions.Limit = nextLimit
 			ranked, err = SearchTextChunksWithErrorPolicy(ctx, query, &ownedOptions, cachedChunks, cachedEmbeds, searchQuery, errorPolicy)
+			if err == nil && plateau.budgetReached(ranked) {
+				ranked = markContinuationCandidateBudget(ranked)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -249,6 +312,7 @@ func (s *Service) SearchTextContinuation(
 		response:          searchResponseMetadata(initial),
 		results:           compactResults,
 		seen:              make(map[string]struct{}, len(initial.Results)),
+		plateau:           newContinuationPlateauTracker(len(initial.Results)),
 		searchMethod:      initial.SearchMethod,
 		fallbackTriggered: initial.FallbackTriggered,
 		maxResultsReached: maxResultsReached,
@@ -282,6 +346,11 @@ func (s *Service) SearchTextContinuation(
 		lastDepth = depth
 		state.mu.Lock()
 		defer state.mu.Unlock()
+		candidateBudgetReached := response.CandidateBudgetReached
+		if state.plateau.budgetReached(response) {
+			response = markContinuationCandidateBudget(response)
+			candidateBudgetReached = true
+		}
 		state.response = searchResponseMetadata(response)
 		state.searchMethod = response.SearchMethod
 		state.fallbackTriggered = response.FallbackTriggered
@@ -294,14 +363,14 @@ func (s *Service) SearchTextContinuation(
 			state.seen[id] = struct{}{}
 			state.results = append(state.results, compactContinuationResult(result))
 		}
-		if continuationMaxResultsReached(maxResults, len(state.results), response.RetrievalExhausted, response.CandidateBudgetReached) {
+		if continuationMaxResultsReached(maxResults, len(state.results), response.RetrievalExhausted, candidateBudgetReached) {
 			if len(state.results) > maxResults {
 				state.results = state.results[:maxResults]
 			}
 			state.maxResultsReached = true
 		}
 		exhausted := response.RetrievalExhausted ||
-			response.CandidateBudgetReached ||
+			candidateBudgetReached ||
 			state.maxResultsReached
 		return continuationRows(state.results), exhausted, nil
 	}

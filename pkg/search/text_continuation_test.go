@@ -530,6 +530,200 @@ func TestSearchTextContinuationRankedThenIDShortPrefixCanStillDeepen(t *testing.
 	require.Equal(t, []string{SearchContinuationRankedPhase, SearchContinuationRankedPhase, SearchContinuationRankedPhase}, []string{page.Results[0].Phase, page.Results[1].Phase, page.Results[2].Phase})
 }
 
+func TestSearchTextContinuationRankedThenIDStopsAfterRepeatedNonGrowingExpansion(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 80; index++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%03d", index))
+		_, err := engine.CreateNode(&storage.Node{
+			ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "library transcript"},
+		})
+		require.NoError(t, err)
+	}
+
+	var requestedLimits []int
+	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		requestedLimits = append(requestedLimits, opts.Limit)
+		resultCount := min(opts.Limit, 64)
+		results := make([]SearchResult, resultCount)
+		for index := range results {
+			id := fmt.Sprintf("doc-%03d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(80 - index)}
+		}
+		return &SearchResponse{
+			Results:            results,
+			SearchMethod:       "rrf_hybrid",
+			RetrievalExhausted: false,
+		}, nil
+	}
+
+	options := DefaultSearchOptions()
+	options.Limit = 20
+	options.MaxCandidateLimit = 4096
+	request := SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: SearchContinuationRankedThenID, N: 5}
+	first, err := service.SearchTextContinuation(
+		context.Background(), "library transcript", options, request,
+		nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []int{20, 40, 80, 160, 320}, requestedLimits)
+	require.Len(t, first.Results, 5)
+	require.Equal(t, 64, first.RankedCount)
+	require.NotNil(t, first.EligibleCount)
+	require.Equal(t, 80, *first.EligibleCount)
+	require.False(t, first.RankedPoolExhausted)
+	require.False(t, first.CollectionExhausted)
+	require.Equal(t, SearchContinuationMoreResults, first.Completion)
+	require.True(t, first.HasMore)
+
+	request.QID = first.QID
+	request.N = 200
+	second, err := service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+	require.NoError(t, err)
+	require.Len(t, second.Results, 75)
+	require.Equal(t, 64, second.RankedCount)
+	require.NotNil(t, second.EligibleCount)
+	require.Equal(t, 80, *second.EligibleCount)
+	require.Equal(t, SearchContinuationRankedPhase, second.Results[0].Phase)
+	require.Equal(t, SearchContinuationCatalogPhase, second.Results[len(second.Results)-1].Phase)
+	require.False(t, second.RankedPoolExhausted)
+	require.True(t, second.CollectionExhausted)
+	require.Equal(t, SearchContinuationCollectionComplete, second.Completion)
+	require.False(t, second.HasMore)
+}
+
+func TestSearchTextContinuationRankedStopsAfterRepeatedNonGrowingExpansion(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 80; index++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%03d", index))
+		_, err := engine.CreateNode(&storage.Node{
+			ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "library transcript"},
+		})
+		require.NoError(t, err)
+	}
+
+	var requestedLimits []int
+	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		requestedLimits = append(requestedLimits, opts.Limit)
+		resultCount := min(opts.Limit, 64)
+		results := make([]SearchResult, resultCount)
+		for index := range results {
+			id := fmt.Sprintf("doc-%03d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(80 - index)}
+		}
+		return &SearchResponse{
+			Results:            results,
+			SearchMethod:       "rrf_hybrid",
+			RetrievalExhausted: false,
+		}, nil
+	}
+
+	options := DefaultSearchOptions()
+	options.Limit = 20
+	options.MaxCandidateLimit = 4096
+	request := SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: SearchContinuationRanked, N: 5}
+	page, err := service.SearchTextContinuation(
+		context.Background(), "library transcript", options, request,
+		nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+	ids := make([]string, 0, 64)
+	for {
+		for _, result := range page.Results {
+			ids = append(ids, result.ID)
+		}
+		if !page.HasMore {
+			break
+		}
+		request.QID = page.QID
+		request.N = 25
+		page, err = service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+		require.NoError(t, err)
+	}
+	require.Equal(t, []int{20, 40, 80, 160, 320}, requestedLimits)
+	require.Len(t, ids, 64)
+	require.Equal(t, "doc-000", ids[0])
+	require.Equal(t, "doc-063", ids[len(ids)-1])
+	require.False(t, page.RankedPoolExhausted)
+	require.False(t, page.CollectionExhausted)
+	require.Equal(t, SearchContinuationCandidateComplete, page.Completion)
+	require.False(t, page.HasMore)
+}
+
+func TestSearchTextContinuationNonGrowingExpansionGetsSecondChance(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+	for index := 0; index < 3; index++ {
+		id := storage.NodeID(fmt.Sprintf("doc-%d", index))
+		_, err := engine.CreateNode(&storage.Node{
+			ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "library transcript"},
+		})
+		require.NoError(t, err)
+	}
+
+	var requestedLimits []int
+	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		requestedLimits = append(requestedLimits, opts.Limit)
+		resultCount := 1
+		if opts.Limit >= 16 {
+			resultCount = 3
+		}
+		results := make([]SearchResult, resultCount)
+		for index := range results {
+			id := fmt.Sprintf("doc-%d", index)
+			results[index] = SearchResult{ID: id, NodeID: storage.NodeID(id), Score: float64(3 - index)}
+		}
+		return &SearchResponse{
+			Results:            results,
+			SearchMethod:       "rrf_hybrid",
+			RetrievalExhausted: opts.Limit >= 64,
+		}, nil
+	}
+
+	options := DefaultSearchOptions()
+	options.Limit = 4
+	page, err := service.SearchTextContinuation(
+		context.Background(), "library transcript", options,
+		SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: SearchContinuationRankedThenID, N: 10},
+		nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []int{4, 8, 16, 32, 64}, requestedLimits)
+	require.Len(t, page.Results, 3)
+	require.Equal(t, 3, page.RankedCount)
+	require.True(t, page.RankedPoolExhausted)
+	require.NotNil(t, page.EligibleCount)
+	require.Equal(t, 3, *page.EligibleCount)
+}
+
+func TestSearchTextContinuationPlateauInferenceMethods(t *testing.T) {
+	tests := []struct {
+		method string
+		want   bool
+	}{
+		{method: "rrf_hybrid", want: true},
+		{method: "rrf_hybrid+rerank", want: true},
+		{method: "chunked_rrf_hybrid", want: true},
+		{method: "vector_hnsw", want: true},
+		{method: "vector_ivf_hnsw", want: true},
+		{method: "vector_ivfpq", want: true},
+		{method: "vector_clustered", want: true},
+		{method: "fulltext", want: false},
+		{method: "vector_brute", want: false},
+		{method: "vector_gpu_brute", want: false},
+		{method: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			require.Equal(t, tt.want, continuationCanInferCandidateBudget(tt.method))
+		})
+	}
+}
+
 func TestSearchTextContinuationRankedStopsAtDeclaredCandidateBudget(t *testing.T) {
 	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
 	service := NewService(engine)
