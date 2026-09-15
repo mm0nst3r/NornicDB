@@ -327,11 +327,11 @@ func (e *StorageExecutor) runSearchRequest(ctx context.Context, req map[string]i
 		chunkQuery := func(_ context.Context, text string) ([]string, error) {
 			return e.embedder.ChunkText(text, 512, 50)
 		}
+		// Query-embedding failures fail open like every other transport: the
+		// search degrades to BM25 and the row reports it through search_method
+		// and fallback_triggered. Only the caller's explicit failClosed opts out.
 		errorPolicy := search.ChunkedSearchErrorPolicy{
-			FatalEmbeddingError: func(error) bool {
-				_, native := embed.QueryProvider(e.embedder)
-				return failClosed || native
-			},
+			FatalEmbeddingError: func(error) bool { return failClosed },
 		}
 		if continuationRequested {
 			page, continuationErr := ensureSearchService(embedding).SearchTextContinuation(

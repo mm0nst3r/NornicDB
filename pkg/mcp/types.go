@@ -129,10 +129,14 @@ type DiscoverParams struct {
 
 // DiscoverResult - Output from discover tool
 type DiscoverResult struct {
-	Results     []SearchResult `json:"results"`
-	Method      string         `json:"method"` // "vector" or "keyword"
-	Total       int            `json:"total"`
-	Suggestions []string       `json:"suggestions,omitempty"`
+	Results []SearchResult `json:"results"`
+	Method  string         `json:"method"` // "vector" or "keyword"
+	// FallbackTriggered mirrors the search response on the other transports:
+	// the search ran keyword-only, because the query embedding failed (the
+	// search degraded instead of failing) or no embedder was available.
+	FallbackTriggered bool     `json:"fallback_triggered"`
+	Total             int      `json:"total"`
+	Suggestions       []string `json:"suggestions,omitempty"`
 }
 
 // SearchResult represents a search result node

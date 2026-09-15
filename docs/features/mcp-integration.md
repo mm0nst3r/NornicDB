@@ -179,6 +179,7 @@ limit: 20
 {
   "results": [{...}],
   "method": "vector",             // ← "vector" or "keyword"
+  "fallback_triggered": false,    // ← true when the search ran keyword-only (embedding failed or unavailable)
   "total": 10,
   "suggestions": [...]            // ← Related searches
 }

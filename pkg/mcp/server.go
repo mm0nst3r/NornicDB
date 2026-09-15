@@ -948,13 +948,15 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 				}
 			}
 
-			resp, err := search.SearchTextChunksWithErrorPolicy(ctx, query, opts, chunkQuery, embedQuery, svc.Search, search.ChunkedSearchErrorPolicy{
-				FatalEmbeddingError: func(error) bool { _, native := embed.QueryProvider(activeEmbedder); return native },
-			})
+			// A query-embedding failure fails open like every other transport:
+			// the canonical helper degrades to BM25 and the result reports it
+			// through method "keyword" and fallback_triggered.
+			resp, err := search.SearchTextChunks(ctx, query, opts, chunkQuery, embedQuery, svc.Search)
 			if err != nil {
 				return nil, err
 			}
 			if err == nil && resp != nil {
+				fallbackTriggered := resp.FallbackTriggered
 				if resp.SearchMethod == "chunked_rrf_hybrid" {
 					method = "vector"
 				}
@@ -983,7 +985,7 @@ func (s *Server) handleDiscover(ctx context.Context, args map[string]interface{}
 					}
 					results = append(results, res)
 				}
-				return DiscoverResult{Results: results, Method: method, Total: len(results)}, nil
+				return DiscoverResult{Results: results, Method: method, FallbackTriggered: fallbackTriggered, Total: len(results)}, nil
 			}
 		}
 	}
