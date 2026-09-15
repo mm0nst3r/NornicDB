@@ -540,6 +540,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chunkLoopStart := time.Now()
+	// TODO(alignment): only a dimension mismatch is fatal here, so a native
+	// Voyage query-embedding failure falls back to BM25 (fallback_triggered=true,
+	// provider diagnostics not returned), while Cypher db.retrieve and MCP
+	// discover fail closed on the same error. Pending the maintainer's decision
+	// on the intended failure policy; align all transports consistently then.
 	errorPolicy := search.ChunkedSearchErrorPolicy{
 		FatalEmbeddingError: func(err error) bool {
 			return errors.Is(err, nornicdb.ErrQueryEmbeddingDimensionMismatch)

@@ -192,6 +192,10 @@ func (s *Service) SearchText(ctx context.Context, req *gen.SearchTextRequest) (*
 		}
 		continuationOptions := searchOptions(req, s.maxLimit, s.rerankEnabled)
 		applyNativeRerank(continuationOptions, dependencies.Searcher)
+		// TODO(alignment): the empty error policy makes a native Voyage
+		// query-embedding failure fall back to BM25 here and in the one-shot path
+		// below, whereas Cypher and MCP fail closed. Pending the maintainer's
+		// decision on the intended failure policy; align all transports then.
 		page, err := continuable.SearchTextContinuation(
 			ctx, req.Query, continuationOptions, continuation,
 			search.ChunkQueryFunc(dependencies.ChunkQuery), search.EmbedQueryFunc(dependencies.EmbedQuery), dependencies.Searcher.Search, search.ChunkedSearchErrorPolicy{},
