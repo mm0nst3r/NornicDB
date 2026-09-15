@@ -179,9 +179,8 @@ func (b *BadgerEngine) Close() error {
 	b.stopLabelIndexBackfill()
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if b.closed {
+		b.mu.Unlock()
 		return nil
 	}
 	if b.lifecycleController != nil {
@@ -189,7 +188,43 @@ func (b *BadgerEngine) Close() error {
 	}
 
 	b.closed = true
-	return b.db.Close()
+	db := b.db
+	b.releaseClosedStateLocked()
+	b.mu.Unlock()
+
+	if db == nil {
+		return nil
+	}
+	return db.Close()
+}
+
+// releaseClosedStateLocked drops large heap graphs that are not needed after
+// Close. Test fixtures often keep executor and engine shells reachable until
+// process exit; retaining the closed Badger handle behind those shells pins
+// in-memory memtable arenas and caches long after the engine is unusable.
+//
+// b.mu must be held and b.closed must already be true.
+func (b *BadgerEngine) releaseClosedStateLocked() {
+	b.db = nil
+	b.nodeCache = nil
+	b.nodeBodyCache = nil
+	b.edgeTypeCache = nil
+	b.edgeCache = nil
+	b.outgoingAdjCache = nil
+	b.incomingAdjCache = nil
+	b.labelFirstNodeCache = nil
+	b.namespaceNodeCounts = nil
+	b.namespaceEdgeCounts = nil
+	b.mvccByNamespace = nil
+	b.lifecycleController = nil
+	b.onNodeCreated = nil
+	b.onNodeUpdated = nil
+	b.onNodeDeleted = nil
+	b.onEdgeCreated = nil
+	b.onEdgeUpdated = nil
+	b.onEdgeDeleted = nil
+	b.storageMetrics = nil
+	b.mvccMetrics = nil
 }
 
 // Sync forces a sync of all data to disk.

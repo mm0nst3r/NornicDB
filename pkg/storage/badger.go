@@ -464,7 +464,10 @@ type BadgerOptions struct {
 	DataDir string
 
 	// InMemory runs BadgerDB in memory-only mode.
-	// Useful for testing. Data is not persisted.
+	// Useful for testing. Data is not persisted. Unless HighPerformance or
+	// LowMemory is set, in-memory engines use a smaller test-oriented profile
+	// so large test suites do not retain one default-sized Badger arena per
+	// fixture while still accepting normal-sized schema and node values.
 	InMemory bool
 
 	// SyncWrites forces fsync after each write.
@@ -666,6 +669,7 @@ func NewBadgerEngine(dataDir string) (*BadgerEngine, error) {
 //
 //	Safe for concurrent use from multiple goroutines.
 func NewBadgerEngineWithOptions(opts BadgerOptions) (*BadgerEngine, error) {
+	inMemoryDefaultProfile := opts.InMemory && !opts.HighPerformance && !opts.LowMemory
 	retentionPolicy := normalizeRetentionPolicy(opts.EngineOptions.RetentionPolicy)
 	// Precommit validation cannot see a peer that publishes afterward. Native
 	// conflict tracking closes that window for the writer's enrolled keys in
@@ -731,6 +735,22 @@ func NewBadgerEngineWithOptions(opts BadgerOptions) (*BadgerEngine, error) {
 			WithValueThreshold(512).     // Small values in LSM
 			WithBlockCacheSize(8 << 20). // 8MB block cache
 			WithIndexCacheSize(4 << 20)  // 4MB index cache
+	} else if inMemoryDefaultProfile {
+		// In-memory Badger is primarily used by tests. The ordinary default
+		// profile allocates a 64MB memtable arena for every fixture, which makes
+		// large package suites sensitive to cgroup memory and swap settings. Keep
+		// the default 64KB value threshold so schema definitions and moderately
+		// sized properties remain valid in InMemory mode, but shrink the arenas
+		// and caches that dominate per-fixture retained memory.
+		badgerOpts = badgerOpts.
+			WithMemTableSize(32 << 20).
+			WithValueLogFileSize(128 << 20).
+			WithNumMemtables(2).
+			WithNumLevelZeroTables(5).
+			WithNumLevelZeroTablesStall(10).
+			WithValueThreshold(64 << 10).
+			WithBlockCacheSize(8 << 20).
+			WithIndexCacheSize(4 << 20)
 	} else {
 		// DEFAULT: Balanced settings
 		badgerOpts = badgerOpts.

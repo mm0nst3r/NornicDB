@@ -137,6 +137,33 @@ func TestBadgerEngine_Lifecycle_NilControllerBehavior(t *testing.T) {
 	e.StartLifecycleManager(context.Background())
 }
 
+func TestBadgerEngine_CloseReleasesRetainedState(t *testing.T) {
+	e := NewMemoryEngine()
+	_, err := e.CreateNode(&Node{
+		ID:         "nornic:release-node",
+		Labels:     []string{"Release"},
+		Properties: map[string]interface{}{"name": "closed"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, e.DB())
+
+	require.NoError(t, e.Close())
+
+	require.True(t, e.closed)
+	require.Nil(t, e.DB())
+	require.Nil(t, e.nodeCache)
+	require.Nil(t, e.nodeBodyCache)
+	require.Nil(t, e.edgeTypeCache)
+	require.Nil(t, e.edgeCache)
+	require.Nil(t, e.outgoingAdjCache)
+	require.Nil(t, e.incomingAdjCache)
+	require.Nil(t, e.labelFirstNodeCache)
+	require.Nil(t, e.namespaceNodeCounts)
+	require.Nil(t, e.namespaceEdgeCounts)
+	require.ErrorIs(t, e.Sync(), ErrStorageClosed)
+	require.NoError(t, e.Close())
+}
+
 func TestBadgerEngine_Lifecycle_ControllerDelegation(t *testing.T) {
 	e := NewMemoryEngine()
 	t.Cleanup(func() { _ = e.Close() })

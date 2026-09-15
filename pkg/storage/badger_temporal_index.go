@@ -535,6 +535,9 @@ func (b *BadgerEngine) clearBadgerPrefix(ctx context.Context, prefix byte) error
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := b.ensureOpen(); err != nil {
+		return err
+	}
 	wb := b.db.NewWriteBatch()
 	defer wb.Cancel()
 	prefixBytes := []byte{prefix}

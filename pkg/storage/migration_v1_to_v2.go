@@ -149,6 +149,9 @@ func (b *BadgerEngine) rebuildSecondaryIndexesForV2() (v1ToV2IndexStats, error) 
 		prefixIncomingIndex,
 		prefixEdgeTypeIndex,
 	} {
+		if err := b.ensureOpen(); err != nil {
+			return stats, fmt.Errorf("drop legacy prefix 0x%02x: %w", p, err)
+		}
 		if err := b.db.DropPrefix([]byte{p}); err != nil {
 			return stats, fmt.Errorf("drop legacy prefix 0x%02x: %w", p, err)
 		}
@@ -175,7 +178,7 @@ func (b *BadgerEngine) rebuildLabelIndexForV2(stats *v1ToV2IndexStats) error {
 
 	for {
 		var batch []migrationItem
-		err := b.db.View(func(txn *badger.Txn) error {
+		err := b.withView(func(txn *badger.Txn) error {
 			it := txn.NewIterator(badger.DefaultIteratorOptions)
 			defer it.Close()
 			start := cursor
@@ -260,7 +263,7 @@ func (b *BadgerEngine) rebuildEdgeIndexesForV2(stats *v1ToV2IndexStats) error {
 
 	for {
 		var batch []migrationItem
-		err := b.db.View(func(txn *badger.Txn) error {
+		err := b.withView(func(txn *badger.Txn) error {
 			it := txn.NewIterator(badger.DefaultIteratorOptions)
 			defer it.Close()
 			start := cursor
@@ -536,7 +539,7 @@ type migrationItem struct {
 // pass without holding a read iterator across mutating writes.
 func (b *BadgerEngine) collectBatch(prefix byte, limit int, skipFormatByte byte) ([]migrationItem, error) {
 	out := make([]migrationItem, 0, util.SafePreallocCap(limit))
-	err := b.db.View(func(txn *badger.Txn) error {
+	err := b.withView(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = []byte{prefix}
 		opts.PrefetchValues = true

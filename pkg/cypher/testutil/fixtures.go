@@ -76,6 +76,7 @@ func SetupTestExecutorBench(b *testing.B) *cypher.StorageExecutor {
 func setupTestExecutorTB(tb testing.TB) *cypher.StorageExecutor {
 	// Wrap with NamespacedEngine to handle ID prefixing (required by BadgerEngine)
 	baseStore := storage.NewMemoryEngine()
+	tb.Cleanup(func() { _ = baseStore.Close() })
 	store := storage.NewNamespacedEngine(baseStore, "test")
 	return cypher.NewStorageExecutor(store)
 }

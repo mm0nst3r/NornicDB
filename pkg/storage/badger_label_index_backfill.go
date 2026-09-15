@@ -185,6 +185,9 @@ func (b *BadgerEngine) rebuildLabelIndex(ctx context.Context) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	if err := b.ensureOpen(); err != nil {
+		return 0, fmt.Errorf("clear label index before rebuild: %w", err)
+	}
 	if err := recoverBadgerClosedPanic(func() error { return b.db.DropPrefix([]byte{prefixLabelIndex}) }); err != nil {
 		return 0, fmt.Errorf("clear label index before rebuild: %w", err)
 	}
