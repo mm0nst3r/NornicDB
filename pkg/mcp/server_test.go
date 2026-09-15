@@ -996,6 +996,10 @@ func TestHandleDiscover_ChunksLongQueryForEmbedding(t *testing.T) {
 		t.Fatalf("failed to open in-memory nornicdb: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	// Open starts the search-index warmup in the background; discover must not
+	// race it, so wait on the database-level readiness barrier before querying.
+	_, err = db.EnsureSearchIndexesBuilt(context.Background(), "nornic", db.GetStorage())
+	require.NoError(t, err)
 
 	embedder := &mockEmbedder{}
 	cfg := DefaultServerConfig()

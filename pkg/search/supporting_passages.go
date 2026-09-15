@@ -3,6 +3,7 @@ package search
 import (
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
@@ -58,7 +59,37 @@ func managedChunkTexts(node *storage.Node) []string {
 	return nil
 }
 
+// retainedBytes estimates the memory this passage keeps alive while a
+// continuation cursor retains it: the struct, its strings and matched_by entries.
+// Continuation byte accounting uses it so provider text counts toward the
+// configured cursor limits.
+func (p *SupportingPassage) retainedBytes() int64 {
+	total := int64(unsafe.Sizeof(*p)) + int64(len(p.NodeID)+len(p.Text)+len(p.Space)+len(p.SourceFingerprint))
+	for _, method := range p.MatchedBy {
+		total += int64(unsafe.Sizeof(method)) + int64(len(method))
+	}
+	return total
+}
+
+// supportingPassagesSource returns a node whose currentness can be judged.
+// Search hydration deliberately reads nodes without stored vectors (and cache
+// copies also omit named vectors), while ManagedEmbeddingCurrent requires the
+// complete stored source, so a contextualized node that arrived without its
+// chunk vectors is re-read in full. Nodes that are not contextualized never
+// carry provider passages, so they are returned unchanged without a read.
+func (s *Service) supportingPassagesSource(node *storage.Node) *storage.Node {
+	if node == nil || node.EmbedMeta["embedding_api"] != "contextualizedembeddings" || len(node.ChunkEmbeddings) > 0 {
+		return node
+	}
+	complete, err := s.engine.GetNode(node.ID)
+	if err != nil || complete == nil {
+		return nil
+	}
+	return complete
+}
+
 func (s *Service) supportingPassages(node *storage.Node, vectorID, query string) []SupportingPassage {
+	node = s.supportingPassagesSource(node)
 	texts := managedChunkTexts(node)
 	if len(texts) == 0 {
 		return nil

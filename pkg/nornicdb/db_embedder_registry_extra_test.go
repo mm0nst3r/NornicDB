@@ -90,6 +90,9 @@ func TestDB_SetEmbedder_ExistingQueueAppliesYieldFn(t *testing.T) {
 	t.Cleanup(func() { queue.Close() })
 
 	db := &DB{
+		// SetEmbedder routes through the database manager, which requires the
+		// DB's own namespaced storage view, not only the base engine.
+		storage:           storage.NewNamespacedEngine(base, "nornic"),
 		baseStorage:       base,
 		embedQueue:        queue,
 		embedQueueYieldFn: func() bool { return true },

@@ -201,10 +201,10 @@ func TestEmbedWorker_ProcessNextBatch_AdditionalBranches(t *testing.T) {
 		require.False(t, ew.processNextBatch())
 	})
 
-	t.Run("recently processed node is temporarily skipped", func(t *testing.T) {
+	t.Run("claim is released after processing so the node can be reclaimed", func(t *testing.T) {
 		base := storage.NewMemoryEngine()
-		engine := storage.NewNamespacedEngine(base, "recently-processed")
-		node := &storage.Node{ID: storage.NodeID("n-recent"), Labels: []string{"Doc"}, Properties: map[string]any{"content": "x"}}
+		engine := storage.NewNamespacedEngine(base, "claim-release")
+		node := &storage.Node{ID: storage.NodeID("n-reclaim"), Labels: []string{"Doc"}, Properties: map[string]any{"content": "x"}}
 		_, err := engine.CreateNode(node)
 		require.NoError(t, err)
 
@@ -215,13 +215,13 @@ func TestEmbedWorker_ProcessNextBatch_AdditionalBranches(t *testing.T) {
 			config:   &EmbedWorkerConfig{BatchDelay: time.Millisecond, MaxRetries: 1, ChunkSize: 64, ChunkOverlap: 8},
 			ctx:      context.Background(),
 			trigger:  make(chan struct{}, 1),
-			recentlyProcessed: map[string]time.Time{
-				string(node.ID): time.Now(),
-			},
 		}
 
-		require.False(t, ew.processNextBatch())
-		require.True(t, ew.loggedSkip[string(node.ID)])
+		require.True(t, ew.processNextBatch())
+		require.Equal(t, int64(1), ew.processed.Load())
+		ew.claimMu.Lock()
+		defer ew.claimMu.Unlock()
+		require.False(t, ew.claimed[node.ID], "a finished node must not stay claimed")
 	})
 
 	t.Run("update embedding error requeues node and records failure", func(t *testing.T) {

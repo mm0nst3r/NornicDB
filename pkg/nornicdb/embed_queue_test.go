@@ -200,95 +200,75 @@ func TestCopyNodeForEmbedding(t *testing.T) {
 	})
 }
 
-// TestEmbedWorkerRecentlyProcessed tests the duplicate processing prevention
-func TestEmbedWorkerRecentlyProcessed(t *testing.T) {
-	t.Run("tracks_processed_nodes", func(t *testing.T) {
-		baseEngine := storage.NewMemoryEngine()
-		baseEngine.SetEmbeddingsEnabled(true)
+// TestEmbedWorkerDuplicateProcessingPrevention covers the two mechanisms that
+// stop a node from being embedded twice: the in-process claim taken under
+// claimMu while a node is being processed, and the persisted result that
+// removes a completed node from the pending population.
+func TestEmbedWorkerDuplicateProcessingPrevention(t *testing.T) {
+	t.Run("claimed_node_is_skipped_without_embedding", func(t *testing.T) {
+		base := storage.NewMemoryEngine()
+		engine := storage.NewNamespacedEngine(base, "test")
+		node := &storage.Node{ID: storage.NodeID("n-claimed"), Labels: []string{"Doc"}, Properties: map[string]any{"content": "x"}}
+		_, err := engine.CreateNode(node)
+		require.NoError(t, err)
 
-		engine := storage.NewNamespacedEngine(baseEngine, "test")
 		embedder := newMockEmbedder()
-
-		config := &EmbedWorkerConfig{
-			NumWorkers:   0,
-			ScanInterval: time.Hour,
-			BatchDelay:   10 * time.Millisecond,
-			MaxRetries:   1,
-			ChunkSize:    512,
-			ChunkOverlap: 50,
+		qe := &queueBranchEngine{Engine: engine, findNode: &storage.Node{ID: node.ID}}
+		ew := &EmbedWorker{
+			embedder: embedder,
+			storage:  qe,
+			config:   &EmbedWorkerConfig{BatchDelay: time.Millisecond, MaxRetries: 1, ChunkSize: 64, ChunkOverlap: 8},
+			ctx:      context.Background(),
+			trigger:  make(chan struct{}, 1),
+			claimed:  map[storage.NodeID]bool{node.ID: true},
 		}
 
-		worker := NewEmbedWorker(embedder, engine, config)
-		defer worker.Close()
-
-		// Manually add a node to recentlyProcessed
-		worker.mu.Lock()
-		worker.recentlyProcessed["test-node-1"] = time.Now()
-		worker.mu.Unlock()
-
-		// Verify it's tracked
-		worker.mu.Lock()
-		_, exists := worker.recentlyProcessed["test-node-1"]
-		worker.mu.Unlock()
-
-		assert.True(t, exists)
+		// Another worker holds the claim: this pass yields it without embedding.
+		require.True(t, ew.processNextBatch())
+		require.Equal(t, []storage.NodeID{node.ID}, qe.marked)
+		require.Zero(t, embedder.embedCount)
+		require.Zero(t, ew.processed.Load())
+		stored, err := engine.GetNode(node.ID)
+		require.NoError(t, err)
+		require.Empty(t, stored.ChunkEmbeddings)
 	})
 
-	t.Run("cleans_old_entries", func(t *testing.T) {
+	t.Run("processed_node_is_not_embedded_again", func(t *testing.T) {
 		baseEngine := storage.NewMemoryEngine()
 		baseEngine.SetEmbeddingsEnabled(true)
 
 		engine := storage.NewNamespacedEngine(baseEngine, "test")
 		embedder := newMockEmbedder()
 
-		config := &EmbedWorkerConfig{
-			NumWorkers:   1,
-			ScanInterval: time.Hour,
-			BatchDelay:   10 * time.Millisecond,
-			MaxRetries:   1,
-			ChunkSize:    512,
-			ChunkOverlap: 50,
-		}
-		worker := NewEmbedWorker(embedder, engine, config)
+		worker := NewEmbedWorker(embedder, engine, &EmbedWorkerConfig{
+			NumWorkers:       0,
+			ScanInterval:     time.Hour,
+			BatchDelay:       time.Millisecond,
+			MaxRetries:       1,
+			ChunkSize:        512,
+			ChunkOverlap:     50,
+			DeferWorkerStart: true,
+		})
 		defer worker.Close()
 
-		// Add an old entry (more than 1 minute old)
-		worker.mu.Lock()
-		worker.recentlyProcessed["old-node"] = time.Now().Add(-2 * time.Minute)
-		worker.recentlyProcessed["new-node"] = time.Now()
-		worker.mu.Unlock()
-
-		// Create a node to trigger cleanup (cleanup happens during processing)
 		_, err := engine.CreateNode(&storage.Node{
-			ID:     storage.NodeID("trigger-node"),
-			Labels: []string{"Memory"},
-			Properties: map[string]any{
-				"content": "trigger content",
-			},
+			ID:         storage.NodeID("once-node"),
+			Labels:     []string{"Memory"},
+			Properties: map[string]any{"content": "embed me once"},
 		})
 		require.NoError(t, err)
 
-		// Trigger processing which should clean up old entries
-		worker.Trigger()
+		require.True(t, worker.processNextBatch(), "the pending node is processed")
+		require.Equal(t, int64(1), worker.processed.Load())
 
-		// Wait for processing to complete
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			stats := worker.Stats()
-			if stats.Processed > 0 {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
+		stored, err := engine.GetNode("once-node")
+		require.NoError(t, err)
+		require.True(t, storage.ManagedEmbeddingCurrent(stored), "the persisted result is current")
 
-		// old-node should be cleaned up, new-node should remain
-		worker.mu.Lock()
-		_, oldExists := worker.recentlyProcessed["old-node"]
-		_, newExists := worker.recentlyProcessed["new-node"]
-		worker.mu.Unlock()
-
-		assert.False(t, oldExists, "Old node should be cleaned up")
-		assert.True(t, newExists, "New node should still exist")
+		// The persisted result, not a timer, keeps the node out of later passes.
+		require.False(t, worker.processNextBatch(), "no pending work remains")
+		require.Equal(t, 1, embedder.embedCount, "the node must not be embedded twice")
+		require.Equal(t, int64(1), worker.processed.Load())
 	})
 }
 
@@ -1605,15 +1585,18 @@ type pendingAdderEngine struct {
 	added []storage.NodeID
 }
 
+// queueBranchEngine wraps a real engine so tests can drive the worker's
+// branch points: the pending-index lookup, the pre-processing existence check,
+// and the atomic conditional publication the worker persists through.
 type queueBranchEngine struct {
 	storage.Engine
 	findNode           *storage.Node
 	findReturned       bool
 	getNodeErr         error
-	secondGetNodeErr   error
 	returnNilNode      bool
 	getNodeCalls       int
 	updateEmbeddingErr error
+	deleteBeforeSave   bool
 	updateNodeErr      error
 	refreshCount       int
 	marked             []storage.NodeID
@@ -1636,9 +1619,6 @@ func (e *queueBranchEngine) GetNode(id storage.NodeID) (*storage.Node, error) {
 	if e.getNodeCalls == 1 && e.returnNilNode {
 		return nil, nil
 	}
-	if e.getNodeCalls > 1 && e.secondGetNodeErr != nil {
-		return nil, e.secondGetNodeErr
-	}
 	return e.Engine.GetNode(id)
 }
 
@@ -1654,8 +1634,23 @@ func (e *queueBranchEngine) AddToPendingEmbeddings(id storage.NodeID) {
 	e.added = append(e.added, id)
 }
 
-func (e *queueBranchEngine) UpdateNodeEmbedding(*storage.Node) error {
-	return e.updateEmbeddingErr
+// UpdateNodeEmbeddingIfCurrent is the conditional publication the worker uses.
+// An injected error is returned as-is; deleteBeforeSave removes the source
+// first so the real storage owner reports the deletion.
+func (e *queueBranchEngine) UpdateNodeEmbeddingIfCurrent(node, expected *storage.Node) error {
+	if e.updateEmbeddingErr != nil {
+		return e.updateEmbeddingErr
+	}
+	if e.deleteBeforeSave {
+		if err := e.Engine.DeleteNode(node.ID); err != nil {
+			return err
+		}
+	}
+	updater, ok := e.Engine.(storage.ConditionalEmbeddingUpdater)
+	if !ok {
+		return storage.ErrNotImplemented
+	}
+	return updater.UpdateNodeEmbeddingIfCurrent(node, expected)
 }
 
 func (e *queueBranchEngine) UpdateNode(node *storage.Node) error {
@@ -2043,7 +2038,10 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 
 		didWork := ew.processNextBatch()
 		require.False(t, didWork)
-		require.Equal(t, []storage.NodeID{"n3", "n3"}, qe.marked)
+		// The claim marked the node once; a vanished source is not re-queued.
+		require.Equal(t, []storage.NodeID{"n3"}, qe.marked)
+		require.Empty(t, qe.added)
+		require.Zero(t, ew.failed.Load())
 	})
 
 	t.Run("processNextBatch skips when node is deleted before save", func(t *testing.T) {
@@ -2060,7 +2058,7 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 		qe := &queueBranchEngine{
 			Engine:           engine,
 			findNode:         &storage.Node{ID: storage.NodeID("n4")},
-			secondGetNodeErr: storage.ErrNotFound,
+			deleteBeforeSave: true,
 		}
 		ew := &EmbedWorker{
 			embedder: newMockEmbedder(),
@@ -2070,9 +2068,14 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 			trigger:  make(chan struct{}, 1),
 		}
 
+		// The source is deleted between the claim and the atomic publication:
+		// the real storage owner refuses to recreate it, and nothing is re-queued.
 		didWork := ew.processNextBatch()
 		require.False(t, didWork)
-		require.Equal(t, []storage.NodeID{"n4", "n4"}, qe.marked)
+		require.Equal(t, []storage.NodeID{"n4"}, qe.marked)
+		require.Empty(t, qe.added)
+		_, err = engine.GetNode("n4")
+		require.ErrorIs(t, err, storage.ErrNotFound, "publication must not resurrect a deleted node")
 	})
 
 	t.Run("startWorkers guards closed and accepts disabled worker pool", func(t *testing.T) {
@@ -2182,12 +2185,10 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 	t.Run("worker exits promptly when closed before embedder is set", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		ew := &EmbedWorker{
-			config:            DefaultEmbedWorkerConfig(),
-			ctx:               ctx,
-			cancel:            cancel,
-			trigger:           make(chan struct{}, 1),
-			recentlyProcessed: make(map[string]time.Time),
-			loggedSkip:        make(map[string]bool),
+			config:  DefaultEmbedWorkerConfig(),
+			ctx:     ctx,
+			cancel:  cancel,
+			trigger: make(chan struct{}, 1),
 		}
 		done := make(chan struct{}, 1)
 		ew.wg.Add(1)

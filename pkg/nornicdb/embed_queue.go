@@ -54,13 +54,6 @@ type EmbedWorker struct {
 	running   atomic.Bool
 	closed    atomic.Bool // Set to true when Close() is called
 
-	// Recently processed node IDs to prevent re-processing before DB commit is visible
-	// This prevents the same node being processed multiple times in quick succession
-	recentlyProcessed map[string]time.Time
-
-	// Track nodes we've already logged as skipped (to avoid log spam)
-	loggedSkip map[string]bool
-
 	// Debounce state for k-means clustering trigger
 	clusterDebounceTimer   *time.Timer
 	clusterDebounceMu      sync.Mutex
@@ -163,14 +156,12 @@ func NewEmbedWorker(embedder embed.Embedder, storage storage.Engine, config *Emb
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ew := &EmbedWorker{
-		embedder:          embedder,
-		storage:           storage,
-		config:            config,
-		ctx:               ctx,
-		cancel:            cancel,
-		trigger:           make(chan struct{}, 1),
-		recentlyProcessed: make(map[string]time.Time),
-		loggedSkip:        make(map[string]bool),
+		embedder: embedder,
+		storage:  storage,
+		config:   config,
+		ctx:      ctx,
+		cancel:   cancel,
+		trigger:  make(chan struct{}, 1),
 	}
 
 	// Start N workers unless deferred until after DB warmup
@@ -372,8 +363,6 @@ func (ew *EmbedWorker) Reset() {
 	// Reset state under lock
 	ew.mu.Lock()
 	ew.initialScanDone = false
-	ew.recentlyProcessed = make(map[string]time.Time)
-	ew.loggedSkip = make(map[string]bool)
 	ew.mu.Unlock()
 	ew.processed.Store(0)
 	ew.failed.Store(0)

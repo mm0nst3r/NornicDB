@@ -356,8 +356,15 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 	}, nil
 }
 
+// compactContinuationResultBytes is the single estimate of what a retained
+// compact result keeps alive. Provider supporting passages survive compaction,
+// so their text is counted here toward the registry's retained-byte limits.
 func compactContinuationResultBytes(result SearchResult) int64 {
-	return int64(unsafe.Sizeof(result)) + int64(len(result.ID)+len(result.NodeID)+len(result.GroupKey)+len(result.Phase))
+	total := int64(unsafe.Sizeof(result)) + int64(len(result.ID)+len(result.NodeID)+len(result.GroupKey)+len(result.Phase))
+	for index := range result.SupportingPassages {
+		total += result.SupportingPassages[index].retainedBytes()
+	}
+	return total
 }
 
 func compactContinuationResult(result SearchResult) SearchResult {
