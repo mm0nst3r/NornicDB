@@ -1118,6 +1118,10 @@ func (e *StorageExecutor) evaluateExpressionFromValues(expr string, values map[s
 		}
 	}
 
+	if result := e.evaluateArithmeticExprFromValues(expr, values); result != nil {
+		return result
+	}
+
 	// Handle list comprehension [r IN relationships(path) | type(r)]
 	if strings.HasPrefix(expr, "[") && strings.HasSuffix(expr, "]") && strings.Contains(expr, " IN ") && strings.Contains(expr, " | ") {
 		inner := strings.TrimSpace(expr[1 : len(expr)-1])
@@ -1178,6 +1182,48 @@ func (e *StorageExecutor) evaluateExpressionFromValues(expr string, values map[s
 	}
 
 	return expr // Return as literal if not found
+}
+
+func (e *StorageExecutor) evaluateArithmeticExprFromValues(expr string, values map[string]interface{}) interface{} {
+	if !e.hasArithmeticOperator(expr) {
+		return nil
+	}
+	resolve := func(part string) interface{} {
+		part = strings.TrimSpace(part)
+		value := e.evaluateExpressionFromValues(part, values)
+		if literal, ok := value.(string); ok && literal == part {
+			if parsed, parsedOK := parseLiteralValueFromComputedRow(part); parsedOK {
+				value = parsed
+			}
+		}
+		return value
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " + ", true, false); ok {
+		return e.add(resolve(leftExpr), resolve(rightExpr))
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "+", true, false); ok {
+		return e.add(resolve(leftExpr), resolve(rightExpr))
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "*", true, false); ok {
+		return e.multiply(resolve(leftExpr), resolve(rightExpr))
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "/", true, false); ok {
+		return e.divide(resolve(leftExpr), resolve(rightExpr))
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "%", true, false); ok {
+		return e.modulo(resolve(leftExpr), resolve(rightExpr))
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " - ", true, false); ok {
+		return e.subtract(resolve(leftExpr), resolve(rightExpr))
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "-", true, false); ok && strings.TrimSpace(leftExpr) != "" {
+		left := resolve(leftExpr)
+		right := resolve(rightExpr)
+		if left != nil && right != nil {
+			return e.subtract(left, right)
+		}
+	}
+	return nil
 }
 
 func (e *StorageExecutor) evaluateCaseExpressionFromValues(expr string, values map[string]interface{}) interface{} {
@@ -1270,14 +1316,13 @@ func (e *StorageExecutor) evaluateConditionFromValues(condition string, values m
 
 func parseLiteralValueFromComputedRow(expr string) (interface{}, bool) {
 	trimmed := strings.TrimSpace(expr)
-	upper := strings.ToUpper(trimmed)
-	if upper == "NULL" {
+	if strings.EqualFold(trimmed, "NULL") {
 		return nil, true
 	}
-	if upper == "TRUE" {
+	if strings.EqualFold(trimmed, "TRUE") {
 		return true, true
 	}
-	if upper == "FALSE" {
+	if strings.EqualFold(trimmed, "FALSE") {
 		return false, true
 	}
 	if len(trimmed) >= 2 {

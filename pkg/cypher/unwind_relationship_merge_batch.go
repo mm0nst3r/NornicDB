@@ -71,7 +71,7 @@ func (e *StorageExecutor) executeUnwindRelationshipMergeBatch(
 		rows = append(rows, row)
 	}
 	store := e.getStorage(ctx)
-	matchIndex, unique, err := buildRelationshipBatchNodeMatchIndex(store, rows, plan.matches)
+	matchIndex, unique, err := e.buildRelationshipBatchNodeMatchIndex(store, rows, plan.matches)
 	if err != nil {
 		return nil, true, err
 	}
@@ -98,7 +98,7 @@ func (e *StorageExecutor) executeUnwindRelationshipMergeBatch(
 		bindings := make(map[string]*storage.Node, len(plan.matches))
 		matched := true
 		for _, match := range plan.matches {
-			node := lookupRelationshipBatchMatchedNode(matchIndex, match, row)
+			node := e.lookupRelationshipBatchMatchedNode(matchIndex, match, row)
 			if node == nil {
 				matched = false
 				break
@@ -500,6 +500,9 @@ func parseRelationshipBatchRowFieldExpr(expr, unwindVar string) (string, bool) {
 
 func relationshipBatchRowHasRequiredFields(row map[string]interface{}, plan unwindRelationshipMergeBatchPlan) bool {
 	for _, match := range plan.matches {
+		if match.rowField == "" {
+			continue
+		}
 		if _, ok := row[match.rowField]; !ok {
 			return false
 		}
@@ -522,7 +525,7 @@ func relationshipBatchRowHasRequiredFields(row map[string]interface{}, plan unwi
 	return true
 }
 
-func buildRelationshipBatchNodeMatchIndex(store storage.Engine, rows []map[string]interface{}, matches []matchClauseSpec) (map[nodeBatchMatchKey]map[string]*storage.Node, bool, error) {
+func (e *StorageExecutor) buildRelationshipBatchNodeMatchIndex(store storage.Engine, rows []map[string]interface{}, matches []matchClauseSpec) (map[nodeBatchMatchKey]map[string]*storage.Node, bool, error) {
 	index := make(map[nodeBatchMatchKey]map[string]*storage.Node, len(matches))
 	schema := store.GetSchema()
 	unique := true
@@ -536,7 +539,7 @@ func buildRelationshipBatchNodeMatchIndex(store storage.Engine, rows []map[strin
 		distinct := make(map[string]interface{}, len(rows))
 		for _, match := range group {
 			for _, row := range rows {
-				if value, ok := row[match.rowField]; ok {
+				if value, ok := e.evaluateRelationshipBatchLookupExpr(match, row); ok {
 					distinct[propEqKeyBatch(value)] = value
 				}
 			}
@@ -626,12 +629,16 @@ func nodeBatchMatchesValue(node *storage.Node, key nodeBatchMatchKey, value inte
 	return propEqKeyBatch(nodeValue) == propEqKeyBatch(value)
 }
 
-func lookupRelationshipBatchMatchedNode(index map[nodeBatchMatchKey]map[string]*storage.Node, match matchClauseSpec, row map[string]interface{}) *storage.Node {
-	value, ok := row[match.rowField]
+func (e *StorageExecutor) lookupRelationshipBatchMatchedNode(index map[nodeBatchMatchKey]map[string]*storage.Node, match matchClauseSpec, row map[string]interface{}) *storage.Node {
+	value, ok := e.evaluateRelationshipBatchLookupExpr(match, row)
 	if !ok {
 		return nil
 	}
 	return index[nodeBatchMatchKey{label: match.label, prop: match.propName}][propEqKeyBatch(value)]
+}
+
+func (e *StorageExecutor) evaluateRelationshipBatchLookupExpr(match matchClauseSpec, row map[string]interface{}) (interface{}, bool) {
+	return e.evaluateBatchLookupExpr(match, row, row)
 }
 
 func normalizeRelationshipBatchRowProperties(row map[string]interface{}, vectorSetters []relationshipVectorSetterSpec) map[string]interface{} {

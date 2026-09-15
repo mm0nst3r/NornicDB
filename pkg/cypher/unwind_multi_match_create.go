@@ -46,18 +46,25 @@ type unwindMultiMatchCreatePlan struct {
 //
 //	MATCH (variable:Label {propName: row.fieldName})
 type matchClauseSpec struct {
-	variable string
-	label    string
-	propName string
-	rowField string // row.<rowField>
-	byID     bool
+	variable   string
+	label      string
+	propName   string
+	rowField   string // set for the simple row.<field> form used by older batch helpers
+	lookupExpr string
+	bindingVar string
+	byID       bool
 }
 
 func (m matchClauseSpec) batchKey() nodeBatchMatchKey {
 	if m.byID {
-		return nodeBatchMatchKey{label: m.label, prop: "\x00elementId:" + m.rowField}
+		return nodeBatchMatchKey{label: m.label, prop: "\x00elementId"}
 	}
 	return nodeBatchMatchKey{label: m.label, prop: m.propName}
+}
+
+type unwindBatchRow struct {
+	item    interface{}
+	itemMap map[string]interface{}
 }
 
 // createNodeSpec represents `CREATE (variable:Label {...})`. Properties may
@@ -161,14 +168,14 @@ func (e *StorageExecutor) executeUnwindMultiMatchCreateBatch(
 		}
 	}
 
-	// Coerce the items to maps once so we can walk them twice (prefetch +
-	// plan). Refuse the fast path for any non-map row so the caller falls
-	// back without us having silently skipped rows.
-	rows := make([]map[string]any, 0, len(items))
+	// Coerce the items once so we can walk them twice (prefetch + plan).
+	// Map rows support the classic `row.field` forms; scalar rows support
+	// expressions over the UNWIND variable such as `i` and `i + 1`.
+	rows := make([]unwindBatchRow, 0, len(items))
 	for _, item := range items {
-		row, ok := toStringAnyMap(item)
-		if !ok {
-			return nil, false, nil
+		row := unwindBatchRow{item: item}
+		if itemMap, ok := toStringAnyMap(item); ok {
+			row.itemMap = itemMap
 		}
 		rows = append(rows, row)
 	}
@@ -184,19 +191,28 @@ func (e *StorageExecutor) executeUnwindMultiMatchCreateBatch(
 	// numeric equivalents collide (a Bolt int64 row value and a float64
 	// stored property both hash to the same key).
 	batchIndex := make(map[nodeBatchMatchKey]map[string]*storage.Node, len(plan.matches))
+	matchesByKey := make(map[nodeBatchMatchKey][]matchClauseSpec, len(plan.matches))
+	keyOrder := make([]nodeBatchMatchKey, 0, len(plan.matches))
 	for _, m := range plan.matches {
 		key := m.batchKey()
-		if _, seen := batchIndex[key]; seen {
-			continue
+		if _, seen := matchesByKey[key]; !seen {
+			keyOrder = append(keyOrder, key)
 		}
+		matchesByKey[key] = append(matchesByKey[key], m)
+	}
+	for _, key := range keyOrder {
+		group := matchesByKey[key]
+		m := group[0]
 		// Collect distinct row values for this match.
-		distinct := make(map[string]any, len(rows))
-		for _, r := range rows {
-			val, ok := r[m.rowField]
-			if !ok {
-				continue
+		distinct := make(map[string]any, util.SafePreallocProduct(len(rows), len(group)))
+		for _, m := range group {
+			for _, r := range rows {
+				val, ok := e.evaluateUnwindBatchLookupExpr(m, r)
+				if !ok {
+					continue
+				}
+				distinct[propEqKeyBatch(val)] = val
 			}
-			distinct[propEqKeyBatch(val)] = val
 		}
 		if len(distinct) == 0 {
 			batchIndex[key] = map[string]*storage.Node{}
@@ -332,7 +348,7 @@ func isSimpleWithPassthroughClause(clause string) bool {
 // and skip the row's CREATE clauses, matching standard behaviour.
 func (e *StorageExecutor) planUnwindMultiMatchCreateRowIndexed(
 	plan unwindMultiMatchCreatePlan,
-	row map[string]any,
+	row unwindBatchRow,
 	batchIndex map[nodeBatchMatchKey]map[string]*storage.Node,
 	pendingNodes *[]*storage.Node, pendingEdges *[]*storage.Edge,
 ) error {
@@ -340,7 +356,7 @@ func (e *StorageExecutor) planUnwindMultiMatchCreateRowIndexed(
 
 	// 1. Resolve every MATCH target from the pre-batched index.
 	for _, m := range plan.matches {
-		val, ok := row[m.rowField]
+		val, ok := e.evaluateUnwindBatchLookupExpr(m, row)
 		if !ok {
 			return nil
 		}
@@ -359,7 +375,7 @@ func (e *StorageExecutor) planUnwindMultiMatchCreateRowIndexed(
 	// 2. Queue each new node with a minted ID so downstream edges can
 	// reference it.
 	for _, c := range plan.nodeCreates {
-		props := buildPropsFromSpec(row, c.rowFieldRefs, c.literals)
+		props := buildPropsFromSpec(row.itemMap, c.rowFieldRefs, c.literals)
 		node := &storage.Node{
 			ID:         storage.NodeID(e.generateID()),
 			Labels:     []string{c.label},
@@ -385,7 +401,7 @@ func (e *StorageExecutor) planUnwindMultiMatchCreateRowIndexed(
 			Type:       c.relType,
 			StartNode:  start.ID,
 			EndNode:    end.ID,
-			Properties: buildPropsFromSpec(row, c.rowFieldRefs, c.literals),
+			Properties: buildPropsFromSpec(row.itemMap, c.rowFieldRefs, c.literals),
 		}
 		*pendingEdges = append(*pendingEdges, edge)
 	}
@@ -393,12 +409,110 @@ func (e *StorageExecutor) planUnwindMultiMatchCreateRowIndexed(
 	return nil
 }
 
+func (e *StorageExecutor) evaluateUnwindBatchLookupExpr(match matchClauseSpec, row unwindBatchRow) (interface{}, bool) {
+	return e.evaluateBatchLookupExpr(match, row.item, row.itemMap)
+}
+
+func (e *StorageExecutor) evaluateBatchLookupExpr(match matchClauseSpec, bindingValue interface{}, bindingMap map[string]interface{}) (interface{}, bool) {
+	if match.rowField != "" && bindingMap != nil {
+		if v, ok := bindingMap[match.rowField]; ok {
+			return normalizePropValue(v), true
+		}
+	}
+	expr := strings.TrimSpace(match.lookupExpr)
+	if expr == "" {
+		return nil, false
+	}
+	if value, ok := e.evaluateBatchLookupExprFast(expr, match.bindingVar, bindingValue, bindingMap); ok {
+		return normalizePropValue(value), true
+	}
+
+	values := make(map[string]interface{}, 1)
+	if match.bindingVar != "" {
+		values[match.bindingVar] = bindingValue
+	}
+	value := e.evaluateExpressionFromValues(expr, values)
+	if literal, ok := value.(string); ok && literal == expr {
+		if parsed, parsedOK := parseLiteralValueFromComputedRow(expr); parsedOK {
+			return normalizePropValue(parsed), true
+		}
+		return nil, false
+	}
+	return normalizePropValue(value), true
+}
+
+func (e *StorageExecutor) evaluateBatchLookupExprFast(expr, bindingVar string, bindingValue interface{}, bindingMap map[string]interface{}) (interface{}, bool) {
+	if value, ok := evaluateBatchLookupOperand(expr, bindingVar, bindingValue, bindingMap); ok {
+		return value, true
+	}
+	return e.evaluateBatchArithmeticLookupExpr(expr, bindingVar, bindingValue, bindingMap)
+}
+
+func (e *StorageExecutor) evaluateBatchArithmeticLookupExpr(expr, bindingVar string, bindingValue interface{}, bindingMap map[string]interface{}) (interface{}, bool) {
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " + ", true, false); ok {
+		left, leftOK := evaluateBatchLookupOperand(leftExpr, bindingVar, bindingValue, bindingMap)
+		right, rightOK := evaluateBatchLookupOperand(rightExpr, bindingVar, bindingValue, bindingMap)
+		return e.evaluateArithmeticLookupResult('+', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "+", true, false); ok {
+		left, leftOK := evaluateBatchLookupOperand(leftExpr, bindingVar, bindingValue, bindingMap)
+		right, rightOK := evaluateBatchLookupOperand(rightExpr, bindingVar, bindingValue, bindingMap)
+		return e.evaluateArithmeticLookupResult('+', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "*", true, false); ok {
+		left, leftOK := evaluateBatchLookupOperand(leftExpr, bindingVar, bindingValue, bindingMap)
+		right, rightOK := evaluateBatchLookupOperand(rightExpr, bindingVar, bindingValue, bindingMap)
+		return e.evaluateArithmeticLookupResult('*', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "/", true, false); ok {
+		left, leftOK := evaluateBatchLookupOperand(leftExpr, bindingVar, bindingValue, bindingMap)
+		right, rightOK := evaluateBatchLookupOperand(rightExpr, bindingVar, bindingValue, bindingMap)
+		return e.evaluateArithmeticLookupResult('/', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "%", true, false); ok {
+		left, leftOK := evaluateBatchLookupOperand(leftExpr, bindingVar, bindingValue, bindingMap)
+		right, rightOK := evaluateBatchLookupOperand(rightExpr, bindingVar, bindingValue, bindingMap)
+		return e.evaluateArithmeticLookupResult('%', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " - ", true, false); ok {
+		left, leftOK := evaluateBatchLookupOperand(leftExpr, bindingVar, bindingValue, bindingMap)
+		right, rightOK := evaluateBatchLookupOperand(rightExpr, bindingVar, bindingValue, bindingMap)
+		return e.evaluateArithmeticLookupResult('-', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "-", true, false); ok && strings.TrimSpace(leftExpr) != "" {
+		left, leftOK := evaluateBatchLookupOperand(leftExpr, bindingVar, bindingValue, bindingMap)
+		right, rightOK := evaluateBatchLookupOperand(rightExpr, bindingVar, bindingValue, bindingMap)
+		return e.evaluateArithmeticLookupResult('-', left, leftOK, right, rightOK)
+	}
+	return nil, false
+}
+
+func evaluateBatchLookupOperand(expr, bindingVar string, bindingValue interface{}, bindingMap map[string]interface{}) (interface{}, bool) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return nil, false
+	}
+	if bindingVar != "" && expr == bindingVar {
+		return bindingValue, true
+	}
+	if field, ok := simpleUnwindFieldRef(expr, bindingVar); ok && bindingMap != nil {
+		value, found := bindingMap[field]
+		return value, found
+	}
+	if parsed, ok := parseLiteralValueFromComputedRow(expr); ok {
+		return parsed, true
+	}
+	return nil, false
+}
+
 // buildPropsFromSpec assembles a property map for a CREATE from a row.
 func buildPropsFromSpec(row map[string]any, rowRefs map[string]string, literals map[string]any) map[string]any {
 	props := make(map[string]any, len(rowRefs)+len(literals))
 	for propName, rowField := range rowRefs {
-		if v, ok := row[rowField]; ok {
-			props[propName] = v
+		if row != nil {
+			if v, ok := row[rowField]; ok {
+				props[propName] = v
+			}
 		}
 	}
 	for k, v := range literals {
@@ -507,15 +621,11 @@ func parseSimpleMatchClause(clause, unwindVar string) (matchClauseSpec, bool) {
 			return matchClauseSpec{}, false
 		}
 		right := strings.TrimSpace(equals[1])
-		dot := strings.Index(right, ".")
-		if dot <= 0 || strings.TrimSpace(right[:dot]) != unwindVar {
+		if !referencesUnwindBinding(right, unwindVar) {
 			return matchClauseSpec{}, false
 		}
-		rowField := strings.TrimSpace(right[dot+1:])
-		if !isSimpleIdentifier(rowField) {
-			return matchClauseSpec{}, false
-		}
-		return matchClauseSpec{variable: varName, label: label, rowField: rowField, byID: true}, true
+		rowField, _ := simpleUnwindFieldRef(right, unwindVar)
+		return matchClauseSpec{variable: varName, label: label, rowField: rowField, lookupExpr: right, bindingVar: unwindVar, byID: true}, true
 	}
 	if !strings.HasPrefix(body, "(") {
 		return matchClauseSpec{}, false
@@ -558,22 +668,63 @@ func parseSimpleMatchClause(clause, unwindVar string) (matchClauseSpec, bool) {
 	if !isSimpleIdentifier(propName) {
 		return matchClauseSpec{}, false
 	}
-	// expr must be `unwindVar.field`.
+	if !referencesUnwindBinding(expr, unwindVar) {
+		return matchClauseSpec{}, false
+	}
+	field, _ := simpleUnwindFieldRef(expr, unwindVar)
+	return matchClauseSpec{
+		variable:   varName,
+		label:      label,
+		propName:   propName,
+		rowField:   field,
+		lookupExpr: expr,
+		bindingVar: unwindVar,
+	}, true
+}
+
+func simpleUnwindFieldRef(expr, unwindVar string) (string, bool) {
+	expr = strings.TrimSpace(expr)
 	dot := strings.Index(expr, ".")
 	if dot <= 0 {
-		return matchClauseSpec{}, false
+		return "", false
 	}
 	base := strings.TrimSpace(expr[:dot])
 	field := strings.TrimSpace(expr[dot+1:])
-	if base != unwindVar || !isSimpleIdentifier(field) {
-		return matchClauseSpec{}, false
+	if base == unwindVar && isSimpleIdentifier(field) {
+		return field, true
 	}
-	return matchClauseSpec{
-		variable: varName,
-		label:    label,
-		propName: propName,
-		rowField: field,
-	}, true
+	return "", false
+}
+
+func referencesUnwindBinding(expr, unwindVar string) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == unwindVar {
+		return true
+	}
+	for i := 0; i < len(expr); {
+		ch := expr[i]
+		if isIdentifierStartByte(ch) {
+			start := i
+			i++
+			for i < len(expr) && isIdentifierPartByte(expr[i]) {
+				i++
+			}
+			if expr[start:i] == unwindVar {
+				return true
+			}
+			continue
+		}
+		i++
+	}
+	return false
+}
+
+func isIdentifierStartByte(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'
+}
+
+func isIdentifierPartByte(ch byte) bool {
+	return isIdentifierStartByte(ch) || (ch >= '0' && ch <= '9')
 }
 
 // parseSimpleCreateClause returns either a node spec or edge spec. kind is

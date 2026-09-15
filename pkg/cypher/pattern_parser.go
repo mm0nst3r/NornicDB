@@ -49,7 +49,6 @@ package cypher
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -431,7 +430,9 @@ func (e *StorageExecutor) parsePropertyValue(ctx context.Context, valueStr strin
 	// Keep this after scalar/list/map literals so ordinary property values do
 	// not get routed through expression evaluation unnecessarily.
 	if hasTopLevelPlus(valueStr) {
-		return normalizePropValue(e.evaluateStringConcatForProperty(ctx, valueStr))
+		if evaluated, ok := e.evaluateScalarPropertyExpression(ctx, valueStr); ok {
+			return normalizePropValue(evaluated)
+		}
 	}
 
 	// Handle function calls like kalman.init(), toUpper('test'), etc.
@@ -491,24 +492,101 @@ func hasTopLevelPlus(expr string) bool {
 	return false
 }
 
-func (e *StorageExecutor) evaluateStringConcatForProperty(ctx context.Context, expr string) string {
-	var result strings.Builder
-	for _, part := range e.splitByPlus(expr) {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if v, ok := resolveParamPathRef(ctx, part); ok {
-			result.WriteString(fmt.Sprintf("%v", v))
-			continue
-		}
-		if v, ok := resolveContextPathRef(ctx, part); ok {
-			result.WriteString(fmt.Sprintf("%v", v))
-			continue
-		}
-		result.WriteString(fmt.Sprintf("%v", e.evaluateExpressionWithContext(ctx, part, nil, nil)))
+func (e *StorageExecutor) evaluateScalarPropertyExpression(ctx context.Context, expr string) (interface{}, bool) {
+	expr = strings.TrimSpace(expr)
+	if evaluated, ok := e.evaluateScalarPropertyExpressionFast(ctx, expr); ok {
+		return evaluated, true
 	}
-	return result.String()
+	evaluated := e.evaluateExpressionWithContext(ctx, expr, nil, nil)
+	if evaluated == nil {
+		return nil, false
+	}
+	if s, ok := evaluated.(string); ok && s == expr {
+		return nil, false
+	}
+	return evaluated, true
+}
+
+func (e *StorageExecutor) evaluateScalarPropertyExpressionFast(ctx context.Context, expr string) (interface{}, bool) {
+	if value, ok := evaluateScalarPropertyOperand(ctx, expr); ok {
+		return value, true
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " + ", true, false); ok {
+		left, leftOK := evaluateScalarPropertyOperand(ctx, leftExpr)
+		right, rightOK := evaluateScalarPropertyOperand(ctx, rightExpr)
+		return e.evaluateArithmeticLookupResult('+', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "+", true, false); ok {
+		left, leftOK := evaluateScalarPropertyOperand(ctx, leftExpr)
+		right, rightOK := evaluateScalarPropertyOperand(ctx, rightExpr)
+		return e.evaluateArithmeticLookupResult('+', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "*", true, false); ok {
+		left, leftOK := evaluateScalarPropertyOperand(ctx, leftExpr)
+		right, rightOK := evaluateScalarPropertyOperand(ctx, rightExpr)
+		return e.evaluateArithmeticLookupResult('*', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "/", true, false); ok {
+		left, leftOK := evaluateScalarPropertyOperand(ctx, leftExpr)
+		right, rightOK := evaluateScalarPropertyOperand(ctx, rightExpr)
+		return e.evaluateArithmeticLookupResult('/', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "%", true, false); ok {
+		left, leftOK := evaluateScalarPropertyOperand(ctx, leftExpr)
+		right, rightOK := evaluateScalarPropertyOperand(ctx, rightExpr)
+		return e.evaluateArithmeticLookupResult('%', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " - ", true, false); ok {
+		left, leftOK := evaluateScalarPropertyOperand(ctx, leftExpr)
+		right, rightOK := evaluateScalarPropertyOperand(ctx, rightExpr)
+		return e.evaluateArithmeticLookupResult('-', left, leftOK, right, rightOK)
+	}
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "-", true, false); ok && strings.TrimSpace(leftExpr) != "" {
+		left, leftOK := evaluateScalarPropertyOperand(ctx, leftExpr)
+		right, rightOK := evaluateScalarPropertyOperand(ctx, rightExpr)
+		return e.evaluateArithmeticLookupResult('-', left, leftOK, right, rightOK)
+	}
+	return nil, false
+}
+
+func (e *StorageExecutor) evaluateArithmeticLookupResult(op byte, left interface{}, leftOK bool, right interface{}, rightOK bool) (interface{}, bool) {
+	if !leftOK || !rightOK {
+		return nil, false
+	}
+	var value interface{}
+	switch op {
+	case '+':
+		value = e.add(left, right)
+	case '*':
+		value = e.multiply(left, right)
+	case '/':
+		value = e.divide(left, right)
+	case '%':
+		value = e.modulo(left, right)
+	case '-':
+		value = e.subtract(left, right)
+	}
+	if value == nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func evaluateScalarPropertyOperand(ctx context.Context, expr string) (interface{}, bool) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return nil, false
+	}
+	if v, ok := resolveParamPathRef(ctx, expr); ok {
+		return normalizePropValue(v), true
+	}
+	if parsed, ok := parseLiteralValueFromComputedRow(expr); ok {
+		return parsed, true
+	}
+	if v, ok := resolveContextPathRef(ctx, expr); ok {
+		return normalizePropValue(v), true
+	}
+	return nil, false
 }
 
 // invalidPropertyValue marks a property value that failed parsing validation

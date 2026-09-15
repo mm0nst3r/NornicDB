@@ -783,6 +783,12 @@ func (e *StorageExecutor) parseValue(ctx context.Context, s string) interface{} 
 		return f
 	}
 
+	if e.hasArithmeticOperator(s) {
+		if evaluated, ok := e.evaluateScalarPropertyExpression(ctx, s); ok {
+			return normalizePropValue(evaluated)
+		}
+	}
+
 	// Fabric correlated bindings: resolve bare identifier values from outer record context.
 	if len(e.fabricRecordBindings) > 0 {
 		isIdent := true

@@ -80,6 +80,13 @@ RETURN n
 LIMIT 1;
 ```
 
+Indexed equality point lookups also evaluate scalar lookup expressions before
+planning the access path. For example, both `MATCH (n:EntityA {primaryKey:
+$base + 1})` and `MATCH (n:EntityA) WHERE n.primaryKey = $base + 1` can use
+the `EntityA(primaryKey)` property index after `$base + 1` resolves to a
+scalar value. If the expression cannot be reduced to a scalar, the executor
+falls back to normal filtering.
+
 ### 1.2 Lookup By Either Of Two Keys
 
 ```cypher
@@ -708,6 +715,11 @@ CREATE (s)-[:SUPPLIES]->(p);
 ```
 
 Use this for bulk seeder / fixture / importer shapes that need to attach newly-created nodes to multiple already-existing entities found via property lookup. Matches the `UnwindMultiMatchCreateBatch` hot path: the mutation body is parsed once, then for each row the executor resolves every MATCH via property index (when available) and writes the CREATE nodes and edges directly against storage, bypassing the per-row Cypher re-parse used by the generic fallback. Requires all MATCH property values to reference `row.<field>`; all CREATE property values to be either `row.<field>` references or scalar literals; no `RETURN`, `WITH`, `SET`, `MERGE`, `DELETE`, `REMOVE`, `FOREACH`, `WHERE`, nested `UNWIND`, or inline relationship patterns inside `MATCH`.
+
+Indexed MATCH lookups in this batch shape may use scalar expressions too. For
+example, `{id: row.offset + 1}` and scalar UNWIND bindings such as
+`UNWIND $ids AS i MATCH (n:EntityA {primaryKey: i + 1})` evaluate the lookup
+value before probing the property index.
 
 A typical two-pass edge-only variant — used when the targets were already seeded in an earlier pass — also falls on this hot path:
 
