@@ -737,13 +737,44 @@ func TestHandleCommitWithTransactionalExecutor(t *testing.T) {
 		primeTestTransactionLifecycle(t, session)
 
 		err := session.handleCommit(nil)
-		if err == nil {
-			t.Fatal("handleCommit must fail the connection closed on an uncertain commit conflict")
+		if err != nil {
+			t.Fatalf("handleCommit should keep the connection open after delivered retryable failure: %v", err)
 		}
 
 		code := failureCodeFromResponse(t, conn.writeData)
 		if code != "Neo.TransientError.Transaction.Outdated" {
 			t.Fatalf("failure code = %q, want %q", code, "Neo.TransientError.Transaction.Outdated")
+		}
+		if session.inTransaction {
+			t.Fatal("retryable commit failure must clear explicit transaction state")
+		}
+		if session.transactionCleanupFailed {
+			t.Fatal("retryable commit failure must not poison the session")
+		}
+		if !session.failedUntilReset {
+			t.Fatal("delivered FAILURE must require RESET before the next normal message")
+		}
+		if conn.closed {
+			t.Fatal("retryable commit failure must not close the connection")
+		}
+
+		conn.writeData = nil
+		if err := session.handleReset(nil); err != nil {
+			t.Fatalf("RESET after retryable commit failure should keep the session reusable: %v", err)
+		}
+		if session.failedUntilReset {
+			t.Fatal("RESET should clear the post-failure protocol state")
+		}
+		executor.beginCalled = false
+		conn.writeData = nil
+		if err := session.handleBegin(nil); err != nil {
+			t.Fatalf("same connection should accept BEGIN after RESET: %v", err)
+		}
+		if !executor.beginCalled {
+			t.Fatal("BEGIN after RESET should start a new transaction on the same executor")
+		}
+		if !session.inTransaction {
+			t.Fatal("session should be in a new transaction after BEGIN")
 		}
 	})
 }

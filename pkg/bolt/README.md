@@ -298,7 +298,10 @@ This example is atomic when the Bolt server is configured through
 `NewWithDatabaseManager` or a `SessionExecutorFactory` that returns a distinct
 `TransactionalExecutor` for each connection. A directly supplied
 `TransactionalExecutor` is supported only when `MaxConnections` is exactly
-one; cleanup failure or uncertain commit failure quarantines it against reuse.
+one; cleanup failure or non-retryable uncertain commit failure quarantines it
+against reuse. A delivered retryable commit failure, such as
+`Neo.TransientError.Transaction.Outdated`, keeps the connection open in the
+standard failed-until-`RESET` state.
 Multi-connection servers reject `BEGIN` for a shared raw executor. A plain
 `QueryExecutor` acknowledges transaction-control messages for protocol
 compatibility, but each `RUN` remains auto-committed and cannot be rolled back.
@@ -507,9 +510,13 @@ admitted backend that does not
 honor the request context remains synchronously owned rather than being
 abandoned in a leaked cleanup goroutine, so the five seconds is cooperative
 rather than a hard wall-clock bound for such an implementation.
-If rollback errors or panics, or a commit returns an uncertain error, NornicDB
-does not claim that storage was released: it closes the connection, suppresses
-deferred flush, and quarantines a directly supplied single-connection executor.
+If rollback errors or panics, or a commit returns a non-retryable uncertain
+error, NornicDB does not claim that storage was released: it closes the
+connection, suppresses deferred flush, and quarantines a directly supplied
+single-connection executor. If `COMMIT` returns a retryable transient status
+and that `FAILURE` is delivered to the client, the explicit transaction is
+terminal, the connection remains open, and the session ignores normal messages
+until `RESET`.
 Timeout responses wait for owned cleanup; cleanup failure closes the connection
 instead of exposing a reusable timeout state. A deferred `PULL`/`DISCARD` flush
 error marks the explicit transaction failed until `RESET` rolls it back.

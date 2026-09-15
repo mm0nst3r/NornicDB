@@ -44,6 +44,13 @@ after the requested retrieval depth reaches the configured top-K and the
 pre-rerank candidate list still contains more rows. A shallow `limit` below the
 top-K can continue deepening inside the same rerank budget.
 
+When `ranked` mode reaches the natural end of an exact producer without a
+candidate-budget boundary, the terminal page reports
+`completion: "eligible_population_exhausted"`,
+`ranked_pool_exhausted: true`, and `collection_exhausted: true`. This is the
+same terminal reason used by complete modes when their full eligible population
+has been emitted.
+
 When `max_results` ends a stream before the complete eligible population is
 emitted, the terminal page reports `completion: "max_results_reached"` and
 `collection_exhausted: false`. `eligible_count` remains the discovered complete

@@ -55,7 +55,9 @@ func TestBoltCommitInvalidatesSharedCachesOnlyAfterSuccessfulWrites(t *testing.T
 		session.txHasMerge = true
 		primeTestTransactionLifecycle(t, session)
 
-		require.Error(t, session.handleCommit(nil))
+		require.NoError(t, session.handleCommit(nil))
 		require.Zero(t, executor.invalidationCalls)
+		require.True(t, session.failedUntilReset)
+		require.False(t, session.transactionCleanupFailed)
 	})
 }

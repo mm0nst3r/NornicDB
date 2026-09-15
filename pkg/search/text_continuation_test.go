@@ -720,6 +720,71 @@ func TestSearchTextContinuationRerankBudgetDeepensShallowStartsToTopK(t *testing
 	}
 }
 
+func TestSearchTextContinuationRankedNaturalExhaustionCompletion(t *testing.T) {
+	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+	service := NewService(engine)
+	t.Cleanup(func() { require.NoError(t, service.Close()) })
+
+	const resultCount = 16
+	allResults := make([]SearchResult, resultCount)
+	for index := range allResults {
+		id := storage.NodeID(fmt.Sprintf("doc-%02d", index))
+		_, err := engine.CreateNode(&storage.Node{
+			ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "library transcript"},
+		})
+		require.NoError(t, err)
+		allResults[index] = SearchResult{ID: string(id), NodeID: id, Score: float64(resultCount - index), Phase: SearchContinuationRankedPhase}
+	}
+
+	calls := 0
+	searchQuery := func(_ context.Context, _ string, _ []float32, opts *SearchOptions) (*SearchResponse, error) {
+		calls++
+		limit := min(opts.Limit, len(allResults))
+		return &SearchResponse{
+			Results:            append([]SearchResult(nil), allResults[:limit]...),
+			SearchMethod:       "ranked-natural-exhaustion-test",
+			RetrievalExhausted: opts.Limit >= len(allResults),
+		}, nil
+	}
+
+	request := SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: SearchContinuationRanked, N: 5}
+	page, err := service.SearchTextContinuation(
+		context.Background(), "library transcript", &SearchOptions{Limit: 20},
+		request, nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+	)
+	require.NoError(t, err)
+
+	pageSizes := []int{len(page.Results)}
+	var ids []string
+	for {
+		for _, result := range page.Results {
+			ids = append(ids, result.ID)
+			require.Equal(t, SearchContinuationRankedPhase, result.Phase)
+		}
+		if !page.HasMore {
+			break
+		}
+		require.Equal(t, SearchContinuationMoreResults, page.Completion)
+		require.True(t, page.RankedPoolExhausted)
+		require.False(t, page.CollectionExhausted)
+
+		request.QID = page.QID
+		page, err = service.SearchTextContinuation(context.Background(), "", nil, request, nil, nil, nil, ChunkedSearchErrorPolicy{})
+		require.NoError(t, err)
+		pageSizes = append(pageSizes, len(page.Results))
+	}
+
+	require.Equal(t, []int{5, 5, 5, 1}, pageSizes)
+	require.Len(t, ids, resultCount)
+	require.Equal(t, "doc-00", ids[0])
+	require.Equal(t, "doc-15", ids[len(ids)-1])
+	require.Equal(t, 1, calls)
+	require.Equal(t, resultCount, page.RankedCount)
+	require.True(t, page.RankedPoolExhausted)
+	require.True(t, page.CollectionExhausted)
+	require.Equal(t, SearchContinuationCollectionComplete, page.Completion)
+}
+
 func TestSearchTextContinuationRankedPullRehydratesAndAuthorizes(t *testing.T) {
 	engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
 	service := NewService(engine)

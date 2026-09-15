@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	nornicerrors "github.com/orneryd/nornicdb/pkg/errors"
 	"github.com/orneryd/nornicdb/pkg/localization"
 )
 
@@ -169,7 +170,11 @@ func (s *Session) observeTransactionTerminal(
 		level = slog.LevelWarn
 		event = localization.BoltTransactionTimeoutCleanupRequestedEvent(string(reason), database, duration)
 	} else if reason == transactionTerminalCommit && cleanupErr != nil {
-		level = slog.LevelError
+		if _, retryable := nornicerrors.MapTransientTransactionError(cleanupErr); retryable {
+			level = slog.LevelWarn
+		} else {
+			level = slog.LevelError
+		}
 		event = localization.BoltTransactionCommitFailedEvent(string(reason), database, duration, cleanupErr)
 	} else if cleanupErr != nil {
 		level = slog.LevelError

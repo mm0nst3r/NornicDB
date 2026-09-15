@@ -466,6 +466,10 @@ func mapBoltCommitError(err error, canRetryMergeConflict bool) (code, message st
 	return code, message
 }
 
+func isRetryableBoltStatus(code string) bool {
+	return strings.HasPrefix(code, "Neo.TransientError.")
+}
+
 func (s *Session) recordExplicitTransactionWrite(query string, isWrite bool) {
 	if !isWrite {
 		return
@@ -1173,14 +1177,27 @@ func (s *Session) handleCommit(data []byte) error {
 		commitCallErr = txExec.CommitTransaction(ctx)
 		commitCallReturned = true
 		if err := commitCallErr; err != nil {
-			s.txLifecycle.finishCommit(err)
-			code, message := mapBoltCommitError(err, s.canRetryMergeCommitConflict())
-			s.markTransactionCleanupFailed()
+			canRetryMergeConflict := s.canRetryMergeCommitConflict()
+			observedErr := err
+			if canRetryMergeConflict {
+				observedErr = nornicerrors.MarkMergeCommitTimeUniqueConflict(err)
+			}
+			s.txLifecycle.finishCommit(observedErr)
+			code, message := mapBoltCommitError(err, canRetryMergeConflict)
+			retryable := isRetryableBoltStatus(code)
+			if retryable {
+				s.clearExplicitTransactionState()
+			} else {
+				s.markTransactionCleanupFailed()
+			}
 			if sendErr := s.sendTransactionControlFailure(code, message); sendErr != nil {
 				return sendErr
 			}
 			if flushErr := s.flushIfPending(); flushErr != nil {
 				return flushErr
+			}
+			if retryable {
+				return nil
 			}
 			return fmt.Errorf("COMMIT outcome is unknown: %w", err)
 		}

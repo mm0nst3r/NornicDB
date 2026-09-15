@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orneryd/nornicdb/pkg/storage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -458,13 +459,16 @@ func TestObserveTransactionTerminalStructuredDiagnostics(t *testing.T) {
 
 	session.observeTransactionTerminal(transactionTerminalCommit, "neo4j", time.Millisecond, nil)
 	session.observeTransactionTerminal(transactionTerminalCommit, "neo4j", time.Millisecond, errors.New("commit boom"))
+	session.observeTransactionTerminal(transactionTerminalCommit, "neo4j", time.Millisecond, storage.ErrConflict)
 	session.observeTransactionTerminal(transactionTerminalTimeoutCleanupRequested, "neo4j", 2*time.Millisecond, nil)
 	session.observeTransactionTerminal(transactionTerminalTimeout, "neo4j", 2*time.Millisecond, nil)
 	session.observeTransactionTerminal(transactionTerminalRollback, "neo4j", 3*time.Millisecond, errors.New("boom"))
 	text := output.String()
 	require.Contains(t, text, "explicit transaction terminated")
-	require.Equal(t, 1, strings.Count(text, "explicit transaction commit failed"))
+	require.Equal(t, 2, strings.Count(text, "explicit transaction commit failed"))
 	require.Contains(t, text, "commit_error=\"commit boom\"")
+	require.Contains(t, text, "level=WARN")
+	require.Contains(t, text, "commit_error=conflict")
 	require.Equal(t, 1, strings.Count(text, "explicit transaction timeout cleanup requested"))
 	require.Equal(t, 1, strings.Count(text, "explicit transaction timeout cleanup completed"))
 	require.Contains(t, text, "explicit transaction cleanup failed")

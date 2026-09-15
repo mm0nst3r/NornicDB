@@ -425,11 +425,15 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 	s.state.mu.RLock()
 	response := s.state.response
 	rankedPoolExhausted := response != nil && response.RetrievalExhausted && !response.CandidateBudgetReached
+	collectionExhausted := !page.HasMore && rankedPoolExhausted && !s.state.maxResultsReached
 	completion := SearchContinuationMoreResults
 	if !page.HasMore {
-		if s.state.maxResultsReached {
+		switch {
+		case s.state.maxResultsReached:
 			completion = SearchContinuationMaxResultsComplete
-		} else {
+		case rankedPoolExhausted:
+			completion = SearchContinuationCollectionComplete
+		default:
 			completion = SearchContinuationCandidateComplete
 		}
 	}
@@ -441,6 +445,7 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 		"mode":                  SearchContinuationRanked,
 		"ranked_count":          len(s.state.results),
 		"ranked_pool_exhausted": rankedPoolExhausted,
+		"collection_exhausted":  collectionExhausted,
 		"completion":            completion,
 	}
 	s.state.mu.RUnlock()

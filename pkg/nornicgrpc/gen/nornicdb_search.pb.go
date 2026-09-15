@@ -325,6 +325,9 @@ type SearchTextResponse struct {
 	CollectionExhausted bool `protobuf:"varint,17,opt,name=collection_exhausted,json=collectionExhausted,proto3" json:"collection_exhausted,omitempty"`
 	// more_results, candidate_pool_exhausted, eligible_population_exhausted, or
 	// max_results_reached.
+	// eligible_population_exhausted means the complete eligible population was
+	// emitted, including a ranked stream that naturally exhausted an exact
+	// producer.
 	// candidate_pool_exhausted means a configured candidate boundary stopped
 	// ranked expansion without proving full ranked exhaustion.
 	// max_results_reached means the caller's explicit result ceiling stopped the

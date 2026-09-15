@@ -30,6 +30,11 @@ Server defaults (parsed from `LoadDefaults()` — these are stable):
 
 NornicDB returns Neo4j-shaped error codes (`Neo.ClientError.*`, `Neo.TransientError.*`) plus a stable message text. **You can classify by either the code or the substring; the wire shape is intentionally consistent across both commit paths.**
 
+For explicit `BEGIN`/`COMMIT` transactions, a retryable `COMMIT` failure is
+delivered as `FAILURE` without closing the Bolt connection. The session remains
+in the normal failed-until-`RESET` state, so drivers can reset and retry on the
+same socket. Non-retryable uncertain commit failures still close the connection.
+
 ### Retry these — transient
 
 | Wire shape | Code class | When |
@@ -169,6 +174,8 @@ NornicDB pins the following as a wire contract for Bolt clients:
 - The error message strings listed in the table above.
 - `errors.Is(err, ErrConflict)` walking the wrap chain on the storage side; on the wire, the equivalent is the substring match.
 - `commit failed:` as the single wrapper for both implicit autocommit and explicit `BEGIN/COMMIT` paths.
+- Retryable explicit `COMMIT` failures keep the connection open after the
+  delivered `FAILURE`; the recovery boundary is `RESET`, not reconnect.
 - The default ports `7687` (Bolt) and `7474` (HTTP).
 - `MERGE (n {uid:...}) SET ...` idempotency on retry.
 - Schema DDL durability across restarts.
