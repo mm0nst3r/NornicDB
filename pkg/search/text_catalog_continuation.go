@@ -321,7 +321,8 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 		return results[i].ID < results[j].ID
 	})
 	eligibleCount := len(results)
-	if request.MaxResults > 0 && len(results) > request.MaxResults {
+	maxResultsReached := request.MaxResults > 0 && eligibleCount > request.MaxResults
+	if maxResultsReached {
 		results = results[:request.MaxResults]
 	}
 	rankedCount := 0
@@ -349,6 +350,7 @@ func (s *Service) newCompleteContinuationStream(ctx context.Context, options Sea
 			"ranked_count":          rankedCount,
 			"eligible_count":        &eligibleCount,
 			"ranked_pool_exhausted": rankedPoolExhausted,
+			"max_results_reached":   maxResultsReached,
 		},
 		retainedBytes: retainedBytes,
 	}, nil
@@ -449,8 +451,21 @@ func searchResultFromContinuationNode(node *storage.Node) SearchResult {
 		Labels:     append([]string(nil), node.Labels...),
 		Properties: node.Properties,
 	}
-	if len(node.Labels) > 0 {
+	if t, ok := node.Properties["type"].(string); ok {
+		result.Type = t
+	} else if len(node.Labels) > 0 {
 		result.Type = node.Labels[0]
+	}
+	if title, ok := node.Properties["title"].(string); ok {
+		result.Title = title
+	}
+	if desc, ok := node.Properties["description"].(string); ok {
+		result.Description = desc
+	}
+	if content, ok := node.Properties["content"].(string); ok {
+		result.ContentPreview = truncate(content, 200)
+	} else if text, ok := node.Properties["text"].(string); ok {
+		result.ContentPreview = truncate(text, 200)
 	}
 	return result
 }
@@ -494,14 +509,19 @@ func (s *catalogContinuationStream) Pull(ctx context.Context, position uint64, n
 	for key, value := range metadataSource {
 		metadata[key] = value
 	}
+	maxResultsReached, _ := metadata["max_results_reached"].(bool)
 	results, err := hydrateContinuationResults(s.engine, compact, s.authorizeNode)
 	if err != nil {
 		return nil, err
 	}
-	metadata["collection_exhausted"] = !hasMore
 	if hasMore {
+		metadata["collection_exhausted"] = false
 		metadata["completion"] = SearchContinuationMoreResults
+	} else if maxResultsReached {
+		metadata["collection_exhausted"] = false
+		metadata["completion"] = SearchContinuationMaxResultsComplete
 	} else {
+		metadata["collection_exhausted"] = true
 		metadata["completion"] = SearchContinuationCollectionComplete
 	}
 	return &resultstream.Page{

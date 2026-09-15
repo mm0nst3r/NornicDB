@@ -78,7 +78,8 @@ CALL db.retrieve({qid: $qid, discard: true}) YIELD page RETURN page
 `ranked_count`, `eligible_count`, `ranked_pool_exhausted`,
 `collection_exhausted`, and `completion`. `candidate_pool_exhausted` means a
 configured candidate boundary ended ranked expansion without proving full ranked
-exhaustion. See
+exhaustion. `max_results_reached` means the caller's explicit result ceiling
+ended the stream before full collection exhaustion. See
 [Search Continuation](../user-guides/search-continuation.md).
 
 ## `db.rretrieve` — retrieve + auto-rerank

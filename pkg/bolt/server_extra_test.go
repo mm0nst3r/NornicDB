@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orneryd/nornicdb/pkg/cypher"
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
@@ -1063,7 +1064,7 @@ func TestHandleHelloAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("anonymous auth allowed", func(t *testing.T) {
+	t.Run("anonymous auth rejected when auth is configured", func(t *testing.T) {
 		auth := &mockBoltAuthenticator{}
 		conn := &mockConn{}
 		session := newTestSessionWithAuth(conn, &mockExecutor{}, auth, true, true) // AllowAnonymous = true
@@ -1074,17 +1075,8 @@ func TestHandleHelloAuth(t *testing.T) {
 			t.Fatalf("handleHello error: %v", err)
 		}
 
-		if !session.authenticated {
-			t.Error("session should be authenticated (anonymous)")
-		}
-		if session.authResult == nil {
-			t.Fatal("authResult should not be nil")
-		}
-		if session.authResult.Username != "anonymous" {
-			t.Errorf("expected username 'anonymous', got %q", session.authResult.Username)
-		}
-		if !session.authResult.HasRole("viewer") {
-			t.Error("anonymous should have viewer role")
+		if session.authenticated {
+			t.Error("session should NOT be authenticated by scheme=none when auth is configured")
 		}
 	})
 
@@ -1124,6 +1116,9 @@ func TestHandleHelloAuth(t *testing.T) {
 		// Dev mode grants admin
 		if !session.authResult.HasRole("admin") {
 			t.Error("dev mode should grant admin role")
+		}
+		if session.authResult.PrincipalID != "anonymous" {
+			t.Errorf("expected principal ID 'anonymous', got %q", session.authResult.PrincipalID)
 		}
 	})
 
@@ -1480,6 +1475,9 @@ func TestAuthDisabled(t *testing.T) {
 		if !session.authResult.HasRole("admin") {
 			t.Error("dev mode should grant admin role")
 		}
+		if session.authResult.PrincipalID != "anonymous" {
+			t.Errorf("expected principal ID 'anonymous', got %q", session.authResult.PrincipalID)
+		}
 
 		// Should be able to run any query
 		runData := buildRunMessage("CREATE INDEX ON :Person(name)", nil)
@@ -1522,6 +1520,33 @@ func TestAuthDisabled(t *testing.T) {
 		err = session.handleRun(runData)
 		if err != nil {
 			t.Fatalf("handleRun error: %v", err)
+		}
+	})
+
+	t.Run("auth disabled run uses anonymous principal", func(t *testing.T) {
+		var principal string
+		executor := &mockExecutor{
+			executeFunc: func(ctx context.Context, query string, params map[string]any) (*QueryResult, error) {
+				principal = cypher.GetAuthenticatedPrincipalFromContext(ctx)
+				return &QueryResult{
+					Columns: []string{"n"},
+					Rows:    [][]any{{"test"}},
+				}, nil
+			},
+		}
+		conn := &mockConn{}
+		session := newTestSessionWithAuth(conn, executor, nil, false, false)
+
+		err := session.handleHello(buildHelloMessage("none", "", ""))
+		if err != nil {
+			t.Fatalf("handleHello error = %v", err)
+		}
+		err = session.handleRun(buildRunMessage("MATCH (n) RETURN n", nil))
+		if err != nil {
+			t.Fatalf("handleRun error = %v", err)
+		}
+		if principal != "anonymous" {
+			t.Fatalf("expected no-auth Bolt RUN principal anonymous, got %q", principal)
 		}
 	})
 

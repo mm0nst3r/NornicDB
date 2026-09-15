@@ -812,7 +812,7 @@ func TestBoltCoverage_ServerMessageAndRunHelpers(t *testing.T) {
 			assert.Equal(t, "Neo.ClientError.Security.Unauthorized", code)
 		})
 
-		t.Run("anonymous basic bearer and unsupported auth", func(t *testing.T) {
+		t.Run("none basic bearer and unsupported auth", func(t *testing.T) {
 			adapter := NewAuthenticatorAdapterWithAnonymous(authenticator)
 
 			session, serverConn, clientConn := makeHelloSession()
@@ -824,11 +824,25 @@ func TestBoltCoverage_ServerMessageAndRunHelpers(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() { done <- session.handleHello(encodePackStreamMap(map[string]any{"scheme": "none"})) }()
-			meta, err := AssertSuccess(t, clientConn)
+			code, _, err := AssertFailure(t, clientConn)
 			require.NoError(t, err)
 			require.NoError(t, <-done)
-			assert.Equal(t, "anonymous", session.authResult.Username)
-			assert.Equal(t, "graph", session.database)
+			assert.Equal(t, "Neo.ClientError.Security.Unauthorized", code)
+
+			noAuthSession, noAuthServerConn, noAuthClientConn := makeHelloSession()
+			defer noAuthServerConn.Close()
+			defer noAuthClientConn.Close()
+			noAuthSession.server.dbManager = &overrideDBManager{store: storage.NewMemoryEngine(), defaultDB: "graph", exists: true}
+
+			done = make(chan error, 1)
+			go func() { done <- noAuthSession.handleHello(encodePackStreamMap(map[string]any{"scheme": "none"})) }()
+			meta, err := AssertSuccess(t, noAuthClientConn)
+			require.NoError(t, err)
+			require.NoError(t, <-done)
+			require.NotNil(t, noAuthSession.authResult)
+			assert.Equal(t, "anonymous", noAuthSession.authResult.Username)
+			assert.Equal(t, "anonymous", noAuthSession.authResult.PrincipalID)
+			assert.Equal(t, "graph", noAuthSession.database)
 			assert.Equal(t, buildinfo.ServerAnnouncement(), meta["server"])
 
 			serverConn2, clientConn2 := net.Pipe()
@@ -883,7 +897,7 @@ func TestBoltCoverage_ServerMessageAndRunHelpers(t *testing.T) {
 
 			done = make(chan error, 1)
 			go func() { done <- session.handleHello(encodePackStreamMap(map[string]any{"scheme": "kerberos"})) }()
-			code, _, err := AssertFailure(t, clientConn4)
+			code, _, err = AssertFailure(t, clientConn4)
 			require.NoError(t, err)
 			require.NoError(t, <-done)
 			assert.Equal(t, "Neo.ClientError.Security.Unauthorized", code)

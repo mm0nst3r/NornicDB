@@ -522,7 +522,7 @@ func (r *BoltAuthResult) HasPermission(perm string) bool {
 // Authentication:
 //   - Set Authenticator to enable auth (nil = no auth, accepts all)
 //   - RequireAuth: if true, connections without valid credentials are rejected
-//   - AllowAnonymous: if true, "none" auth scheme is accepted (viewer role)
+//   - AllowAnonymous: legacy adapter knob; no-auth access requires Authenticator=nil
 //
 // Example:
 //
@@ -553,7 +553,7 @@ type Config struct {
 	// Authentication
 	Authenticator  BoltAuthenticator // Authentication handler (nil = no auth)
 	RequireAuth    bool              // Require authentication for all connections
-	AllowAnonymous bool              // Allow "none" auth scheme (grants viewer role)
+	AllowAnonymous bool              // Legacy adapter knob; no-auth Bolt access requires Authenticator=nil
 
 	// Logger is the structured-logging entrypoint per D-01. If nil, a
 	// discard-handler fallback (D-01a) is installed at
@@ -1858,7 +1858,7 @@ func (s *Session) dispatchInner(msgType byte, data []byte, op string) error {
 //	HELLO { user_agent: String, scheme: String, principal: String, credentials: String, ... }
 //
 // Authentication schemes:
-//   - "none": Anonymous access (if AllowAnonymous is true)
+//   - "none": No-auth access when auth is disabled, or implicit WebSocket bearer
 //   - "basic": Username/password authentication
 //   - "bearer": JWT token authentication (credentials contains the token)
 //
@@ -1950,16 +1950,7 @@ func (s *Session) handleHello(data []byte) error {
 				}
 			}
 			if !cookieAuthed {
-				if !s.server.config.AllowAnonymous {
-					return s.sendLocalizedFailure("Neo.ClientError.Security.Unauthorized", localization.BoltAuthenticationRequired())
-				}
-				s.authenticated = true
-				s.authResult = &BoltAuthResult{
-					Authenticated: true,
-					Username:      "anonymous",
-					Roles:         []string{string(auth.RoleViewer)},
-				}
-				s.forwardedAuthHeader = ""
+				return s.sendLocalizedFailure("Neo.ClientError.Security.Unauthorized", localization.BoltAuthenticationRequired())
 			}
 		} else if scheme == "basic" {
 			// Authenticate with provided credentials
@@ -2005,6 +1996,7 @@ func (s *Session) handleHello(data []byte) error {
 		s.authResult = &BoltAuthResult{
 			Authenticated: true,
 			Username:      "anonymous",
+			PrincipalID:   auth.PrincipalID(nil),
 			Roles:         []string{string(auth.RoleAdmin)},
 		}
 		s.forwardedAuthHeader = ""

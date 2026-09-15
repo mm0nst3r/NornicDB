@@ -1428,15 +1428,16 @@ components:
           description: True only when the ranked branch is known to be fully exhausted without truncating a candidate prefix. False for fixed ranked_limit prefixes and configured candidate-budget boundaries.
         collection_exhausted:
           type: boolean
-          description: True when the complete eligible population has been emitted for id and ranked_then_id modes.
+          description: True when the complete eligible population has been emitted for id and ranked_then_id modes. False when the stream ended at the caller's max_results ceiling.
         completion:
           type: string
-          description: Terminal reason for the stream. candidate_pool_exhausted means a configured candidate boundary, such as rerank top-K, stopped ranked expansion without proving full ranked exhaustion.
+          description: Terminal reason for the stream. candidate_pool_exhausted means a configured candidate boundary, such as rerank top-K, stopped ranked expansion without proving full ranked exhaustion. max_results_reached means the caller's explicit lifetime result ceiling stopped the stream before full collection exhaustion.
           enum:
             [
               more_results,
               candidate_pool_exhausted,
               eligible_population_exhausted,
+              max_results_reached,
             ]
 
     CypherResponse:

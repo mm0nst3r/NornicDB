@@ -54,7 +54,7 @@ NornicDB accepts three Bolt HELLO auth schemes:
 
 - **`scheme: "basic"`** — username + password validated by `pkg/auth.Authenticate`. Same credentials as the HTTP API.
 - **`scheme: "bearer"`** — JWT credentials validated by `pkg/auth.ValidateToken`. Works for any token issued by `/auth/token`, `/auth/api-token`, or the OAuth callback.
-- **`scheme: "none"`** — anonymous. Granted only when `RequireAuth=false` (or `AllowAnonymous=true`), or when the WebSocket transport carried an implicit bearer (see below).
+- **`scheme: "none"`** — no-auth mode. Granted only when the server is started with authentication disabled, for example `--no-auth`. With auth enabled, the only accepted `scheme: "none"` path is WebSocket implicit bearer promotion (see below), which authenticates as the bearer token's principal rather than anonymous.
 
 ### WebSocket-only: implicit bearer from HTTP credentials
 

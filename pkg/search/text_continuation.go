@@ -24,6 +24,7 @@ const (
 	SearchContinuationMoreResults        = "more_results"
 	SearchContinuationCandidateComplete  = "candidate_pool_exhausted"
 	SearchContinuationCollectionComplete = "eligible_population_exhausted"
+	SearchContinuationMaxResultsComplete = "max_results_reached"
 )
 
 // NodeAuthorizationFunc decides whether the current caller may read a node.
@@ -95,6 +96,7 @@ type searchContinuationState struct {
 	seen              map[string]struct{}
 	searchMethod      string
 	fallbackTriggered bool
+	maxResultsReached bool
 }
 
 // SearchTextContinuation starts or resumes a progressively deepened canonical
@@ -233,8 +235,11 @@ func (s *Service) SearchTextContinuation(
 		return nil, err
 	}
 	maxResults := request.MaxResults
-	if maxResults > 0 && len(initial.Results) > maxResults {
-		initial.Results = initial.Results[:maxResults]
+	maxResultsReached := continuationMaxResultsReached(maxResults, len(initial.Results), initial.RetrievalExhausted, initial.CandidateBudgetReached)
+	if maxResultsReached {
+		if len(initial.Results) > maxResults {
+			initial.Results = initial.Results[:maxResults]
+		}
 	}
 	compactResults := make([]SearchResult, len(initial.Results))
 	for index := range initial.Results {
@@ -246,6 +251,7 @@ func (s *Service) SearchTextContinuation(
 		seen:              make(map[string]struct{}, len(initial.Results)),
 		searchMethod:      initial.SearchMethod,
 		fallbackTriggered: initial.FallbackTriggered,
+		maxResultsReached: maxResultsReached,
 	}
 	for index := range state.results {
 		state.seen[searchResultID(state.results[index])] = struct{}{}
@@ -253,7 +259,7 @@ func (s *Service) SearchTextContinuation(
 	initialRows := continuationRows(state.results)
 	initialExhausted := initial.RetrievalExhausted ||
 		initial.CandidateBudgetReached ||
-		(maxResults > 0 && len(initial.Results) >= maxResults)
+		maxResultsReached
 	depthLimit := ownedOptions.MaxCandidateLimit
 	if depthLimit <= 0 {
 		depthLimit = int(^uint(0) >> 1)
@@ -288,12 +294,15 @@ func (s *Service) SearchTextContinuation(
 			state.seen[id] = struct{}{}
 			state.results = append(state.results, compactContinuationResult(result))
 		}
+		if continuationMaxResultsReached(maxResults, len(state.results), response.RetrievalExhausted, response.CandidateBudgetReached) {
+			if len(state.results) > maxResults {
+				state.results = state.results[:maxResults]
+			}
+			state.maxResultsReached = true
+		}
 		exhausted := response.RetrievalExhausted ||
 			response.CandidateBudgetReached ||
-			(maxResults > 0 && len(state.results) >= maxResults)
-		if maxResults > 0 && len(state.results) > maxResults {
-			state.results = state.results[:maxResults]
-		}
+			state.maxResultsReached
 		return continuationRows(state.results), exhausted, nil
 	}
 	stream, err := resultstream.NewProgressive(initialRows, initialExhausted, ownedOptions.Limit, expand)
@@ -307,6 +316,13 @@ func (s *Service) SearchTextContinuation(
 		return nil, err
 	}
 	return searchPageFromResultStream(page)
+}
+
+func continuationMaxResultsReached(maxResults, resultCount int, retrievalExhausted, candidateBudgetReached bool) bool {
+	return maxResults > 0 &&
+		resultCount >= maxResults &&
+		!retrievalExhausted &&
+		!candidateBudgetReached
 }
 
 func (s *Service) searchContinuationRegistry() (continuationRegistry, error) {
@@ -411,7 +427,11 @@ func (s *searchMetadataStream) Pull(ctx context.Context, position uint64, n int)
 	rankedPoolExhausted := response != nil && response.RetrievalExhausted && !response.CandidateBudgetReached
 	completion := SearchContinuationMoreResults
 	if !page.HasMore {
-		completion = SearchContinuationCandidateComplete
+		if s.state.maxResultsReached {
+			completion = SearchContinuationMaxResultsComplete
+		} else {
+			completion = SearchContinuationCandidateComplete
+		}
 	}
 	page.Metadata = map[string]any{
 		"search_method":         s.state.searchMethod,

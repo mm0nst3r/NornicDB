@@ -767,6 +767,77 @@ func TestSearchTextContinuationIDModeMaxResultsReturnsSortedPrefix(t *testing.T)
 	require.Equal(t, []string{"doc-a", "doc-b"}, []string{page.Results[0].ID, page.Results[1].ID})
 	require.Equal(t, 3, *page.EligibleCount)
 	require.False(t, page.HasMore)
+	require.False(t, page.CollectionExhausted)
+	require.Equal(t, "max_results_reached", page.Completion)
+}
+
+func TestSearchTextContinuationMaxResultsReportsCeilingNotExhaustion(t *testing.T) {
+	for _, mode := range []SearchContinuationMode{SearchContinuationID, SearchContinuationRankedThenID} {
+		t.Run(string(mode), func(t *testing.T) {
+			engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+			service := NewService(engine)
+			t.Cleanup(func() { require.NoError(t, service.Close()) })
+			for _, id := range []storage.NodeID{"doc-a", "doc-b", "doc-c"} {
+				_, err := engine.CreateNode(&storage.Node{ID: id, Labels: []string{"Document"}, Properties: map[string]any{"content": "alpha"}})
+				require.NoError(t, err)
+			}
+			searchQuery := func(context.Context, string, []float32, *SearchOptions) (*SearchResponse, error) {
+				return &SearchResponse{Results: []SearchResult{
+					{ID: "doc-a", NodeID: "doc-a", Score: 3},
+					{ID: "doc-b", NodeID: "doc-b", Score: 2},
+					{ID: "doc-c", NodeID: "doc-c", Score: 1},
+				}, RetrievalExhausted: true}, nil
+			}
+			page, err := service.SearchTextContinuation(
+				context.Background(), "alpha", DefaultSearchOptions(),
+				SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: mode, N: 2, MaxResults: 2, RankedLimit: 3},
+				nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+			)
+			require.NoError(t, err)
+			require.Len(t, page.Results, 2)
+			require.False(t, page.HasMore)
+			require.NotNil(t, page.EligibleCount)
+			require.Equal(t, 3, *page.EligibleCount)
+			require.False(t, page.CollectionExhausted)
+			require.Equal(t, "max_results_reached", page.Completion)
+		})
+	}
+}
+
+func TestSearchTextContinuationHydratesCanonicalDisplayFields(t *testing.T) {
+	for _, mode := range []SearchContinuationMode{SearchContinuationID, SearchContinuationRanked, SearchContinuationRankedThenID} {
+		t.Run(string(mode), func(t *testing.T) {
+			engine := storage.NewNamespacedEngine(storage.NewMemoryEngine(), "nornic")
+			service := NewService(engine)
+			t.Cleanup(func() { require.NoError(t, service.Close()) })
+			_, err := engine.CreateNode(&storage.Node{
+				ID:     "doc-a",
+				Labels: []string{"Document"},
+				Properties: map[string]any{
+					"type":        "transcript",
+					"title":       "Known title",
+					"description": "Known description",
+					"content":     "alpha content",
+				},
+			})
+			require.NoError(t, err)
+			searchQuery := func(context.Context, string, []float32, *SearchOptions) (*SearchResponse, error) {
+				return &SearchResponse{Results: []SearchResult{{ID: "doc-a", NodeID: "doc-a", Score: 1}}, RetrievalExhausted: true}, nil
+			}
+			page, err := service.SearchTextContinuation(
+				context.Background(), "alpha", DefaultSearchOptions(),
+				SearchContinuationRequest{Owner: "alice", Database: "nornic", Mode: mode, N: 1, RankedLimit: 1},
+				nil, nil, searchQuery, ChunkedSearchErrorPolicy{},
+			)
+			require.NoError(t, err)
+			require.Len(t, page.Results, 1)
+			require.Equal(t, "transcript", page.Results[0].Type)
+			require.Equal(t, "Known title", page.Results[0].Title)
+			require.Equal(t, "Known description", page.Results[0].Description)
+			require.Equal(t, "alpha content", page.Results[0].ContentPreview)
+			require.Equal(t, "transcript", page.Results[0].Properties["type"])
+		})
+	}
 }
 
 func TestSearchTextContinuationPreservesCanonicalResponseMetadata(t *testing.T) {

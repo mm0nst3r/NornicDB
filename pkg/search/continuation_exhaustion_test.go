@@ -48,6 +48,8 @@ func TestContinuationShortApproximateBatchDoesNotEndSearch(t *testing.T) {
 	require.Len(t, page.Results, 1)
 	require.Equal(t, "doc-2", page.Results[0].ID)
 	require.False(t, page.HasMore)
+	require.Equal(t, SearchContinuationMaxResultsComplete, page.Completion)
+	require.Equal(t, []int{4, 8}, depths)
 }
 
 func TestContinuationFilteredBM25EnumeratesBeyondShortFirstBatch(t *testing.T) {

@@ -87,7 +87,11 @@ func NewAuthenticatorAdapter(authenticator *auth.Authenticator) *AuthenticatorAd
 // NewAuthenticatorAdapterWithAnonymous creates an adapter that allows anonymous connections.
 // Anonymous users receive "viewer" role (read-only access).
 //
-// Use with caution - this allows unauthenticated connections.
+// Deprecated: protocol-level Bolt no-auth access is controlled by leaving
+// Config.Authenticator nil (the --no-auth server mode). Session.handleHello
+// does not use this adapter toggle to grant scheme=none access when auth is
+// configured; WebSocket scheme=none can still authenticate through an implicit
+// bearer cookie/header.
 func NewAuthenticatorAdapterWithAnonymous(authenticator *auth.Authenticator) *AuthenticatorAdapter {
 	adapter := &AuthenticatorAdapter{
 		auth:           authenticator,
@@ -241,7 +245,9 @@ func (a *AuthenticatorAdapter) Authenticate(scheme, principal, credentials strin
 	return result, nil
 }
 
-// SetAllowAnonymous enables or disables anonymous authentication.
+// SetAllowAnonymous enables or disables anonymous authentication for direct
+// adapter use. It does not grant protocol-level Bolt no-auth access when
+// Config.Authenticator is set.
 func (a *AuthenticatorAdapter) SetAllowAnonymous(allow bool) {
 	a.allowAnonymous.Store(allow)
 }

@@ -323,9 +323,12 @@ type SearchTextResponse struct {
 	// truncating a candidate prefix.
 	RankedPoolExhausted bool `protobuf:"varint,16,opt,name=ranked_pool_exhausted,json=rankedPoolExhausted,proto3" json:"ranked_pool_exhausted,omitempty"`
 	CollectionExhausted bool `protobuf:"varint,17,opt,name=collection_exhausted,json=collectionExhausted,proto3" json:"collection_exhausted,omitempty"`
-	// more_results, candidate_pool_exhausted, or eligible_population_exhausted.
+	// more_results, candidate_pool_exhausted, eligible_population_exhausted, or
+	// max_results_reached.
 	// candidate_pool_exhausted means a configured candidate boundary stopped
 	// ranked expansion without proving full ranked exhaustion.
+	// max_results_reached means the caller's explicit result ceiling stopped the
+	// stream before full collection exhaustion.
 	Completion string `protobuf:"bytes,18,opt,name=completion,proto3" json:"completion,omitempty"`
 }
 

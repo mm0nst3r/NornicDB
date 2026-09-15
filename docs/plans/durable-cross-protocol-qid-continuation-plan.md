@@ -400,10 +400,13 @@ operations: `mode`, per-row `phase`, optional `group_key`, optional nested
 `passages`, `ranked_count`,
 `eligible_count`, `ranked_pool_exhausted`, `collection_exhausted`, and
 `completion`. `completion` is one of `more_results`,
-`candidate_pool_exhausted`, or `eligible_population_exhausted`.
+`candidate_pool_exhausted`, `eligible_population_exhausted`, or
+`max_results_reached`.
 `candidate_pool_exhausted` means a configured candidate boundary stopped ranked
-expansion without proving full ranked exhaustion. A short ANN response never
-claims collection or ranked-pool exhaustion by itself.
+expansion without proving full ranked exhaustion. `max_results_reached` means
+the caller's explicit result ceiling stopped the stream before full collection
+exhaustion. A short ANN response never claims collection or ranked-pool
+exhaustion by itself.
 
 ### 6. Consistency Contract
 
@@ -509,8 +512,10 @@ optional per-row `passages`,
 completion for progressive `ranked` mode because the eventual searchable result
 count is not known. `completion="candidate_pool_exhausted"` is terminal for the
 stream but does not prove `ranked_pool_exhausted`. Complete modes know `total`
-and `eligible_count` after initial materialization. When no continuation fields
-are supplied, the current request and response behavior remains unchanged.
+and `eligible_count` after initial materialization. `completion="max_results_reached"`
+is terminal but leaves `collection_exhausted=false` when the requested result
+ceiling is lower than the eligible population. When no continuation fields are
+supplied, the current request and response behavior remains unchanged.
 
 On pull and discard, the token selects its canonical database. If a request
 also supplies `database`, it must resolve to the same database or fail closed.
@@ -545,6 +550,8 @@ message SearchTextResponse {
   optional int64 eligible_count = 15;
   bool ranked_pool_exhausted = 16;
   bool collection_exhausted = 17;
+  // more_results, candidate_pool_exhausted, eligible_population_exhausted, or
+  // max_results_reached.
   string completion = 18;
 }
 ```

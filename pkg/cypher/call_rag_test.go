@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math"
 	"testing"
+	"time"
 
+	"github.com/orneryd/nornicdb/pkg/resultstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -163,6 +165,55 @@ func TestCallDbRetrieveContinuesBeyondInitialLimit(t *testing.T) {
 	require.NoError(t, err)
 	page = second.Rows[0][0].(map[string]interface{})
 	require.Len(t, page["results"], 3)
+}
+
+func TestCallDbRetrieveContinuationBypassesCypherResultCache(t *testing.T) {
+	store := storage.NewNamespacedEngine(newTestMemoryEngine(t), "test")
+	exec := NewStorageExecutorWithQueryCachePolicy(store, 10, time.Minute)
+	service := search.NewService(store)
+	exec.SetSearchService(service)
+
+	for index := 0; index < 3; index++ {
+		_, err := store.CreateNode(&storage.Node{
+			ID:         storage.NodeID(fmt.Sprintf("doc-%d", index)),
+			Labels:     []string{"Document"},
+			Properties: map[string]interface{}{"content": "cached continuation"},
+		})
+		require.NoError(t, err)
+	}
+
+	startQuery := "CALL db.retrieve({mode: 'id', n: 1})"
+	alice := WithAuthenticatedPrincipal(context.Background(), "sub:alice")
+	bob := WithAuthenticatedPrincipal(context.Background(), "sub:bob")
+	first, err := exec.Execute(alice, startQuery, nil)
+	require.NoError(t, err)
+	firstPage := first.Rows[0][0].(map[string]interface{})
+	firstQID := firstPage["qid"].(string)
+	require.NotEmpty(t, firstQID)
+
+	second, err := exec.Execute(bob, startQuery, nil)
+	require.NoError(t, err)
+	secondPage := second.Rows[0][0].(map[string]interface{})
+	require.NotEqual(t, firstQID, secondPage["qid"].(string), "stateful starts must not reuse a cached qid across owners")
+
+	pullParams := map[string]interface{}{
+		"request": map[string]interface{}{"qid": firstQID, "n": int64(1)},
+	}
+	_, err = exec.Execute(alice, "CALL db.retrieve($request)", pullParams)
+	require.NoError(t, err)
+
+	discard, err := exec.Execute(alice, "CALL db.retrieve($request)", map[string]interface{}{
+		"request": map[string]interface{}{"qid": firstQID, "discard": true},
+	})
+	require.NoError(t, err)
+	discardPage := discard.Rows[0][0].(map[string]interface{})
+	require.True(t, discardPage["released"].(bool))
+
+	_, err = exec.Execute(alice, "CALL db.retrieve($request)", pullParams)
+	require.ErrorIs(t, err, resultstream.ErrGoneQID, "discarded qids must not be replayed from the query result cache")
+
+	hits, _, _, _, _ := exec.cache.Stats()
+	require.Zero(t, hits, "db.retrieve continuation START/PULL/DISCARD must bypass the ordinary Cypher result cache")
 }
 
 func TestCallDbRetrieveIDContinuationGroupsAllPassages(t *testing.T) {

@@ -106,8 +106,11 @@ message SearchTextResponse {
   // truncating a candidate prefix.
   bool ranked_pool_exhausted = 16;
   bool collection_exhausted = 17;
-  // more_results, candidate_pool_exhausted, or eligible_population_exhausted.
+  // more_results, candidate_pool_exhausted, eligible_population_exhausted, or
+  // max_results_reached.
   // candidate_pool_exhausted means a configured candidate boundary stopped
   // ranked expansion without proving full ranked exhaustion.
+  // max_results_reached means the caller's explicit result ceiling stopped the
+  // stream before full collection exhaustion.
   string completion = 18;
 }

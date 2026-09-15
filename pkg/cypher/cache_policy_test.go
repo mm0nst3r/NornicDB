@@ -9,9 +9,9 @@ func TestIsCacheableReadQuery_NewPrimitives(t *testing.T) {
 		expect bool
 	}{
 		{
-			name:   "retrieve cacheable",
+			name:   "retrieve continuation not cacheable",
 			query:  "CALL db.retrieve({query: 'alpha', limit: 10})",
-			expect: true,
+			expect: false,
 		},
 		{
 			name:   "rretrieve cacheable",

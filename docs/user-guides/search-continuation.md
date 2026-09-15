@@ -16,7 +16,8 @@ principal, and canonical database.
 `n` is a page size. In `ranked` mode, `limit` is the initial retrieval depth,
 not a lifetime ceiling. `max_results` is the optional explicit lifetime
 ceiling. A terminal response has `has_more: false` and no next qid; inspect
-`completion` to distinguish true exhaustion from a configured candidate budget.
+`completion` to distinguish true exhaustion from a configured candidate budget
+or a requested result ceiling.
 
 ## Modes
 
@@ -42,6 +43,12 @@ the stream ends with `completion: "candidate_pool_exhausted"` and
 after the requested retrieval depth reaches the configured top-K and the
 pre-rerank candidate list still contains more rows. A shallow `limit` below the
 top-K can continue deepening inside the same rerank budget.
+
+When `max_results` ends a stream before the complete eligible population is
+emitted, the terminal page reports `completion: "max_results_reached"` and
+`collection_exhausted: false`. `eligible_count` remains the discovered complete
+population for `id` and `ranked_then_id`, so clients can distinguish a caller
+ceiling from true collection exhaustion.
 
 Progressive ranked continuation deepens short batches using the prepared query
 embeddings, including each chunk of a multi-chunk query. Short batches are not
