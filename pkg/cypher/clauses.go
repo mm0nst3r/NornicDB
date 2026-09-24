@@ -543,6 +543,62 @@ func (e *StorageExecutor) splitWithItems(expr string) []string {
 // ========================================
 
 // executeUnwind handles UNWIND clause - list expansion
+// executeUnwindCallInTransactions runs UNWIND ... CALL { } IN TRANSACTIONS
+// [OF n ROWS]: the unwound values are split into batches of n rows (1000 by
+// default), and each batch runs the subquery for its rows in its own
+// transaction, as in Neo4j. The clauses after the subquery then run over the
+// rows of every batch; without any, the statement returns no rows.
+func (e *StorageExecutor) executeUnwindCallInTransactions(ctx context.Context, variable string, items []interface{}, body, afterCall string, batchSize int) (*ExecuteResult, error) {
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+	if strings.TrimSpace(body) == "" {
+		return nil, localizedError(localization.CypherSubqueriesCallBodyEmpty(), nil)
+	}
+	batchQuery := "UNWIND $__call_in_tx_items AS " + variable + " CALL { " + body + " }"
+	if strings.TrimSpace(afterCall) != "" {
+		// The clauses after the subquery need each batch's rows: the unwound
+		// value and the subquery's own columns.
+		projection := variable
+		for _, column := range e.inferTopLevelReturnColumns(body) {
+			if column != variable {
+				projection += ", " + column
+			}
+		}
+		batchQuery += " RETURN " + projection
+	}
+	upperBatchQuery := strings.ToUpper(batchQuery)
+	inherited := getParamsFromContext(ctx)
+	combined := &ExecuteResult{Columns: []string{variable}, Rows: make([][]interface{}, 0, len(items)), Stats: &QueryStats{}}
+	for start := 0; start < len(items); start += batchSize {
+		end := start + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batchParams := make(map[string]interface{}, util.SafePreallocSum(len(inherited), 1))
+		for key, value := range inherited {
+			batchParams[key] = value
+		}
+		batchParams["__call_in_tx_items"] = items[start:end]
+		batchResult, err := e.executeWithImplicitTransaction(context.WithValue(ctx, paramsKey, batchParams), batchQuery, upperBatchQuery)
+		if err != nil {
+			return nil, localizedError(localization.CypherSubqueriesTransactionBatchFailed(variable, start/batchSize+1, err), err)
+		}
+		if batchResult == nil {
+			continue
+		}
+		if len(batchResult.Columns) > 0 {
+			combined.Columns = batchResult.Columns
+		}
+		combined.Rows = append(combined.Rows, batchResult.Rows...)
+		addQueryStats(combined.Stats, batchResult.Stats)
+	}
+	if strings.TrimSpace(afterCall) != "" {
+		return e.processAfterCallSubquery(ctx, combined, afterCall)
+	}
+	return &ExecuteResult{Columns: []string{}, Rows: [][]interface{}{}, Stats: combined.Stats}, nil
+}
+
 func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*ExecuteResult, error) {
 	prepared, err := e.prepareTopLevelUnwind(ctx, cypher)
 	if err != nil {
@@ -559,6 +615,9 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 	// that follows earlier clauses (per-row import, unit-subquery row
 	// preservation, trailing RETURN / chained CALL).
 	if startsWithCallSubquery(restQuery) {
+		if body, afterCall, inTransactions, batchSize := e.parseCallSubquery(restQuery); inTransactions {
+			return e.executeUnwindCallInTransactions(ctx, variable, items, body, afterCall, batchSize)
+		}
 		seed := &ExecuteResult{Columns: []string{variable}, Rows: make([][]interface{}, len(items))}
 		for i, item := range items {
 			seed.Rows[i] = []interface{}{item}

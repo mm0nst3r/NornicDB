@@ -47,12 +47,17 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	cyphertext "github.com/orneryd/nornicdb/pkg/cypher/internal/text"
 	"github.com/orneryd/nornicdb/pkg/embeddingutil"
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
+
+// nodeSetSnapshotPool holds the before-images applyCountedNodeSet counts
+// against.
+var nodeSetSnapshotPool = sync.Pool{New: func() any { return make(map[string]interface{}, 8) }}
 
 // applyCountedNodeSet applies the assignments of setClause that target
 // varName to node, and adds what they wrote to stats.
@@ -67,13 +72,22 @@ import (
 //	applyCountedNodeSet(ctx, node, "n", "n.name = 'Alice', n.age = 30", nil, nil, stats)
 //	// node.Properties["name"] = "Alice", node.Properties["age"] = int64(30)
 func (e *StorageExecutor) applyCountedNodeSet(ctx context.Context, node *storage.Node, varName string, setClause string, nodeContext map[string]*storage.Node, relContext map[string]*storage.Edge, stats *QueryStats) (bool, error) {
-	beforeProperties := cloneNodePropertiesMap(node.Properties)
-	beforeLabels := append([]string(nil), node.Labels...)
+	// The before-image only lives for this call; a pooled map keeps MERGE's
+	// SET allocation-free. SET only appends labels, so their count is enough.
+	beforeProperties := nodeSetSnapshotPool.Get().(map[string]interface{})
+	defer func() {
+		clear(beforeProperties)
+		nodeSetSnapshotPool.Put(beforeProperties)
+	}()
+	for key, value := range node.Properties {
+		beforeProperties[key] = value
+	}
+	labelsBefore := len(node.Labels)
 	if err := e.applySetToNodeWithContext(ctx, node, varName, setClause, nodeContext, relContext); err != nil {
 		return false, err
 	}
 	propertiesSet := changedPropertyCount(beforeProperties, node.Properties)
-	labelsAdded := addedLabelCount(beforeLabels, node.Labels)
+	labelsAdded := len(node.Labels) - labelsBefore
 	if stats != nil {
 		stats.PropertiesSet += propertiesSet
 		stats.LabelsAdded += labelsAdded

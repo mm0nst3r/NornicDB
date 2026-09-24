@@ -1999,6 +1999,13 @@ func (e *StorageExecutor) processAfterCallSubquery(ctx context.Context, innerRes
 	return nil, localizedError(localization.CypherSubqueriesAfterCallClauseUnsupported(firstWord), nil)
 }
 
+// executeChainedCallSubquery runs a CALL { } subquery for the rows produced by
+// the clauses before it (seedResult), then the clauses after it. A subquery
+// that imports a seed column, or that writes, runs once per seed row (a unit
+// subquery, one without RETURN, keeps each row); a read-only subquery that
+// imports nothing runs once and its rows are joined to every seed row. A
+// statement that ends with the subquery returns no columns and no rows, as in
+// Neo4j; its counters are kept.
 func (e *StorageExecutor) executeChainedCallSubquery(ctx context.Context, seedResult *ExecuteResult, callClause string) (*ExecuteResult, error) {
 	subqueryBody, afterCall, inTransactions, batchSize := e.parseCallSubquery(callClause)
 	if subqueryBody == "" {
@@ -2050,6 +2057,13 @@ func (e *StorageExecutor) executeChainedCallSubquery(ctx context.Context, seedRe
 			return nil, err
 		}
 		stats = mergeQueryStats(stats, combined.Stats)
+	} else if callSubqueryQueryIsWrite(subqueryBody) {
+		// Its writes happen once per incoming row, as in Neo4j.
+		combined, err = targetExec.executeCorrelatedCallWithSeedRows(ctx, seedResult, subqueryBody, nil)
+		if err != nil {
+			return nil, err
+		}
+		stats = mergeQueryStats(stats, combined.Stats)
 	} else {
 		innerResult, err := targetExec.executeInternal(ctx, subqueryBody, nil)
 		if err != nil {
@@ -2066,7 +2080,7 @@ func (e *StorageExecutor) executeChainedCallSubquery(ctx context.Context, seedRe
 		return e.processAfterCallSubquery(ctx, combined, afterCall)
 	}
 
-	return combined, nil
+	return &ExecuteResult{Columns: []string{}, Rows: [][]interface{}{}, Stats: stats}, nil
 }
 
 func detectReferencedCallSubquerySeedColumns(seedResult *ExecuteResult, subqueryBody string) []string {

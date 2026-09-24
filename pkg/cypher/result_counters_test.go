@@ -79,9 +79,10 @@ func TestResultCountersMatchNeo4j(t *testing.T) {
 }
 
 // UNWIND ... CALL { } runs the subquery once per unwound value, as Neo4j
-// 5.26.30 does: its writes happen, a unit subquery keeps the outer row, and
-// a returning subquery joins its rows onto it. It used to skip the subquery
-// and return only the unwound values.
+// 5.26.30 does: its writes happen, a unit subquery keeps the outer row, a
+// returning subquery joins its rows onto it, and IN TRANSACTIONS commits it
+// in batches. It used to skip the subquery and return only the unwound
+// values.
 func TestUnwindCallSubqueryRunsPerRow(t *testing.T) {
 	cases := []struct {
 		stmt   string
@@ -96,6 +97,16 @@ func TestUnwindCallSubqueryRunsPerRow(t *testing.T) {
 			[][]interface{}{{int64(1), int64(2), int64(3)}, {int64(2), int64(4), int64(5)}}, []interface{}{}},
 		{"UNWIND [] AS i CALL (i) { CREATE (:X {i: i}) } RETURN count(*) AS c",
 			[][]interface{}{{int64(0)}}, []interface{}{}},
+		// A subquery that imports nothing but writes runs once per row.
+		{"UNWIND [1, 2, 3] AS i CALL { CREATE (:X) } RETURN count(*) AS c",
+			[][]interface{}{{int64(3)}}, []interface{}{nil, nil, nil}},
+		// A statement ending with the subquery returns no rows.
+		{"UNWIND [1, 2] AS i CALL (i) { CREATE (:X {i: i}) }",
+			[][]interface{}{}, []interface{}{int64(1), int64(2)}},
+		{"UNWIND [1, 2, 3] AS i CALL (i) { CREATE (:X {i: i}) } IN TRANSACTIONS OF 2 ROWS",
+			[][]interface{}{}, []interface{}{int64(1), int64(2), int64(3)}},
+		{"UNWIND [1, 2, 3] AS i CALL (i) { CREATE (x:X {i: i}) RETURN x.i AS v } IN TRANSACTIONS RETURN count(v) AS c",
+			[][]interface{}{{int64(3)}}, []interface{}{int64(1), int64(2), int64(3)}},
 	}
 	stacks := map[string]func(t *testing.T) *StorageExecutor{
 		"memory": func(t *testing.T) *StorageExecutor {

@@ -1255,10 +1255,12 @@ func pipelineSetTargetVariables(assignments []string) []string {
 	return targets
 }
 
+// changedPropertyCount is the SET counting rule: the number of properties
+// added, replaced with a different value or removed between before and after.
 func changedPropertyCount(before, after map[string]interface{}) int {
 	changed := 0
 	for key, value := range after {
-		if old, exists := before[key]; !exists || !reflect.DeepEqual(old, value) {
+		if old, exists := before[key]; !exists || !samePropertyValue(old, value) {
 			changed++
 		}
 	}
@@ -1268,6 +1270,26 @@ func changedPropertyCount(before, after map[string]interface{}) int {
 		}
 	}
 	return changed
+}
+
+// samePropertyValue is reflect.DeepEqual for stored property values, with the
+// common scalar types compared directly.
+func samePropertyValue(a, b interface{}) bool {
+	switch av := a.(type) {
+	case string:
+		bv, ok := b.(string)
+		return ok && av == bv
+	case int64:
+		bv, ok := b.(int64)
+		return ok && av == bv
+	case float64:
+		bv, ok := b.(float64)
+		return ok && av == bv
+	case bool:
+		bv, ok := b.(bool)
+		return ok && av == bv
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // ---- clause appliers ----
