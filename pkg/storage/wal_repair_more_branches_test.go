@@ -15,6 +15,7 @@ func TestWALRepair_MoreBranchCoverage(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "stat failed")
 
+		skipIfPermissionsBypassed(t)
 		walPath := filepath.Join(t.TempDir(), "wal.log")
 		hdr := make([]byte, 4)
 		binary.LittleEndian.PutUint32(hdr, walMagic)
