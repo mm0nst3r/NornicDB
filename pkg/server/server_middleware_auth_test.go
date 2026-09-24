@@ -164,13 +164,25 @@ func startTestHTTPServer(t *testing.T, server *Server) {
 	})
 }
 
+// newCookieClient returns a client with a cookie jar. Without a transport it
+// gets its own clone of http.DefaultTransport rather than sharing it. The
+// client's idle connections are closed when the test ends: the client is
+// created after the server starts, so this cleanup runs before the server
+// stops. An open connection that never sent a request would otherwise hold
+// http.Server.Shutdown for 5 s (net/http treats a new connection as idle only
+// after 5 s), longer than startTestHTTPServer's stop timeout (#632).
 func newCookieClient(t *testing.T, transport http.RoundTripper) *http.Client {
 	t.Helper()
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &http.Client{Jar: jar, Transport: transport}
+	if transport == nil {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	}
+	client := &http.Client{Jar: jar, Transport: transport}
+	t.Cleanup(client.CloseIdleConnections)
+	return client
 }
 
 func exerciseAuthenticationE2E(t *testing.T, client *http.Client, baseURL string, wantSecure, spoofForwardedProto bool) {
