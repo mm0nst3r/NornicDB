@@ -17,3 +17,8 @@ docker/Dockerfile* text eol=lf
 *.a binary
 *.dll binary
 *.exe binary
+
+# Test fixtures are compared byte for byte (golden output, corpus digests):
+# check them out exactly as stored, never with converted line endings.
+*.golden -text
+**/testdata/** -text
