@@ -198,6 +198,11 @@ func parseProjectionExprAlias(item string) (string, string) {
 	upper := strings.ToUpper(trimmed)
 	asIdx := strings.Index(upper, " AS ")
 	if asIdx < 0 {
+		// A projected variable is named by the variable itself: `x` is the
+		// column x, as in Neo4j. Other expressions are named by their text.
+		if name := simpleSemanticIdentifier(trimmed); name != "" {
+			return trimmed, name
+		}
 		return trimmed, trimmed
 	}
 	expr := strings.TrimSpace(trimmed[:asIdx])

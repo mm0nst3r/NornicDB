@@ -401,7 +401,7 @@ func semanticExpressionReferences(expression string) []string {
 				continue
 			}
 		}
-		name, next, ok := scanIdentifierToken(expression, index)
+		name, next, ok := scanSymbolicName(expression, index)
 		if !ok {
 			index++
 			continue
@@ -418,11 +418,11 @@ func semanticExpressionReferences(expression string) []string {
 			continue
 		}
 		normalized := normalizeProjectionColumnName(name)
-		if isSemanticLiteralWord(normalized) {
+		if name[0] != '`' && isSemanticLiteralWord(normalized) {
 			continue
 		}
 		if cursor < len(expression) && expression[cursor] == '.' {
-			property, propertyEnd, propertyOK := scanIdentifierToken(expression, cursor+1)
+			property, propertyEnd, propertyOK := scanSymbolicName(expression, cursor+1)
 			if propertyOK {
 				normalized += "." + normalizePropertyKey(property)
 				index = propertyEnd
@@ -436,7 +436,9 @@ func semanticExpressionReferences(expression string) []string {
 func isSemanticLiteralWord(value string) bool {
 	switch strings.ToUpper(value) {
 	case "TRUE", "FALSE", "NULL", "NAN", "ASC", "ASCENDING", "DESC", "DESCENDING",
-		"AND", "IN", "NOT", "OR", "WHERE", "XOR":
+		"AND", "IN", "NOT", "OR", "WHERE", "XOR",
+		// Word operators and CASE: part of an expression, never a variable.
+		"STARTS", "ENDS", "WITH", "CONTAINS", "IS", "CASE", "WHEN", "THEN", "ELSE", "END":
 		return true
 	default:
 		return false
