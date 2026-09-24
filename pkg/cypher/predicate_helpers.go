@@ -1,6 +1,7 @@
 package cypher
 
 import (
+	"math"
 	"reflect"
 
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -43,7 +44,7 @@ func buildComparableMembershipIndex(items []interface{}) (map[interface{}]struct
 			continue
 		}
 		if isComparableValue(item) {
-			comparableSet[item] = struct{}{}
+			comparableSet[membershipKey(item)] = struct{}{}
 			continue
 		}
 		nonComparable = append(nonComparable, item)
@@ -56,7 +57,7 @@ func evaluateComparableMembership(actual interface{}, comparableSet map[interfac
 		return false
 	}
 	if isComparableValue(actual) {
-		if _, hit := comparableSet[actual]; hit {
+		if _, hit := comparableSet[membershipKey(actual)]; hit {
 			return true
 		}
 	}
@@ -66,6 +67,53 @@ func evaluateComparableMembership(actual interface{}, comparableSet map[interfac
 		}
 	}
 	return false
+}
+
+// membershipKey is the key of a comparable value in a membership index
+// (buildComparableMembershipIndex). Cypher compares numbers by value (1 = 1.0,
+// an integer parameter that arrives as a float over HTTP equals the stored
+// integer), so every integer type, and every whole-valued float in int64
+// range, keys as int64; other floats key as float64. Integers keep their
+// exact value, including above 2^53.
+func membershipKey(v interface{}) interface{} {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case int16:
+		return int64(n)
+	case int8:
+		return int64(n)
+	case uint32:
+		return int64(n)
+	case uint16:
+		return int64(n)
+	case uint8:
+		return int64(n)
+	case uint:
+		if uint64(n) <= math.MaxInt64 {
+			return int64(n)
+		}
+	case uint64:
+		if n <= math.MaxInt64 {
+			return int64(n)
+		}
+	case float64:
+		return floatMembershipKey(n)
+	case float32:
+		return floatMembershipKey(float64(n))
+	}
+	return v
+}
+
+func floatMembershipKey(f float64) interface{} {
+	if f == math.Trunc(f) && f >= math.MinInt64 && f < math.MaxInt64 {
+		return int64(f)
+	}
+	return f
 }
 
 func isComparableValue(v interface{}) bool {

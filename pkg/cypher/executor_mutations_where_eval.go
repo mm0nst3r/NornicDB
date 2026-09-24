@@ -263,13 +263,20 @@ func (e *StorageExecutor) compileSimpleWhereTruth(ctx context.Context, variable,
 }
 
 // resolveSimpleWhereValue resolves the right-hand side of a single-node WHERE
-// fast-path predicate: a $param (typed), a $param path, or a literal.
+// fast-path predicate, once when the predicate is compiled: a $param (typed),
+// a $param path, or a constant expression evaluated by the row expression
+// evaluator (literals, list literals whose elements are expressions or hex /
+// octal integers, arithmetic, string concatenation), so the compiled predicate
+// compares the same value the general WHERE evaluator would.
 func (e *StorageExecutor) resolveSimpleWhereValue(ctx context.Context, raw string) interface{} {
 	if v, ok := resolveDirectParamRef(ctx, raw); ok {
 		return v
 	}
 	if v, ok := resolveParamPathRef(ctx, raw); ok {
 		return normalizePropValue(v)
+	}
+	if v, ok := e.evaluateRowExpressionWithContext(ctx, raw, pipelineRow{}); ok {
+		return v
 	}
 	return e.parseValue(ctx, raw)
 }

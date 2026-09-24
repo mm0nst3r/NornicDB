@@ -646,10 +646,7 @@ func (e *StorageExecutor) tryExecutePipelineSimpleNodeReadPlan(ctx context.Conte
 	}
 	rows := make([]pipelineRow, 0, len(candidates))
 	for _, node := range candidates {
-		row := pipelineRow{nodePattern.variable: node}
-		for name, value := range params {
-			row["$"+name] = value
-		}
+		row := pipelineNodeRow(nodePattern.variable, node, params)
 		if whereClause == "" || e.evaluateWithWhereCondition(ctx, whereClause, map[string]interface{}(row)) {
 			rows = append(rows, row)
 		}
@@ -659,6 +656,18 @@ func (e *StorageExecutor) tryExecutePipelineSimpleNodeReadPlan(ctx context.Conte
 		return nil, false, nil
 	}
 	return result, true, nil
+}
+
+// pipelineNodeRow is the binding row of a single-node pipeline read: the node
+// under its variable and every parameter under "$name". The row loop and the
+// fused filtered count evaluate WHERE on it.
+func pipelineNodeRow(variable string, node *storage.Node, params map[string]interface{}) pipelineRow {
+	row := make(pipelineRow, len(params)+1)
+	row[variable] = node
+	for name, value := range params {
+		row["$"+name] = value
+	}
+	return row
 }
 
 func pipelineSingleNodeCountProjection(items []returnItem, variable string) (string, bool) {
@@ -698,7 +707,9 @@ func (e *StorageExecutor) tryStreamPipelineFilteredNodeCount(
 
 	whereFilter, compiledWhere := e.getCompiledSimpleWhere(ctx, nodePattern.variable, whereClause)
 	if !compiledWhere {
-		predicateRow := map[string]interface{}{nodePattern.variable: nil}
+		// The same row the general single-node read evaluates WHERE on: the
+		// node and the parameters ($name), so $q = 1, $flag, ... hold here too.
+		predicateRow := pipelineNodeRow(nodePattern.variable, nil, getParamsFromContext(ctx))
 		whereFilter = func(node *storage.Node) bool {
 			predicateRow[nodePattern.variable] = node
 			return e.evaluateWithWhereCondition(ctx, whereClause, predicateRow)
