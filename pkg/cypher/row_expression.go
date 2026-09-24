@@ -5,9 +5,9 @@ import (
 	"math"
 	"reflect"
 	"regexp"
-	"sort"
 	"strings"
 
+	cypherfn "github.com/orneryd/nornicdb/pkg/cypher/fn"
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
@@ -316,36 +316,10 @@ func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]i
 			if !resolved {
 				return nil, false
 			}
-			object, isMap := toStringAnyMap(value)
-			if !isMap {
-				switch entity := value.(type) {
-				case *storage.Node:
-					if entity != nil {
-						object = entity.Properties
-						isMap = true
-					}
-				case *storage.Edge:
-					if entity != nil {
-						object = entity.Properties
-						isMap = true
-					}
-				}
+			if object, isMap := toStringAnyMap(value); isMap {
+				value = object
 			}
-			if !isMap {
-				return nil, false
-			}
-			keys := make([]string, 0, len(object))
-			for key := range object {
-				if key != "_nodeId" && key != "_edgeId" && key != "labels" && key != "type" {
-					keys = append(keys, key)
-				}
-			}
-			sort.Strings(keys)
-			result := make([]interface{}, len(keys))
-			for index, key := range keys {
-				result[index] = key
-			}
-			return result, true
+			return cypherfn.PropertyKeys(value)
 		case "labels":
 			value, resolved := e.evaluateRowExpression(argument, values)
 			if !resolved {

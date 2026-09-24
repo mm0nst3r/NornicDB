@@ -961,46 +961,10 @@ func (e *StorageExecutor) evaluateExpressionFromValues(expr string, values map[s
 
 		if matchFuncStartAndSuffix(expr, "keys") {
 			inner := strings.TrimSpace(extractFuncArgs(expr, "keys"))
-			var keys []string
-			if val, ok := values[inner]; ok {
-				switch v := val.(type) {
-				case *storage.Node:
-					if v != nil {
-						keys = make([]string, 0, len(v.Properties))
-						for k := range v.Properties {
-							keys = append(keys, k)
-						}
-					}
-				case *storage.Edge:
-					if v != nil {
-						keys = make([]string, 0, len(v.Properties))
-						for k := range v.Properties {
-							keys = append(keys, k)
-						}
-					}
-				case map[string]interface{}:
-					if props, ok := v["properties"].(map[string]interface{}); ok {
-						keys = make([]string, 0, len(props))
-						for k := range props {
-							keys = append(keys, k)
-						}
-					} else {
-						keys = make([]string, 0, len(v))
-						for k := range v {
-							if strings.HasPrefix(k, "_") {
-								continue
-							}
-							keys = append(keys, k)
-						}
-					}
-				}
+			if keys, ok := cypherfn.PropertyKeys(values[inner]); ok {
+				return keys
 			}
-			sort.Strings(keys)
-			result := make([]interface{}, len(keys))
-			for i, k := range keys {
-				result[i] = k
-			}
-			return result
+			return []interface{}{}
 		}
 
 		// For labels(connected), we need to extract the node and get labels

@@ -3,6 +3,7 @@ package fn
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	cyphertext "github.com/orneryd/nornicdb/pkg/cypher/internal/text"
@@ -120,28 +121,74 @@ func evalKeys(ctx Context, args []string) (interface{}, error) {
 	}
 	inner := strings.TrimSpace(args[0])
 	if node, ok := ctx.Nodes[inner]; ok && node != nil {
-		keys := make([]interface{}, 0, len(node.Properties))
-		for k := range node.Properties {
-			keys = append(keys, k)
-		}
+		keys, _ := PropertyKeys(node)
 		return keys, nil
 	}
 	if rel, ok := ctx.Rels[inner]; ok && rel != nil {
-		keys := make([]interface{}, 0, len(rel.Properties))
-		for k := range rel.Properties {
-			keys = append(keys, k)
-		}
+		keys, _ := PropertyKeys(rel)
 		return keys, nil
 	}
 	value, _ := ctx.Eval(inner)
-	if object, ok := value.(map[string]interface{}); ok {
-		keys := make([]interface{}, 0, len(object))
-		for key := range object {
-			keys = append(keys, key)
-		}
+	if keys, ok := PropertyKeys(value); ok {
 		return keys, nil
 	}
 	return nil, nil
+}
+
+// PropertyKeys is keys(): the property keys of a node, a relationship or a
+// map, sorted, so every route returns them in the same order (#602).
+//
+//   - a node or relationship: the keys of its properties, all of them
+//     (a property may be named "labels", "type", "_x", ...);
+//   - a node or relationship converted to a map (nodeToMap / edgeToMap:
+//     "_nodeId" / "_edgeId" with the properties under "properties"): the
+//     keys of those properties;
+//   - any other map: all of its keys.
+//
+// It returns false for any other value.
+func PropertyKeys(value interface{}) ([]interface{}, bool) {
+	var properties map[string]interface{}
+	switch v := value.(type) {
+	case *storage.Node:
+		if v == nil {
+			return nil, false
+		}
+		properties = v.Properties
+	case *storage.Edge:
+		if v == nil {
+			return nil, false
+		}
+		properties = v.Properties
+	case map[string]interface{}:
+		properties = v
+		if isConvertedEntityMap(v) {
+			if nested, ok := v["properties"].(map[string]interface{}); ok {
+				properties = nested
+			}
+		}
+	default:
+		return nil, false
+	}
+	names := make([]string, 0, len(properties))
+	for key := range properties {
+		names = append(names, key)
+	}
+	sort.Strings(names)
+	keys := make([]interface{}, len(names))
+	for i, name := range names {
+		keys[i] = name
+	}
+	return keys, true
+}
+
+// isConvertedEntityMap reports whether m is a node or relationship converted
+// to a result map (it carries the internal "_nodeId" / "_edgeId").
+func isConvertedEntityMap(m map[string]interface{}) bool {
+	if id, ok := m["_nodeId"].(string); ok && id != "" {
+		return true
+	}
+	id, ok := m["_edgeId"].(string)
+	return ok && id != ""
 }
 
 func evalProperties(ctx Context, args []string) (interface{}, error) {
