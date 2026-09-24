@@ -8,6 +8,9 @@ func (e *StorageExecutor) validateSemanticScopes(cypher string) error {
 	if e.semanticValidationCache.contains(cypher) {
 		return nil
 	}
+	if err := e.validateCallSubqueryScopes(cypher); err != nil {
+		return err
+	}
 	if err := validateStaticQuantifierTypes(cypher); err != nil {
 		return err
 	}
@@ -109,6 +112,58 @@ func (e *StorageExecutor) validateDuplicateReturnColumnName(cypher string) error
 			"ColumnNameConflict",
 			"Multiple RETURN items project the same column name: "+duplicate,
 		)
+	}
+	return nil
+}
+
+// validateCallSubqueryScopes applies the update-clause scope check
+// (validateSetSemanticScopes: SET, REMOVE, DELETE) to the body of every
+// top-level CALL { … } and CALL (vars) { … } subquery, recursively for nested
+// subqueries. A body sees only what it imports, as in Neo4j: an importing WITH
+// at its start, or the variables of CALL (vars), which are checked as a
+// leading WITH vars. An undefined variable in a subquery update clause is
+// therefore rejected before any route runs the subquery. CALL (*) and a body
+// starting with WITH * import the whole outer scope and are not checked here.
+func (e *StorageExecutor) validateCallSubqueryScopes(cypher string) error {
+	if !strings.Contains(strings.ToUpper(cypher), "CALL") {
+		return nil
+	}
+	for _, position := range findAllTopLevelPipelineKeywordPositions(cypher, "CALL") {
+		index := skipSpaces(cypher, position+len("CALL"))
+		imports := ""
+		scoped := false
+		if index < len(cypher) && cypher[index] == '(' {
+			closeParen := findMatchingCallParen(cypher, index)
+			if closeParen < 0 {
+				continue
+			}
+			imports = strings.TrimSpace(cypher[index+1 : closeParen])
+			scoped = true
+			index = skipSpaces(cypher, closeParen+1)
+		}
+		if index >= len(cypher) || cypher[index] != '{' {
+			continue // a procedure call
+		}
+		closeBrace := e.findMatchingBrace(cypher, index)
+		if closeBrace < 0 {
+			continue
+		}
+		body := strings.TrimSpace(cypher[index+1 : closeBrace])
+		if imports == "*" || startsWithKeywordFold(body, "WITH *") {
+			continue
+		}
+		if scoped && imports != "" {
+			body = "WITH " + imports + " " + body
+		}
+		if body == "" {
+			continue
+		}
+		if err := e.validateSetSemanticScopes(body); err != nil {
+			return err
+		}
+		if err := e.validateCallSubqueryScopes(body); err != nil {
+			return err
+		}
 	}
 	return nil
 }

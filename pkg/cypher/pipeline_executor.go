@@ -951,11 +951,7 @@ func (e *StorageExecutor) pipelineApplyDelete(ctx context.Context, rows []pipeli
 		}
 		if root := deleteExpressionRootIdentifier(expression); root != "" {
 			if _, bound := scope[root]; !bound {
-				return nil, true, newSemanticError(
-					"Neo.ClientError.Statement.SyntaxError",
-					"UndefinedVariable",
-					fmt.Sprintf("DELETE expression %q refers to an undefined variable", strings.TrimSpace(expression)),
-				)
+				return nil, true, deleteUndefinedVariableError(expression)
 			}
 		} else if value, evaluated := e.evaluateRowExpression(strings.TrimSpace(expression), pipelineRow{}); evaluated && !isDeleteTargetValue(value) {
 			return nil, true, newSemanticError(
@@ -971,11 +967,7 @@ func (e *StorageExecutor) pipelineApplyDelete(ctx context.Context, rows []pipeli
 		for _, expression := range targets {
 			value, ok := e.evaluateRowExpression(strings.TrimSpace(expression), row)
 			if !ok {
-				return nil, true, newSemanticError(
-					"Neo.ClientError.Statement.SyntaxError",
-					"UndefinedVariable",
-					fmt.Sprintf("DELETE expression %q refers to an undefined variable", strings.TrimSpace(expression)),
-				)
+				return nil, true, deleteUndefinedVariableError(expression)
 			}
 			if !isDeleteTargetValue(value) {
 				return nil, true, newSemanticError(

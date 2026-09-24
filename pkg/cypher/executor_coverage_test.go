@@ -646,7 +646,7 @@ func TestExecuteDeleteRequiresMATCH(t *testing.T) {
 	// DELETE without MATCH
 	_, err := exec.Execute(ctx, "DETACH DELETE n", nil)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DELETE requires a MATCH clause")
+	assert.Contains(t, err.Error(), "refers to an undefined variable")
 }
 
 func TestExecuteSetRequiresMATCH(t *testing.T) {

@@ -12,7 +12,8 @@ import (
 // horizon before execution. This is deliberately independent of row count:
 // an undefined variable is a compile-time error even when MATCH yields no rows.
 func (e *StorageExecutor) validateSetSemanticScopes(cypher string) error {
-	if !containsKeywordOutsideStrings(cypher, "SET") {
+	if !containsKeywordOutsideStrings(cypher, "SET") && !containsKeywordOutsideStrings(cypher, "REMOVE") &&
+		!containsKeywordOutsideStrings(cypher, "DELETE") {
 		return nil
 	}
 	clauses, ok := splitPipelineClauses(cypher)
@@ -29,6 +30,12 @@ func (e *StorageExecutor) validateSetSemanticScopes(cypher string) error {
 			for _, name := range extractRelationshipVariables(clause.text) {
 				scope.bind(name)
 			}
+			// Path variables (p = (…)), with the pipeline's own binder.
+			patternBindings := make(map[string]struct{})
+			addPipelinePatternBindings(e, patternBindings, clause.text, pipelineClauseKeyword(clause.kind))
+			for name := range patternBindings {
+				scope.bind(name)
+			}
 		case pipelineClauseWith:
 			scope = projectedBindingScope(scope, clause.text)
 		case pipelineClauseUnwind:
@@ -39,9 +46,74 @@ func (e *StorageExecutor) validateSetSemanticScopes(cypher string) error {
 			if err := e.validateSetClauseScope(scope, clause.text); err != nil {
 				return err
 			}
+		case pipelineClauseRemove:
+			if err := validateRemoveClauseScope(scope, clause.text); err != nil {
+				return err
+			}
+		case pipelineClauseDelete:
+			if err := validateDeleteClauseScope(scope, clause.text); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// pipelineClauseKeyword is the leading keyword of a pattern clause kind.
+func pipelineClauseKeyword(kind pipelineClauseKind) string {
+	switch kind {
+	case pipelineClauseOptionalMatch:
+		return "OPTIONAL MATCH"
+	case pipelineClauseMerge:
+		return "MERGE"
+	case pipelineClauseCreate:
+		return "CREATE"
+	default:
+		return "MATCH"
+	}
+}
+
+// validateRemoveClauseScope rejects a REMOVE item (m.x, m:L) whose variable
+// is not bound, as SET does and as Neo4j does ("Variable `m` not defined").
+func validateRemoveClauseScope(scope *semanticBindingScope, clause string) error {
+	body := strings.TrimSpace(clause[len("REMOVE"):])
+	for _, item := range splitTopLevelComma(body) {
+		variable, _, ok := scanIdentifierToken(strings.TrimSpace(item), 0)
+		if !ok || variable == "" {
+			continue
+		}
+		if !scope.contains(variable) {
+			return createUndefinedVariableError(variable)
+		}
+	}
+	return nil
+}
+
+// validateDeleteClauseScope rejects a DELETE target whose root variable is not
+// bound (deleteExpressionRootIdentifier), with the error the pipeline DELETE
+// step raises at run time, so a subquery body is checked before it runs.
+func validateDeleteClauseScope(scope *semanticBindingScope, clause string) error {
+	body := strings.TrimSpace(clause)
+	if startsWithKeywordFold(body, "DETACH") {
+		body = strings.TrimSpace(body[len("DETACH"):])
+	}
+	body = strings.TrimSpace(body[len("DELETE"):])
+	for _, expression := range splitTopLevelComma(body) {
+		if root := deleteExpressionRootIdentifier(expression); root != "" && !scope.contains(root) {
+			return deleteUndefinedVariableError(expression)
+		}
+	}
+	return nil
+}
+
+// deleteUndefinedVariableError is the error for a DELETE target that refers to
+// an undefined variable, raised by the statement check and the pipeline step.
+func deleteUndefinedVariableError(expression string) error {
+	return newSemanticError(
+		"Neo.ClientError.Statement.SyntaxError",
+		"UndefinedVariable",
+		fmt.Sprintf("DELETE expression %q refers to an undefined variable", strings.TrimSpace(expression)),
+	)
 }
 
 // validateSetClauseScope is the statement-level check for one SET clause,
