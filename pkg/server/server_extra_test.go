@@ -1360,7 +1360,11 @@ func TestTransactionResponsesIncludeMVCCPressureWarnings(t *testing.T) {
 	setter.SetLifecycleController(nil)
 }
 
-func TestExplicitTransactionLifecycleExpiration_ReplaysErrorAndAuditsOnce(t *testing.T) {
+// A statement failing because the transaction's snapshot expired ends the
+// explicit transaction, as any statement error does in Neo4j's HTTP API: the
+// error is returned once, the expiry is audited once, and the transaction is
+// gone for the next request.
+func TestExplicitTransactionLifecycleExpiration_EndsTransactionAndAuditsOnce(t *testing.T) {
 	server, authn := setupTestServer(t)
 	token := getAuthToken(t, authn, "admin")
 	auditCfg := audit.DefaultConfig()
@@ -1403,11 +1407,10 @@ func TestExplicitTransactionLifecycleExpiration_ReplaysErrorAndAuditsOnce(t *tes
 	execRec = makeRequest(t, server, "POST", txPath, map[string]any{
 		"statements": []map[string]any{{"statement": "CREATE (n:Doc {name:'expired-again'})"}},
 	}, "Bearer "+token)
-	require.Equal(t, http.StatusOK, execRec.Code)
+	require.Equal(t, http.StatusNotFound, execRec.Code)
 	require.NoError(t, json.Unmarshal(execRec.Body.Bytes(), &execResp))
 	require.Len(t, execResp.Errors, 1)
-	require.Equal(t, "Neo.TransientError.Transaction.Outdated", execResp.Errors[0].Code)
-	require.Contains(t, execResp.Errors[0].Message, storage.ErrMVCCSnapshotGracefulCancel.Error())
+	require.Equal(t, "Neo.ClientError.Transaction.TransactionNotFound", execResp.Errors[0].Code)
 
 	logBytes, err := os.ReadFile(auditCfg.LogPath)
 	require.NoError(t, err)

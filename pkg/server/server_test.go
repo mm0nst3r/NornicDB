@@ -40,7 +40,7 @@ import (
 // Test Helpers
 // =============================================================================
 
-func setupTestServer(t *testing.T) (*Server, *auth.Authenticator) {
+func setupTestServer(t testing.TB) (*Server, *auth.Authenticator) {
 	return setupTestServerWithConfig(t, nil)
 }
 
@@ -54,7 +54,7 @@ func stopTestServer(t testing.TB, server *Server) {
 	_ = server.Stop(ctx)
 }
 
-func setupTestServerWithConfig(t *testing.T, configure func(*Config)) (*Server, *auth.Authenticator) {
+func setupTestServerWithConfig(t testing.TB, configure func(*Config)) (*Server, *auth.Authenticator) {
 	t.Helper()
 
 	// Create temporary directory for test database
@@ -133,7 +133,7 @@ func setupTestServerWithConfig(t *testing.T, configure func(*Config)) (*Server, 
 	return server, authenticator
 }
 
-func getAuthToken(t *testing.T, authenticator *auth.Authenticator, username string) string {
+func getAuthToken(t testing.TB, authenticator *auth.Authenticator, username string) string {
 	t.Helper()
 	tokenResp, _, err := authenticator.Authenticate(username, "password123", "127.0.0.1", "TestAgent")
 	if err != nil {
@@ -142,7 +142,7 @@ func getAuthToken(t *testing.T, authenticator *auth.Authenticator, username stri
 	return tokenResp.AccessToken
 }
 
-func makeRequest(t *testing.T, server *Server, method, path string, body interface{}, authHeader string) *httptest.ResponseRecorder {
+func makeRequest(t testing.TB, server *Server, method, path string, body interface{}, authHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var reqBody io.Reader

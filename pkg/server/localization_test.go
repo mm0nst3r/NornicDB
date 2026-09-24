@@ -375,7 +375,7 @@ func TestLocalizedTransactionNotFoundPreservesNeo4jContract(t *testing.T) {
 	var body TransactionResponse
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
 	require.Len(t, body.Errors, 1)
-	require.Equal(t, "Neo.ClientError.Request.Invalid", body.Errors[0].Code)
+	require.Equal(t, "Neo.ClientError.Transaction.TransactionNotFound", body.Errors[0].Code)
 	require.Equal(t, "transacción no encontrada", body.Errors[0].Message)
 	require.Equal(t, "transaction not found", localization.TransactionNotFound().Fallback)
 }

@@ -98,3 +98,69 @@ func TestHTTPTransactionAPIMatchesNeo4j(t *testing.T) {
 	rollback := makeRequest(t, server, http.MethodDelete, strings.TrimPrefix(openRec.Header().Get("Location"), "http://db.example:17474"), nil, token)
 	require.Equal(t, http.StatusOK, rollback.Code, rollback.Body.String())
 }
+
+// A failing statement ends an explicit transaction, as in Neo4j's HTTP API:
+// the statements after it in the request are not run, the transaction is
+// rolled back (nothing it wrote is kept), and later requests to it get
+// Neo.ClientError.Transaction.TransactionNotFound.
+func TestHTTPExplicitTransactionEndsOnStatementError(t *testing.T) {
+	server, authenticator := setupTestServer(t)
+	token := "Bearer " + getAuthToken(t, authenticator, "admin")
+	post := func(path string, stmts ...string) (int, TransactionResponse) {
+		list := make([]map[string]any, 0, len(stmts))
+		for _, s := range stmts {
+			list = append(list, map[string]any{"statement": s})
+		}
+		rec := makeRequest(t, server, http.MethodPost, path, map[string]any{"statements": list}, token)
+		var resp TransactionResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), rec.Body.String())
+		return rec.Code, resp
+	}
+	stored := func() int64 {
+		_, resp := post("/db/nornic/tx/commit", "MATCH (n:TxErr) RETURN count(n) AS c")
+		require.Empty(t, resp.Errors)
+		return int64(resp.Results[0].Data[0].Row[0].(float64))
+	}
+	for _, failing := range []struct{ stmt, code string }{
+		{"RETURN 1 / 0 AS x", "Neo.ClientError.Statement.ArithmeticError"},
+		{"RETRUN 1", "Neo.ClientError.Statement.SyntaxError"},
+	} {
+		t.Run(failing.stmt, func(t *testing.T) {
+			_, _ = post("/db/nornic/tx/commit", "MATCH (n:TxErr) DETACH DELETE n")
+
+			// Error in a request to an open transaction.
+			code, resp := post("/db/nornic/tx", "CREATE (:TxErr {v: 'a'})")
+			require.Equal(t, http.StatusCreated, code)
+			require.Empty(t, resp.Errors)
+			txPath := strings.TrimSuffix(resp.Commit, "/commit")
+			code, resp = post(txPath, "CREATE (:TxErr {v: 'b'})", failing.stmt, "CREATE (:TxErr {v: 'c'})")
+			require.Equal(t, http.StatusOK, code)
+			require.Len(t, resp.Errors, 1)
+			require.Equal(t, failing.code, resp.Errors[0].Code)
+			require.Len(t, resp.Results, 1, "the statement after the failing one is not run")
+			for _, path := range []string{txPath, txPath + "/commit"} {
+				code, resp = post(path, "RETURN 1 AS one")
+				require.Equal(t, http.StatusNotFound, code, path)
+				require.Equal(t, "Neo.ClientError.Transaction.TransactionNotFound", resp.Errors[0].Code, path)
+			}
+			require.Zero(t, stored(), "nothing the transaction wrote is kept")
+
+			// Error in the request that opens the transaction.
+			code, resp = post("/db/nornic/tx", "CREATE (:TxErr {v: 'd'})", failing.stmt)
+			require.Equal(t, http.StatusCreated, code)
+			require.Equal(t, failing.code, resp.Errors[0].Code)
+			code, _ = post(strings.TrimSuffix(resp.Commit, "/commit")+"/commit")
+			require.Equal(t, http.StatusNotFound, code)
+			require.Zero(t, stored())
+
+			// Error in the commit request.
+			_, resp = post("/db/nornic/tx", "CREATE (:TxErr {v: 'e'})")
+			txPath = strings.TrimSuffix(resp.Commit, "/commit")
+			_, resp = post(txPath+"/commit", failing.stmt, "CREATE (:TxErr {v: 'f'})")
+			require.Equal(t, failing.code, resp.Errors[0].Code)
+			code, _ = post(txPath + "/commit")
+			require.Equal(t, http.StatusNotFound, code)
+			require.Zero(t, stored())
+		})
+	}
+}

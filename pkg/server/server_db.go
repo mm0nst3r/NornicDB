@@ -1929,6 +1929,10 @@ func shouldUseAcceptedStatusForMutation(resp *TransactionResponse) bool {
 	return resp.Receipt == nil && resp.Optimistic != nil
 }
 
+// executeTxStatements runs a request's statements in an explicit
+// transaction, in order, and stops at the first one that fails, as Neo4j
+// does: the statements after it are not run. It reports whether a statement
+// failed; the caller then rolls the transaction back (rollbackFailedTransaction).
 func (s *Server) executeTxStatements(
 	ctx context.Context,
 	authToken string,
@@ -1937,21 +1941,21 @@ func (s *Server) executeTxStatements(
 	session *txsession.Session,
 	statements []StatementRequest,
 	response *TransactionResponse,
-) {
+) (failed bool) {
 	ctx = cypher.WithAuthToken(ctx, authToken)
 	ctx = cypher.WithAuthenticatedPrincipal(ctx, transactionOwnerKey(nil, claims))
 	for _, stmt := range statements {
 		effectiveDB, queryStatement, resolveErr := normalizeStatementForExecution(dbName, stmt.Statement)
 		if resolveErr != nil {
 			response.Errors = append(response.Errors, statementError(resolveErr))
-			continue
+			return true
 		}
 		if !s.getDatabaseAccessMode(claims).CanAccessDatabase(effectiveDB) {
 			response.Errors = append(response.Errors, QueryError{
 				Code:    "Neo.ClientError.Security.Forbidden",
 				Message: fmt.Sprintf("Access to database '%s' is not allowed.", effectiveDB),
 			})
-			continue
+			return true
 		}
 
 		if missing := s.missingQueryPermission(claims, effectiveDB, queryStatement); missing != "" {
@@ -1965,17 +1969,26 @@ func (s *Server) executeTxStatements(
 				Code:    "Neo.ClientError.Security.Forbidden",
 				Message: message,
 			})
-			continue
+			return true
 		}
 
 		execCtx := s.withDatabasePermissionChecker(ctx, claims, effectiveDB)
 		result, err := s.txSessions.ExecuteInSession(execCtx, session, queryStatement, stmt.Parameters)
 		if err != nil {
 			response.Errors = append(response.Errors, statementError(err))
-			continue
+			return true
 		}
 		s.appendStatementResult(response, result, stmt.IncludeStats)
 	}
+	return false
+}
+
+// rollbackFailedTransaction ends an explicit transaction after a statement in
+// it failed, as Neo4j's HTTP API does: the transaction is rolled back and
+// forgotten, so nothing it wrote is kept, and a later request to it (a
+// statement, commit or rollback) gets Neo.ClientError.Transaction.TransactionNotFound.
+func (s *Server) rollbackFailedTransaction(ctx context.Context, session *txsession.Session) {
+	_ = s.txSessions.RollbackAndDelete(ctx, session)
 }
 
 // transactionExpires formats an explicit transaction's expiry as an HTTP
@@ -2085,7 +2098,9 @@ func (s *Server) handleOpenTransaction(w http.ResponseWriter, r *http.Request, d
 	}
 
 	if len(req.Statements) > 0 {
-		s.executeTxStatements(r.Context(), r.Header.Get("Authorization"), claims, dbName, txSession, req.Statements, &response)
+		if s.executeTxStatements(r.Context(), r.Header.Get("Authorization"), claims, dbName, txSession, req.Statements, &response) {
+			s.rollbackFailedTransaction(r.Context(), txSession)
+		}
 		response.Transaction.Expires = transactionExpires(txSession.Expires)
 	}
 
@@ -2119,7 +2134,9 @@ func (s *Server) handleExecuteInTransaction(w http.ResponseWriter, r *http.Reque
 		},
 	}
 
-	s.executeTxStatements(r.Context(), r.Header.Get("Authorization"), claims, dbName, tx, req.Statements, &response)
+	if s.executeTxStatements(r.Context(), r.Header.Get("Authorization"), claims, dbName, tx, req.Statements, &response) {
+		s.rollbackFailedTransaction(r.Context(), tx)
+	}
 	response.Transaction.Expires = transactionExpires(tx.Expires)
 
 	s.applyMVCCPressureWarnings(w, dbName, &response)
@@ -2151,9 +2168,8 @@ func (s *Server) handleCommitTransaction(w http.ResponseWriter, r *http.Request,
 	}
 
 	// Execute optional final statements in transaction context first.
-	s.executeTxStatements(r.Context(), r.Header.Get("Authorization"), claims, dbName, tx, req.Statements, &response)
-	if len(response.Errors) > 0 {
-		_ = s.txSessions.RollbackAndDelete(r.Context(), tx)
+	if s.executeTxStatements(r.Context(), r.Header.Get("Authorization"), claims, dbName, tx, req.Statements, &response) {
+		s.rollbackFailedTransaction(r.Context(), tx)
 		s.applyMVCCPressureWarnings(w, dbName, &response)
 		s.writeJSON(w, http.StatusOK, response)
 		return

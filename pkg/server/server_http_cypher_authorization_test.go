@@ -142,8 +142,9 @@ func TestHTTPReadOnlyRoleCannotMutateInExplicitTransaction(t *testing.T) {
 		parts := strings.Split(response.Commit, "/")
 		require.GreaterOrEqual(t, len(parts), 2)
 		txID := parts[len(parts)-2]
+		// The failed statement ended the transaction (Neo4j HTTP API).
 		rollback := makeRequest(t, server, http.MethodDelete, fmt.Sprintf("/db/nornic/tx/%s", txID), nil, authorization)
-		require.Equal(t, http.StatusOK, rollback.Code, rollback.Body.String())
+		require.Equal(t, http.StatusNotFound, rollback.Code, rollback.Body.String())
 	})
 
 	t.Run("execute statement", func(t *testing.T) {
@@ -156,8 +157,9 @@ func TestHTTPReadOnlyRoleCannotMutateInExplicitTransaction(t *testing.T) {
 		require.NoError(t, json.NewDecoder(recorder.Body).Decode(&response))
 		requireForbidden(response)
 
+		// The failed statement ended the transaction (Neo4j HTTP API).
 		rollback := makeRequest(t, server, http.MethodDelete, fmt.Sprintf("/db/nornic/tx/%s", txID), nil, authorization)
-		require.Equal(t, http.StatusOK, rollback.Code, rollback.Body.String())
+		require.Equal(t, http.StatusNotFound, rollback.Code, rollback.Body.String())
 	})
 
 	t.Run("commit statement", func(t *testing.T) {

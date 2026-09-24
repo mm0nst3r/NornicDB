@@ -158,8 +158,11 @@ func (s *Server) writeUserNotFound(w http.ResponseWriter, r *http.Request) {
 	s.writeLocalizedError(w, r, http.StatusNotFound, localization.UserNotFound(), ErrNotFound)
 }
 
+// writeNeo4jTransactionNotFound answers a request to an explicit transaction
+// that does not exist (never opened, committed, rolled back, expired, or ended
+// by a failed statement) with Neo4j's 404 and error code.
 func (s *Server) writeNeo4jTransactionNotFound(w http.ResponseWriter, r *http.Request) {
-	s.writeLocalizedNeo4jError(w, r, http.StatusNotFound, "Neo.ClientError.Request.Invalid", localization.TransactionNotFound())
+	s.writeLocalizedNeo4jError(w, r, http.StatusNotFound, "Neo.ClientError.Transaction.TransactionNotFound", localization.TransactionNotFound())
 }
 
 func (s *Server) writeRequestFieldRequired(w http.ResponseWriter, r *http.Request, field string) {
