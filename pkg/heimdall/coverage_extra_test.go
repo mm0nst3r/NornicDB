@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orneryd/nornicdb/pkg/internal/plugintest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -329,7 +330,9 @@ func buildCoverageHeimdallPlugin(t *testing.T, source string) string {
 	soPath := filepath.Join(pluginDir, "plugin.so")
 	require.NoError(t, os.WriteFile(srcPath, []byte(source), 0o600))
 
-	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", soPath, srcPath)
+	args := append([]string{"build"}, plugintest.BuildFlags()...)
+	args = append(args, "-buildmode=plugin", "-o", soPath, srcPath)
+	cmd := exec.Command("go", args...)
 	cmd.Dir = repoRoot
 	output, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "failed to build plugin: %s", string(output))
