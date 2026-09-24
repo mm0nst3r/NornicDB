@@ -2615,37 +2615,48 @@ func TestCreateHelpers_ResolveOrCreateAndMultipleCreates(t *testing.T) {
 	exec := NewStorageExecutor(store)
 
 	nodeVars := map[string]*storage.Node{}
-	result := &ExecuteResult{Stats: &QueryStats{}}
+	var plan createPlan
 	ctx := context.Background()
 
 	edgeVars := map[string]*storage.Edge{}
 
 	// An endpoint variable not in scope is a new node (Neo4j CREATE semantics).
-	missing, err := exec.createPatternEndpoint(ctx, "missingVar", nodeVars, edgeVars, result, store)
+	missing, err := exec.planCreateEndpoint(ctx, "missingVar", nodeVars, edgeVars, &plan)
 	require.NoError(t, err)
 	require.NotNil(t, missing)
 	require.Contains(t, nodeVars, "missingVar")
-	assert.Equal(t, 1, result.Stats.NodesCreated)
+	assert.Len(t, plan.nodes, 1)
 
-	n, err := exec.createPatternEndpoint(ctx, "x:Node {id:'x1'}", nodeVars, edgeVars, result, store)
+	n, err := exec.planCreateEndpoint(ctx, "x:Node {id:'x1'}", nodeVars, edgeVars, &plan)
 	require.NoError(t, err)
 	require.NotNil(t, n)
 	require.Contains(t, nodeVars, "x")
-	assert.Equal(t, 2, result.Stats.NodesCreated)
+	assert.Len(t, plan.nodes, 2)
 
 	// Existing variable returns same node without creating a new one.
-	same, err := exec.createPatternEndpoint(ctx, "x:Node {id:'different'}", nodeVars, edgeVars, result, store)
+	same, err := exec.planCreateEndpoint(ctx, "x:Node {id:'different'}", nodeVars, edgeVars, &plan)
 	require.NoError(t, err)
 	assert.Equal(t, n.ID, same.ID)
-	assert.Equal(t, 2, result.Stats.NodesCreated)
+	assert.Len(t, plan.nodes, 2)
 
 	// Inline node without variable is created but not added to nodeVars.
-	inline, err := exec.createPatternEndpoint(ctx, ":Leaf {k:1}", nodeVars, edgeVars, result, store)
+	inline, err := exec.planCreateEndpoint(ctx, ":Leaf {k:1}", nodeVars, edgeVars, &plan)
 	require.NoError(t, err)
 	require.NotNil(t, inline)
-	assert.Equal(t, 3, result.Stats.NodesCreated)
+	assert.Len(t, plan.nodes, 3)
 	_, hasLeaf := nodeVars["Leaf"]
 	assert.False(t, hasLeaf)
+
+	// Nothing is written until the plan is applied.
+	count, err := store.NodeCount()
+	require.NoError(t, err)
+	assert.Zero(t, count)
+	result := &ExecuteResult{Stats: &QueryStats{}}
+	require.NoError(t, exec.applyCreatePlan(ctx, &plan, result))
+	assert.Equal(t, 3, result.Stats.NodesCreated)
+	count, err = store.NodeCount()
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, count)
 
 	assert.True(t, isSimpleVariable("abc_123"))
 	assert.False(t, isSimpleVariable("a-b"))

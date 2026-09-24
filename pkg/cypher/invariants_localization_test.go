@@ -19,6 +19,10 @@ func (e *invariantCreateErrEngine) CreateNode(node *storage.Node) (storage.NodeI
 	return "", e.err
 }
 
+func (e *invariantCreateErrEngine) BulkCreateNodes(nodes []*storage.Node) error {
+	return e.err
+}
+
 func TestCypherInvariantErrorsHaveTypedIdentityAndExactEnglish(t *testing.T) {
 	t.Run("pipeline create failure", func(t *testing.T) {
 		base := storage.NewMemoryEngine()

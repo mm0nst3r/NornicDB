@@ -31,6 +31,10 @@ func (e *createErrEngine) CreateNode(node *storage.Node) (storage.NodeID, error)
 	return "", e.err
 }
 
+func (e *createErrEngine) BulkCreateNodes(nodes []*storage.Node) error {
+	return e.err
+}
+
 func TestSplitPipelineClauses_GuardBranches(t *testing.T) {
 	clauses, ok := splitPipelineClauses("   ")
 	require.False(t, ok)

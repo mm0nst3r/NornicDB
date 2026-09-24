@@ -2077,16 +2077,9 @@ func (e *StorageExecutor) tryAsyncCreateNodeBatch(ctx context.Context, cypher st
 		}
 	}
 
-	store := e.getStorage(ctx)
-	if err := store.BulkCreateNodes(nodes); err != nil {
+	if err := e.applyCreatePlan(ctx, &createPlan{nodes: nodes}, result); err != nil {
 		return nil, err, true
 	}
-
-	for _, node := range nodes {
-		e.notifyNodeMutated(string(node.ID))
-		addOptimisticNodeID(result, node.ID)
-	}
-	result.Stats.NodesCreated += len(nodes)
 
 	if returnIdx > 0 {
 		returnPart := strings.TrimSpace(cypher[returnIdx+6:])

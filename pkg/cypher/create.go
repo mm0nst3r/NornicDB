@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/orneryd/nornicdb/pkg/localization"
 	"github.com/orneryd/nornicdb/pkg/storage"
@@ -70,16 +71,70 @@ func (e *StorageExecutor) createFromPattern(ctx context.Context, cypher string) 
 	}, nil
 }
 
+// createPlan is what one CREATE clause writes: every node and relationship,
+// fully parsed, evaluated and validated, in creation order.
+type createPlan struct {
+	nodes []*storage.Node
+	edges []*storage.Edge
+}
+
+// createPlanPool recycles plans so planning a CREATE allocates nothing in
+// steady state. Storage bulk writes don't retain the slices they are given.
+var createPlanPool = sync.Pool{New: func() any { return &createPlan{} }}
+
+func acquireCreatePlan() *createPlan {
+	return createPlanPool.Get().(*createPlan)
+}
+
+// release clears the plan's references and returns it to the pool; plans
+// that grew unusually large are dropped instead of being kept alive.
+func (p *createPlan) release() {
+	if cap(p.nodes) > 256 || cap(p.edges) > 256 {
+		return
+	}
+	clear(p.nodes)
+	clear(p.edges)
+	p.nodes = p.nodes[:0]
+	p.edges = p.edges[:0]
+	createPlanPool.Put(p)
+}
+
 // createPatternsInScope is the single CREATE executor for pattern text (the
 // part after CREATE, comma-separated patterns). nodes and edges hold the
 // variables already in scope (from MATCH, WITH, UNWIND or an earlier CREATE);
 // relationship endpoints that name a bound variable reuse it, and every
 // created node / relationship is bound into them. Nodes - standalone and
-// inline endpoints - go through createNodeFromPattern, so every route
-// validates labels and properties and resolves property references the same
-// way. Stats go to result. It returns the named paths (p = ...).
+// inline endpoints - go through planCreateNode, so every route validates
+// labels and properties and resolves property references the same way. Stats
+// go to result. It returns the named paths (p = ...).
+//
+// The clause is planned completely (planCreatePatterns) before anything is
+// written: a property expression that fails (1 / 0, recorded in ctx), a
+// rejected property value or pattern anywhere in the clause returns the error
+// with nothing written. The plan is then written by applyCreatePlan with one
+// bulk node write and one bulk relationship write, so a storage-level
+// rejection (a unique constraint) also writes nothing. This keeps CREATE
+// atomic on routes that write without a transaction (the async auto-commit
+// route, #628) as well as inside one.
 func (e *StorageExecutor) createPatternsInScope(ctx context.Context, pattern string, createdNodes map[string]*storage.Node, createdEdges map[string]*storage.Edge, result *ExecuteResult) (map[string]PathResult, error) {
-	store := e.getStorage(ctx)
+	plan := acquireCreatePlan()
+	defer plan.release()
+	createdPaths, err := e.planCreatePatterns(ctx, pattern, createdNodes, createdEdges, plan)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.applyCreatePlan(ctx, plan, result); err != nil {
+		return nil, err
+	}
+	return createdPaths, nil
+}
+
+// planCreatePatterns plans one CREATE clause into plan without writing:
+// every node and relationship is parsed, evaluated and validated, and bound
+// into createdNodes / createdEdges for later patterns and clauses. A
+// statement of several CREATE clauses plans them all into one plan and
+// writes it once (executeMultipleCreates), so the statement is atomic.
+func (e *StorageExecutor) planCreatePatterns(ctx context.Context, pattern string, createdNodes map[string]*storage.Node, createdEdges map[string]*storage.Edge, plan *createPlan) (map[string]PathResult, error) {
 
 	// Split into individual patterns (nodes and relationships)
 	allPatterns := e.splitCreatePatterns(pattern)
@@ -108,7 +163,7 @@ func (e *StorageExecutor) createPatternsInScope(ctx context.Context, pattern str
 		if nodePatternStr == "" {
 			continue
 		}
-		if _, err := e.createNodeFromPattern(ctx, nodePatternStr, createdNodes, createdEdges, result, store); err != nil {
+		if _, err := e.planCreateNode(ctx, nodePatternStr, createdNodes, createdEdges, plan); err != nil {
 			return nil, err
 		}
 	}
@@ -166,16 +221,16 @@ func (e *StorageExecutor) createPatternsInScope(ctx context.Context, pattern str
 				return nil, err
 			}
 
-			// Endpoints: a bound variable is reused; anything else is created
-			// through the shared node creator.
+			// Endpoints: a bound variable is reused; anything else is planned
+			// through the shared node planner.
 			sourceNode := chainedSourceNode
 			if sourceNode == nil {
-				sourceNode, err = e.createPatternEndpoint(ctx, sourceContent, createdNodes, createdEdges, result, store)
+				sourceNode, err = e.planCreateEndpoint(ctx, sourceContent, createdNodes, createdEdges, plan)
 				if err != nil {
 					return nil, err
 				}
 			}
-			targetNode, err := e.createPatternEndpoint(ctx, targetContent, createdNodes, createdEdges, result, store)
+			targetNode, err := e.planCreateEndpoint(ctx, targetContent, createdNodes, createdEdges, plan)
 			if err != nil {
 				return nil, err
 			}
@@ -194,10 +249,7 @@ func (e *StorageExecutor) createPatternsInScope(ctx context.Context, pattern str
 				Type:       relType,
 				Properties: relProps,
 			}
-			if err := store.CreateEdge(edge); err != nil {
-				return nil, localizedError(localization.CypherMutationsCreateRelationshipFailed(err), err)
-			}
-			e.notifyEdgeMutated(string(edge.ID))
+			plan.edges = append(plan.edges, edge)
 			if relVar != "" {
 				createdEdges[relVar] = edge
 			}
@@ -208,9 +260,6 @@ func (e *StorageExecutor) createPatternsInScope(ctx context.Context, pattern str
 				pathEdges = append(pathEdges, edge)
 				pathNodes = append(pathNodes, endNode)
 			}
-			result.Stats.RelationshipsCreated++
-			addOptimisticRelationshipID(result, edge.ID)
-
 			// If there's more chain to process, continue with target as new source
 			if remainder != "" && (strings.HasPrefix(remainder, "-[") || strings.HasPrefix(remainder, "<-[")) {
 				// Build the next pattern: (targetContent) + remainder
@@ -232,10 +281,73 @@ func (e *StorageExecutor) createPatternsInScope(ctx context.Context, pattern str
 	return createdPaths, nil
 }
 
-// createNodeFromPattern creates one node from a CREATE node pattern through
-// prepareCreateNodePattern (validation, property references), records it in
-// result's stats and binds its variable in nodes.
-func (e *StorageExecutor) createNodeFromPattern(ctx context.Context, pattern string, nodes map[string]*storage.Node, edges map[string]*storage.Edge, result *ExecuteResult, store storage.Engine) (*storage.Node, error) {
+// applyCreatePlan writes a planned CREATE clause. A property expression that
+// failed while the clause was planned (recorded in ctx) aborts it before any
+// write. Nodes are written before relationships, each set in one bulk call,
+// so storage rejects a clause as a whole; stats, optimistic IDs and mutation
+// notifications are recorded only for what was written. A set of exactly one
+// node or one relationship has nothing to keep together and is written with
+// the single create, which every engine implements most directly. When the
+// relationships are rejected after the nodes were written, the nodes are
+// removed again, so the clause is all-or-nothing without a transaction too.
+func (e *StorageExecutor) applyCreatePlan(ctx context.Context, plan *createPlan, result *ExecuteResult) error {
+	if failure := getExpressionFailure(ctx); failure != nil {
+		return failure
+	}
+	store := e.getStorage(ctx)
+	switch len(plan.nodes) {
+	case 0:
+	case 1:
+		node := plan.nodes[0]
+		actualID, err := store.CreateNode(node)
+		if err != nil {
+			return localizedError(localization.CypherMutationsCreateNodeFailed(err), err)
+		}
+		if actualID != "" {
+			node.ID = actualID
+		}
+	default:
+		if err := store.BulkCreateNodes(plan.nodes); err != nil {
+			return localizedError(localization.CypherMutationsCreateNodeFailed(err), err)
+		}
+	}
+	var edgeErr error
+	switch len(plan.edges) {
+	case 0:
+	case 1:
+		edgeErr = store.CreateEdge(plan.edges[0])
+	default:
+		edgeErr = store.BulkCreateEdges(plan.edges)
+	}
+	if edgeErr != nil {
+		// The clause's nodes are already written; remove them so the clause
+		// leaves nothing behind on a route without a transaction.
+		if len(plan.nodes) > 0 {
+			ids := make([]storage.NodeID, len(plan.nodes))
+			for i, node := range plan.nodes {
+				ids[i] = node.ID
+			}
+			_ = store.BulkDeleteNodes(ids)
+		}
+		return localizedError(localization.CypherMutationsCreateRelationshipFailed(edgeErr), edgeErr)
+	}
+	for _, node := range plan.nodes {
+		e.notifyNodeMutated(string(node.ID))
+		addOptimisticNodeID(result, node.ID)
+	}
+	result.Stats.NodesCreated += len(plan.nodes)
+	for _, edge := range plan.edges {
+		e.notifyEdgeMutated(string(edge.ID))
+		addOptimisticRelationshipID(result, edge.ID)
+	}
+	result.Stats.RelationshipsCreated += len(plan.edges)
+	return nil
+}
+
+// planCreateNode plans one node from a CREATE node pattern through
+// prepareCreateNodePattern (validation, property references), adds it to plan
+// and binds its variable in nodes.
+func (e *StorageExecutor) planCreateNode(ctx context.Context, pattern string, nodes map[string]*storage.Node, edges map[string]*storage.Edge, plan *createPlan) (*storage.Node, error) {
 	nodePattern, err := e.prepareCreateNodePattern(ctx, pattern, nodes, edges)
 	if err != nil {
 		return nil, err
@@ -248,26 +360,17 @@ func (e *StorageExecutor) createNodeFromPattern(ctx context.Context, pattern str
 		Labels:     nodePattern.labels,
 		Properties: nodePattern.properties,
 	}
-	actualID, err := store.CreateNode(node)
-	if err != nil {
-		return nil, localizedError(localization.CypherMutationsCreateNodeFailed(err), err)
-	}
-	if actualID != "" {
-		node.ID = actualID
-	}
-	e.notifyNodeMutated(string(node.ID))
-	result.Stats.NodesCreated++
-	addOptimisticNodeID(result, node.ID)
+	plan.nodes = append(plan.nodes, node)
 	if nodePattern.variable != "" {
 		nodes[nodePattern.variable] = node
 	}
 	return node, nil
 }
 
-// createPatternEndpoint resolves a relationship endpoint in a CREATE pattern:
-// a variable already bound in nodes is reused, anything else is created with
-// createNodeFromPattern.
-func (e *StorageExecutor) createPatternEndpoint(ctx context.Context, content string, nodes map[string]*storage.Node, edges map[string]*storage.Edge, result *ExecuteResult, store storage.Engine) (*storage.Node, error) {
+// planCreateEndpoint resolves a relationship endpoint in a CREATE pattern:
+// a variable already bound in nodes is reused, anything else is planned with
+// planCreateNode.
+func (e *StorageExecutor) planCreateEndpoint(ctx context.Context, content string, nodes map[string]*storage.Node, edges map[string]*storage.Edge, plan *createPlan) (*storage.Node, error) {
 	content = strings.TrimSpace(content)
 	variable := content
 	if end := strings.IndexAny(content, ":{ "); end >= 0 {
@@ -276,7 +379,7 @@ func (e *StorageExecutor) createPatternEndpoint(ctx context.Context, content str
 	if node := nodes[variable]; variable != "" && node != nil {
 		return node, nil
 	}
-	return e.createNodeFromPattern(ctx, "("+content+")", nodes, edges, result, store)
+	return e.planCreateNode(ctx, "("+content+")", nodes, edges, plan)
 }
 
 // projectCreateReturn fills out.result with the RETURN row of a CREATE
@@ -2330,6 +2433,12 @@ func (e *StorageExecutor) executeMultipleCreates(ctx context.Context, cypher str
 	nodeContext := make(map[string]*storage.Node)
 	edgeContext := make(map[string]*storage.Edge)
 
+	// Every CREATE clause of the statement is planned into one plan, written
+	// once before RETURN (or at the end), so a failure in a later clause
+	// leaves nothing from an earlier one.
+	plan := acquireCreatePlan()
+	defer plan.release()
+
 	// Split into CREATE segments
 	segments := e.splitMultipleCreates(cypher)
 
@@ -2345,7 +2454,7 @@ func (e *StorageExecutor) executeMultipleCreates(ctx context.Context, cypher str
 			createContent := strings.TrimSpace(segment[6:])
 			// A CREATE clause has one scope; the shared CREATE core binds every
 			// node of the clause for later patterns, clauses and RETURN.
-			if _, err := e.createPatternsInScope(ctx, createContent, nodeContext, edgeContext, result); err != nil {
+			if _, err := e.planCreatePatterns(ctx, createContent, nodeContext, edgeContext, plan); err != nil {
 				return nil, err
 			}
 		} else if strings.HasPrefix(upperSeg, "WITH") {
@@ -2402,6 +2511,13 @@ func (e *StorageExecutor) executeMultipleCreates(ctx context.Context, cypher str
 			nodeContext = newNodeContext
 			edgeContext = newEdgeContext
 		} else if strings.HasPrefix(upperSeg, "RETURN") {
+			if err := e.applyCreatePlan(ctx, plan, result); err != nil {
+				return nil, err
+			}
+			clear(plan.nodes)
+			clear(plan.edges)
+			plan.nodes = plan.nodes[:0]
+			plan.edges = plan.edges[:0]
 			// Build result from context
 			returnClause := strings.TrimSpace(segment[6:])
 			items := e.parseReturnItems(returnClause)
@@ -2417,6 +2533,9 @@ func (e *StorageExecutor) executeMultipleCreates(ctx context.Context, cypher str
 			}
 			result.Rows = append(result.Rows, row)
 		}
+	}
+	if err := e.applyCreatePlan(ctx, plan, result); err != nil {
+		return nil, err
 	}
 
 	return result, nil

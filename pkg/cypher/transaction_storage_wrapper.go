@@ -431,18 +431,12 @@ func (w *transactionStorageWrapper) GetSchema() *storage.SchemaManager {
 	return w.underlying.GetSchema()
 }
 
+// BulkCreateNodes creates the nodes one by one through CreateNode, so a bulk
+// create inside a transaction is namespaced and recorded as mutated exactly
+// like a single create.
 func (w *transactionStorageWrapper) BulkCreateNodes(nodes []*storage.Node) error {
-	// For bulk operations within transaction, create one by one
 	for _, node := range nodes {
-		if w.namespace == "" {
-			if _, err := w.tx.CreateNode(node); err != nil {
-				return err
-			}
-			continue
-		}
-		namespaced := storage.CopyNode(node)
-		namespaced.ID = w.prefixNodeID(node.ID)
-		if _, err := w.tx.CreateNode(namespaced); err != nil {
+		if _, err := w.CreateNode(node); err != nil {
 			return err
 		}
 	}

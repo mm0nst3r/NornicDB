@@ -2393,6 +2393,11 @@ func (e *StorageExecutor) pipelineApplyCreate(ctx context.Context, rows []pipeli
 		created := &ExecuteResult{Stats: &QueryStats{}}
 		paths, err := e.createPatternsInScope(ctx, pattern, nodes, edges, created)
 		if err != nil {
+			// A failed property expression is the statement's own error
+			// (ArithmeticError, ...), returned as is like on every other route.
+			if failure := getExpressionFailure(ctx); failure != nil {
+				return nil, nil, true, failure
+			}
 			return nil, nil, true, localizedError(localization.CypherInvariantsPipelineCreateFailed(err), err)
 		}
 		stats.NodesCreated += created.Stats.NodesCreated

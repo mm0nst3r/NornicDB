@@ -41,6 +41,8 @@ func BenchmarkSetCreateRoutes(b *testing.B) {
 		{name: "create_set", build: memory, query: "CREATE (n:BenchCS {id: $i}) SET n.x = 1, n.y = 'y', n:Tagged RETURN n.x AS x"},
 		{name: "create_ref", build: memory, query: "CREATE (a:BenchA {name: 'x'}), (b:BenchB {name: a.name}) RETURN b.name AS n"},
 		{name: "create_async", build: asyncStack, query: "CREATE (a:BenchA {id: $i}), (b:BenchB {id: $i})"},
+		{name: "create_async_rel", build: asyncStack, query: "CREATE (a:BenchA {id: $i})-[:R {w: $i}]->(b:BenchB {id: $i}) RETURN a.id AS id"},
+		{name: "create_async_multi", build: asyncStack, query: "CREATE (a:BenchA {id: $i}) CREATE (a)-[:R]->(b:BenchB {id: $i})"},
 		{name: "match_set_multi", build: memory, setup: []string{"CREATE (:BenchMS {id: 1, a: 0})"}, query: "MATCH (n:BenchMS {id: 1}) SET n.a = n.a + 1, n.b = 'x'"},
 		{name: "match_set_map", build: memory, setup: []string{"CREATE (:BenchMS {id: 1, a: 0})"}, query: "MATCH (n:BenchMS {id: 1}) SET n += {a: $i, c: null}"},
 		{name: "merge_set", build: memory, query: "MERGE (n:BenchMG {id: 1}) SET n.a = $i, n:Tagged"},

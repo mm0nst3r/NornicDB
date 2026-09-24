@@ -505,20 +505,43 @@ func (t *sizeTrackingEngine) DeleteEdge(id storage.EdgeID) error {
 	return nil
 }
 
+// BulkCreateNodes creates the nodes one by one through CreateNode, so every
+// node passes the same write-rate and storage-limit checks, in order, as a
+// single create. The batch is all-or-nothing: when a node is rejected (a
+// limit, a constraint), the nodes this batch already created are removed and
+// the cached storage size is marked for recount, so a bulk create never
+// leaves part of its batch behind (a failing CREATE statement writes nothing,
+// #628).
 func (t *sizeTrackingEngine) BulkCreateNodes(nodes []*storage.Node) error {
+	created := make([]storage.NodeID, 0, len(nodes))
 	for _, n := range nodes {
-		if _, err := t.CreateNode(n); err != nil {
+		id, err := t.CreateNode(n)
+		if err != nil {
+			if len(created) > 0 {
+				_ = t.Engine.BulkDeleteNodes(created)
+				t.manager.markStorageSizeDirty(t.dbName)
+			}
 			return err
 		}
+		created = append(created, id)
 	}
 	return nil
 }
 
+// BulkCreateEdges is all-or-nothing like BulkCreateNodes: each relationship
+// goes through CreateEdge, and a rejected one removes the relationships this
+// batch already created.
 func (t *sizeTrackingEngine) BulkCreateEdges(edges []*storage.Edge) error {
+	created := make([]storage.EdgeID, 0, len(edges))
 	for _, e := range edges {
 		if err := t.CreateEdge(e); err != nil {
+			if len(created) > 0 {
+				_ = t.Engine.BulkDeleteEdges(created)
+				t.manager.markStorageSizeDirty(t.dbName)
+			}
 			return err
 		}
+		created = append(created, e.ID)
 	}
 	return nil
 }
