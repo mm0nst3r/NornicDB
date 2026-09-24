@@ -186,12 +186,15 @@ func TestDBWrapperHelpers_EmbeddingAndPendingCounts(t *testing.T) {
 	})
 	require.Equal(t, 2, db.EmbeddingCount())
 
-	// Pending count uses optional storage fast-path interface.
-	engine := &pendingCountEngine{Engine: storage.NewMemoryEngine(), count: 7}
-	db.baseStorage = engine
-	require.Equal(t, 7, db.PendingEmbeddingsCount())
-	db.baseStorage = storage.NewMemoryEngine()
-	require.Equal(t, 0, db.PendingEmbeddingsCount())
+	// Pending count uses optional storage fast-path interface. It is checked
+	// on separate DB values without background tasks: assigning baseStorage
+	// on the open db races with its clustering timer, which reads it.
+	counting := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = counting.Close() })
+	require.Equal(t, 7, (&DB{baseStorage: &pendingCountEngine{Engine: counting, count: 7}}).PendingEmbeddingsCount())
+	plain := storage.NewMemoryEngine()
+	t.Cleanup(func() { _ = plain.Close() })
+	require.Equal(t, 0, (&DB{baseStorage: plain}).PendingEmbeddingsCount())
 }
 
 func TestDBWrapperHelpers_MaybeEnableReplicationPaths(t *testing.T) {
