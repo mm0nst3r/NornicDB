@@ -19,6 +19,21 @@ func (e *ArgumentTypeError) Error() string {
 	return fmt.Sprintf("%s() received an invalid %T argument", e.Function, e.Value)
 }
 
+// TypeMismatchError reports a function argument whose type the function's
+// signature excludes (size() of a map, a node, a number, ...). Neo4j rejects
+// these while planning; callers turn it into
+// Neo.ClientError.Statement.SyntaxError "Type mismatch: expected <Expected>
+// but was <type of Value>".
+type TypeMismatchError struct {
+	Function string
+	Expected string
+	Value    interface{}
+}
+
+func (e *TypeMismatchError) Error() string {
+	return fmt.Sprintf("%s() expected %s but received %T", e.Function, e.Expected, e.Value)
+}
+
 // Func evaluates a Cypher function call.
 //
 // args are the raw argument expressions (not pre-evaluated). Use ctx.Eval for

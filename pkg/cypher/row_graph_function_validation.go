@@ -259,5 +259,6 @@ func functionEvaluationFailure(ctx context.Context, err error) {
 	if errors.As(err, &argumentError) {
 		err = invalidFunctionArgument(argumentError.Function, argumentError.Value)
 	}
+	err = typeMismatchFromFunctionError(err)
 	recordExpressionFailure(ctx, err)
 }

@@ -2,6 +2,7 @@ package fn
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	cyphertext "github.com/orneryd/nornicdb/pkg/cypher/internal/text"
@@ -177,8 +178,16 @@ func evalSize(ctx Context, args []string) (interface{}, error) {
 	case []string:
 		return int64(len(vv)), nil
 	}
-	return nil, nil
+	if kind := reflect.TypeOf(v).Kind(); kind == reflect.Slice || kind == reflect.Array {
+		return int64(reflect.ValueOf(v).Len()), nil
+	}
+	// size() takes a String or a List; a map, node, relationship, path,
+	// number or boolean is a type error, not null.
+	return nil, &TypeMismatchError{Function: "size", Expected: sizeArgumentTypes, Value: v}
 }
+
+// sizeArgumentTypes is size()'s accepted argument types as Neo4j names them.
+const sizeArgumentTypes = "String or List<T>"
 
 func evalToLower(ctx Context, args []string) (interface{}, error) {
 	if len(args) != 1 {

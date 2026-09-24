@@ -220,6 +220,9 @@ func (e *StorageExecutor) evaluateRowExpressionWithContext(ctx context.Context, 
 	}
 	value, resolved := e.evaluateRowExpression(expr, values)
 	if !resolved {
+		if e.recordRowSizeArgumentFailure(ctx, expr, values) {
+			return nil, false
+		}
 		arithmeticExpr := strings.TrimSpace(expr)
 		for {
 			inner, enclosed := stripEnclosingExpressionParentheses(arithmeticExpr)

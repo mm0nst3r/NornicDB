@@ -223,6 +223,10 @@ func (e *StorageExecutor) evaluateRowExpression(expr string, values map[string]i
 			if !resolved {
 				return nil, false
 			}
+			// null in, null out (size(null), head(null), ...).
+			if value == nil {
+				return nil, true
+			}
 			if text, isString := value.(string); isString {
 				switch strings.ToLower(function) {
 				case "size":
@@ -1492,10 +1496,18 @@ func (e *StorageExecutor) evaluateRowPredicate(ctx context.Context, expression s
 		return value
 	}, compareCypherPredicateValue)
 	if comparison {
+		if !resolved {
+			// An operand the row evaluator could not resolve may be a
+			// size() type error; surface it instead of filtering the row.
+			e.recordRowSizeArgumentFailure(ctx, expression, values)
+		}
 		matched, known := comparisonResult.(bool)
 		return resolved && known && matched
 	}
 	value, ok := e.evaluateRowExpression(expression, values)
+	if !ok {
+		e.recordRowSizeArgumentFailure(ctx, expression, values)
+	}
 	return ok && isTruthy(value)
 }
 

@@ -135,11 +135,7 @@ func validateStaticSizeArguments(cypher string) error {
 			for _, item := range splitTopLevelComma(body) {
 				expression, _ := parseProjectionExprAlias(strings.TrimSpace(item))
 				if staticSizeUsesPath(expression, pathVariables) {
-					return newSemanticError(
-						"Neo.ClientError.Statement.SyntaxError",
-						"InvalidArgumentType",
-						"size() does not accept PATH values; use length()",
-					)
+					return typeMismatchError(sizeArgumentTypes, pathTypeMarker{})
 				}
 			}
 			if clause.kind == pipelineClauseWith {

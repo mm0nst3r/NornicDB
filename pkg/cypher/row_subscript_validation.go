@@ -227,11 +227,7 @@ func (e *StorageExecutor) validatePipelineSizeArguments(rows []pipelineRow, clau
 			}
 			if path, isMap := toStringAnyMap(value); isMap {
 				if _, isPath := path["_pathResult"]; isPath {
-					return newSemanticError(
-						"Neo.ClientError.Statement.SyntaxError",
-						"InvalidArgumentType",
-						"size() does not accept PATH values; use length()",
-					)
+					return typeMismatchError(sizeArgumentTypes, pathTypeMarker{})
 				}
 			}
 		}
