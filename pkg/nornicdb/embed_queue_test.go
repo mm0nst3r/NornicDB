@@ -2072,21 +2072,33 @@ func TestEmbedQueueDebounceAndHelpers(t *testing.T) {
 	})
 
 	t.Run("debounce accumulates and fires when threshold met", func(t *testing.T) {
-		var got []int
+		// onQueueEmpty runs on the debounce timer's goroutine; got is shared
+		// with the assertions below, so it is guarded by mu.
+		var (
+			mu  sync.Mutex
+			got []int
+		)
+		snapshot := func() []int {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]int(nil), got...)
+		}
 		ew := &EmbedWorker{
 			config: &EmbedWorkerConfig{
 				ClusterDebounceDelay: 15 * time.Millisecond,
 				ClusterMinBatchSize:  2,
 			},
 			onQueueEmpty: func(processedCount int) {
+				mu.Lock()
 				got = append(got, processedCount)
+				mu.Unlock()
 			},
 		}
 
 		ew.scheduleClusteringDebounced(1)
 		ew.scheduleClusteringDebounced(2)
-		require.Eventually(t, func() bool { return len(got) == 1 }, 300*time.Millisecond, 5*time.Millisecond)
-		require.Equal(t, 3, got[0])
+		require.Eventually(t, func() bool { return len(snapshot()) == 1 }, 300*time.Millisecond, 5*time.Millisecond)
+		require.Equal(t, []int{3}, snapshot())
 	})
 
 	t.Run("addNodeToPendingEmbeddings delegates when supported", func(t *testing.T) {
