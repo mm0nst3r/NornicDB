@@ -237,7 +237,7 @@ func TestRelationshipMergeSegmentIdentityIncludesPatternProperties(t *testing.T)
 
 	for _, scopeID := range []string{"scope-a", "scope-b", "scope-a"} {
 		pattern := "(a)-[:ASSERTS {scope_id: '" + scopeID + "'}]->(b)"
-		require.NoError(t, exec.executeMergeRelSegment(ctx, pattern, nodeContext))
+		require.NoError(t, exec.executeMergeRelSegment(ctx, pattern, nodeContext, nil))
 	}
 	assertAssertRelationshipRows(t, exec, ctx, [][]interface{}{
 		{"scope-a", nil},

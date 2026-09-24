@@ -145,11 +145,7 @@ func (e *StorageExecutor) callApocCypherRunMany(ctx context.Context, cypher stri
 
 		// Accumulate stats
 		if innerResult.Stats != nil {
-			result.Stats.NodesCreated += innerResult.Stats.NodesCreated
-			result.Stats.NodesDeleted += innerResult.Stats.NodesDeleted
-			result.Stats.RelationshipsCreated += innerResult.Stats.RelationshipsCreated
-			result.Stats.RelationshipsDeleted += innerResult.Stats.RelationshipsDeleted
-			result.Stats.PropertiesSet += innerResult.Stats.PropertiesSet
+			addQueryStats(result.Stats, innerResult.Stats)
 		}
 	}
 

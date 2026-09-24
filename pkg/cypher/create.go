@@ -334,11 +334,13 @@ func (e *StorageExecutor) applyCreatePlan(ctx context.Context, plan *createPlan,
 	for _, node := range plan.nodes {
 		e.notifyNodeMutated(string(node.ID))
 		addOptimisticNodeID(result, node.ID)
+		countCreatedEntity(result.Stats, node.Labels, node.Properties)
 	}
 	result.Stats.NodesCreated += len(plan.nodes)
 	for _, edge := range plan.edges {
 		e.notifyEdgeMutated(string(edge.ID))
 		addOptimisticRelationshipID(result, edge.ID)
+		countCreatedEntity(result.Stats, nil, edge.Properties)
 	}
 	result.Stats.RelationshipsCreated += len(plan.edges)
 	return nil
@@ -1115,10 +1117,7 @@ func (e *StorageExecutor) executeCompoundMatchCreateWithRefs(ctx context.Context
 			return nil, nil, nil, err
 		}
 		// Accumulate stats
-		result.Stats.NodesCreated += blockResult.Stats.NodesCreated
-		result.Stats.RelationshipsCreated += blockResult.Stats.RelationshipsCreated
-		result.Stats.NodesDeleted += blockResult.Stats.NodesDeleted
-		result.Stats.RelationshipsDeleted += blockResult.Stats.RelationshipsDeleted
+		addQueryStats(result.Stats, blockResult.Stats)
 
 		// Copy Columns and Rows from last block with RETURN
 		if len(blockResult.Columns) > 0 {
@@ -1778,8 +1777,7 @@ func (e *StorageExecutor) executeMatchCreateBlock(ctx context.Context, block str
 				return nil, err
 			}
 			if setStats != nil {
-				result.Stats.PropertiesSet += setStats.PropertiesSet
-				result.Stats.LabelsAdded += setStats.LabelsAdded
+				addQueryStats(result.Stats, setStats)
 			}
 		}
 
@@ -1993,8 +1991,7 @@ func (e *StorageExecutor) executeCompoundCreateWithDelete(ctx context.Context, c
 	if err != nil {
 		return nil, localizedError(localization.CypherMutationsCreateFailed(err), err)
 	}
-	result.Stats.NodesCreated = createResult.Stats.NodesCreated
-	result.Stats.RelationshipsCreated = createResult.Stats.RelationshipsCreated
+	addQueryStats(result.Stats, createResult.Stats)
 
 	// Parse WITH clause to see what variables are passed through
 	withVars := strings.Split(withPart, ",")
@@ -2095,8 +2092,7 @@ func (e *StorageExecutor) executeCreateSet(ctx context.Context, cypher string) (
 		return nil, localizedError(localization.CypherMutationsCreateInCreateSetFailed(err), err)
 	}
 	createdNodes, createdEdges, createdPaths := created.nodes, created.edges, created.paths
-	result.Stats.NodesCreated = created.result.Stats.NodesCreated
-	result.Stats.RelationshipsCreated = created.result.Stats.RelationshipsCreated
+	addQueryStats(result.Stats, created.result.Stats)
 
 	row := make(pipelineRow, len(createdNodes)+len(createdEdges))
 	for name, node := range createdNodes {
@@ -2115,8 +2111,7 @@ func (e *StorageExecutor) executeCreateSet(ctx context.Context, cypher string) (
 		return nil, err
 	}
 	if setStats != nil {
-		result.Stats.PropertiesSet += setStats.PropertiesSet
-		result.Stats.LabelsAdded += setStats.LabelsAdded
+		addQueryStats(result.Stats, setStats)
 	}
 
 	// Process trailing clauses in CREATE...SET pipelines.

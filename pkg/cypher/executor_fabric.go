@@ -26,12 +26,7 @@ func (a *fabricStatsAccumulator) add(in *QueryStats) {
 		return
 	}
 	a.mu.Lock()
-	a.stats.NodesCreated += in.NodesCreated
-	a.stats.NodesDeleted += in.NodesDeleted
-	a.stats.RelationshipsCreated += in.RelationshipsCreated
-	a.stats.RelationshipsDeleted += in.RelationshipsDeleted
-	a.stats.PropertiesSet += in.PropertiesSet
-	a.stats.LabelsAdded += in.LabelsAdded
+	addQueryStats(&a.stats, in)
 	a.mu.Unlock()
 }
 

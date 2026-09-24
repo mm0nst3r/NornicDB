@@ -1014,22 +1014,22 @@ func TestExecuteMergeRelSegment_ErrorBranches(t *testing.T) {
 	require.NoError(t, err)
 
 	// Missing start node closing paren.
-	err = e.executeMergeRelSegment(ctx, "(a-[:REL]->(b)", map[string]*storage.Node{"a": a, "b": b})
+	err = e.executeMergeRelSegment(ctx, "(a-[:REL]->(b)", map[string]*storage.Node{"a": a, "b": b}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "start node variable")
 
 	// Missing relationship brackets.
-	err = e.executeMergeRelSegment(ctx, "(a)-REL->(b)", map[string]*storage.Node{"a": a, "b": b})
+	err = e.executeMergeRelSegment(ctx, "(a)-REL->(b)", map[string]*storage.Node{"a": a, "b": b}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing relationship brackets")
 
 	// Missing start var in context.
-	err = e.executeMergeRelSegment(ctx, "(a)-[:REL]->(b)", map[string]*storage.Node{"b": b})
+	err = e.executeMergeRelSegment(ctx, "(a)-[:REL]->(b)", map[string]*storage.Node{"b": b}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "start node variable")
 
 	// Missing end var in context.
-	err = e.executeMergeRelSegment(ctx, "(a)-[:REL]->(b)", map[string]*storage.Node{"a": a})
+	err = e.executeMergeRelSegment(ctx, "(a)-[:REL]->(b)", map[string]*storage.Node{"a": a}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "end node variable")
 }
@@ -1591,23 +1591,23 @@ func TestExecuteMergeNodeAndMatchSegment_AdditionalBranches(t *testing.T) {
 	require.NoError(t, err)
 
 	// Existing node + ON MATCH SET branch.
-	node, varName, err := exec.executeMergeNodeSegment(ctx, "MERGE (p:Person {name:'alice'}) ON MATCH SET p.age = 31")
+	node, varName, err := exec.executeMergeNodeSegment(ctx, "MERGE (p:Person {name:'alice'}) ON MATCH SET p.age = 31", nil)
 	require.NoError(t, err)
 	require.Equal(t, "p", varName)
 	require.NotNil(t, node)
 	assert.Equal(t, int64(31), node.Properties["age"])
 
 	// Create node + ON CREATE SET branch.
-	created, createdVar, err := exec.executeMergeNodeSegment(ctx, "MERGE (q:Person {name:'bob'}) ON CREATE SET q.city = 'phx'")
+	created, createdVar, err := exec.executeMergeNodeSegment(ctx, "MERGE (q:Person {name:'bob'}) ON CREATE SET q.city = 'phx'", nil)
 	require.NoError(t, err)
 	require.Equal(t, "q", createdVar)
 	require.NotNil(t, created)
 	assert.Equal(t, "phx", created.Properties["city"])
 
 	// Syntax guard branches.
-	_, _, err = exec.executeMergeNodeSegment(ctx, "MATCH (n)")
+	_, _, err = exec.executeMergeNodeSegment(ctx, "MATCH (n)", nil)
 	require.Error(t, err)
-	_, _, err = exec.executeMergeNodeSegment(ctx, "MERGE bad-pattern")
+	_, _, err = exec.executeMergeNodeSegment(ctx, "MERGE bad-pattern", nil)
 	require.Error(t, err)
 
 	// executeMatchSegment: missing MATCH keyword.

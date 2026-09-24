@@ -417,8 +417,7 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 			rows = newRows
 			addPipelinePatternBindings(e, scope, clause.text, "CREATE")
 			if stats != nil {
-				result.Stats.NodesCreated += stats.NodesCreated
-				result.Stats.RelationshipsCreated += stats.RelationshipsCreated
+				addQueryStats(result.Stats, stats)
 			}
 			wrote = true
 		case pipelineClauseMerge:
@@ -429,10 +428,7 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 			rows = newRows
 			addPipelinePatternBindings(e, scope, clause.text, "MERGE")
 			if stats != nil {
-				result.Stats.NodesCreated += stats.NodesCreated
-				result.Stats.RelationshipsCreated += stats.RelationshipsCreated
-				result.Stats.PropertiesSet += stats.PropertiesSet
-				result.Stats.LabelsAdded += stats.LabelsAdded
+				addQueryStats(result.Stats, stats)
 			}
 			wrote = true
 		case pipelineClauseDelete:
@@ -443,8 +439,7 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 			if !ok {
 				return pipelineDecline(wrote, clause.text)
 			}
-			result.Stats.NodesDeleted += stats.NodesDeleted
-			result.Stats.RelationshipsDeleted += stats.RelationshipsDeleted
+			addQueryStats(result.Stats, stats)
 			wrote = true
 		case pipelineClauseSet:
 			stats, ok, err := e.pipelineApplySet(ctx, rows, clause.text)
@@ -454,8 +449,7 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 			if !ok {
 				return pipelineDecline(wrote, clause.text)
 			}
-			result.Stats.PropertiesSet += stats.PropertiesSet
-			result.Stats.LabelsAdded += stats.LabelsAdded
+			addQueryStats(result.Stats, stats)
 			wrote = true
 		case pipelineClauseRemove:
 			if err := e.pipelineApplyRemove(ctx, rows, clause.text, result); err != nil {
@@ -504,10 +498,7 @@ func (e *StorageExecutor) executePipeline(ctx context.Context, cypher string) (*
 			if err != nil {
 				return nil, true, err
 			}
-			result.Stats.NodesCreated += stats.NodesCreated
-			result.Stats.RelationshipsCreated += stats.RelationshipsCreated
-			result.Stats.PropertiesSet += stats.PropertiesSet
-			result.Stats.LabelsAdded += stats.LabelsAdded
+			addQueryStats(result.Stats, stats)
 			wrote = true
 		case pipelineClauseReturn:
 			if err := validateDeletedEntityProjection(rows, clause.text); err != nil {
@@ -2400,8 +2391,7 @@ func (e *StorageExecutor) pipelineApplyCreate(ctx context.Context, rows []pipeli
 			}
 			return nil, nil, true, localizedError(localization.CypherInvariantsPipelineCreateFailed(err), err)
 		}
-		stats.NodesCreated += created.Stats.NodesCreated
-		stats.RelationshipsCreated += created.Stats.RelationshipsCreated
+		addQueryStats(stats, created.Stats)
 
 		newRow := make(pipelineRow, util.SafePreallocSum(len(row), len(nodes)+len(edges), len(paths)))
 		for k, v := range row {
@@ -2502,8 +2492,7 @@ func (e *StorageExecutor) pipelineApplyMerge(ctx context.Context, rows []pipelin
 							if !ok {
 								return nil, nil, newSemanticError("Neo.ClientError.Statement.SyntaxError", "UnexpectedSyntax", "invalid ON MATCH SET: "+onMatchSet)
 							}
-							stats.PropertiesSet += setStats.PropertiesSet
-							stats.LabelsAdded += setStats.LabelsAdded
+							addQueryStats(stats, setStats)
 						}
 						out = append(out, matchedRows...)
 						continue
@@ -2516,9 +2505,7 @@ func (e *StorageExecutor) pipelineApplyMerge(ctx context.Context, rows []pipelin
 			return nil, nil, err
 		}
 		if merged != nil && merged.Stats != nil {
-			stats.NodesCreated += merged.Stats.NodesCreated
-			stats.RelationshipsCreated += merged.Stats.RelationshipsCreated
-			stats.PropertiesSet += merged.Stats.PropertiesSet
+			addQueryStats(stats, merged.Stats)
 		}
 		newRow := make(pipelineRow, util.SafePreallocSum(len(row), len(nodeContext), len(relContext)))
 		for name, value := range row {
@@ -3152,10 +3139,7 @@ func (e *StorageExecutor) pipelineApplyForeach(ctx context.Context, rows []pipel
 			if !ok {
 				return nil, invalid()
 			}
-			stats.NodesCreated += change.NodesCreated
-			stats.RelationshipsCreated += change.RelationshipsCreated
-			stats.PropertiesSet += change.PropertiesSet
-			stats.LabelsAdded += change.LabelsAdded
+			addQueryStats(stats, change)
 		}
 	}
 	return stats, nil

@@ -93,11 +93,7 @@ func (e *StorageExecutor) callApocPeriodicIterate(ctx context.Context, cypher st
 
 			// Accumulate stats
 			if actionResult.Stats != nil {
-				stats.NodesCreated += actionResult.Stats.NodesCreated
-				stats.NodesDeleted += actionResult.Stats.NodesDeleted
-				stats.RelationshipsCreated += actionResult.Stats.RelationshipsCreated
-				stats.RelationshipsDeleted += actionResult.Stats.RelationshipsDeleted
-				stats.PropertiesSet += actionResult.Stats.PropertiesSet
+				addQueryStats(stats, actionResult.Stats)
 			}
 		}
 	}
@@ -202,11 +198,7 @@ func (e *StorageExecutor) callApocPeriodicCommit(ctx context.Context, cypher str
 				result.Stats.RelationshipsCreated + result.Stats.RelationshipsDeleted +
 				result.Stats.PropertiesSet)
 
-			stats.NodesCreated += result.Stats.NodesCreated
-			stats.NodesDeleted += result.Stats.NodesDeleted
-			stats.RelationshipsCreated += result.Stats.RelationshipsCreated
-			stats.RelationshipsDeleted += result.Stats.RelationshipsDeleted
-			stats.PropertiesSet += result.Stats.PropertiesSet
+			addQueryStats(stats, result.Stats)
 		}
 
 		if updates == 0 {

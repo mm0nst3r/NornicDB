@@ -621,6 +621,7 @@ func (e *StorageExecutor) executeMerge(ctx context.Context, cypher string) (*Exe
 		node.ID = actualID
 		e.notifyNodeMutated(string(node.ID))
 		result.Stats.NodesCreated = 1
+		countCreatedEntity(result.Stats, node.Labels, node.Properties)
 
 		if varName == "" {
 			varName = "n"
@@ -648,7 +649,7 @@ func (e *StorageExecutor) executeMerge(ctx context.Context, cypher string) (*Exe
 				}
 			}
 			setClause := strings.TrimSpace(cypher[onMatchIdx+13 : setEnd])
-			if err := e.applySetToNode(ctx, node, varName, setClause); err != nil {
+			if _, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nil, nil, result.Stats); err != nil {
 				return nil, err
 			}
 			store.UpdateNode(node)
@@ -685,6 +686,7 @@ func (e *StorageExecutor) executeMerge(ctx context.Context, cypher string) (*Exe
 			node.ID = actualID
 			e.notifyNodeMutated(string(node.ID))
 			result.Stats.NodesCreated = 1
+			countCreatedEntity(result.Stats, node.Labels, node.Properties)
 
 			// Apply ON CREATE SET if present
 			if onCreateIdx > 0 {
@@ -696,7 +698,7 @@ func (e *StorageExecutor) executeMerge(ctx context.Context, cypher string) (*Exe
 					}
 				}
 				setClause := strings.TrimSpace(cypher[onCreateIdx+13 : setEnd])
-				if err := e.applySetToNode(ctx, node, varName, setClause); err != nil {
+				if _, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nil, nil, result.Stats); err != nil {
 					return nil, err
 				}
 			}
@@ -712,7 +714,7 @@ func (e *StorageExecutor) executeMerge(ctx context.Context, cypher string) (*Exe
 			}
 		}
 		setClause := strings.TrimSpace(cypher[setIdx+3 : setEnd]) // +3 to skip "SET"
-		if err := e.applySetToNode(ctx, node, varName, setClause); err != nil {
+		if _, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nil, nil, result.Stats); err != nil {
 			return nil, err
 		}
 	}
@@ -844,9 +846,7 @@ func (e *StorageExecutor) executeCompoundMatchMerge(ctx context.Context, cypher 
 
 		// Combine results
 		if mergeResult.Stats != nil {
-			result.Stats.NodesCreated += mergeResult.Stats.NodesCreated
-			result.Stats.RelationshipsCreated += mergeResult.Stats.RelationshipsCreated
-			result.Stats.PropertiesSet += mergeResult.Stats.PropertiesSet
+			addQueryStats(result.Stats, mergeResult.Stats)
 		}
 
 		// Add rows from merge result
@@ -1016,9 +1016,7 @@ func (e *StorageExecutor) executeCompoundMatchUnwindMerge(ctx context.Context, c
 				}
 
 				if mergeResult.Stats != nil {
-					result.Stats.NodesCreated += mergeResult.Stats.NodesCreated
-					result.Stats.RelationshipsCreated += mergeResult.Stats.RelationshipsCreated
-					result.Stats.PropertiesSet += mergeResult.Stats.PropertiesSet
+					addQueryStats(result.Stats, mergeResult.Stats)
 				}
 
 				if len(mergeResult.Columns) > 0 && len(result.Columns) == 0 {
@@ -1954,9 +1952,7 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 				return nil, err
 			}
 			if relationshipResult != nil && relationshipResult.Stats != nil && nextResult != nil && nextResult.Stats != nil {
-				nextResult.Stats.RelationshipsCreated += relationshipResult.Stats.RelationshipsCreated
-				nextResult.Stats.NodesCreated += relationshipResult.Stats.NodesCreated
-				nextResult.Stats.PropertiesSet += relationshipResult.Stats.PropertiesSet
+				addQueryStats(nextResult.Stats, relationshipResult.Stats)
 			}
 			return nextResult, nil
 		}
@@ -1996,7 +1992,7 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 				}
 			}
 			setClause := strings.TrimSpace(cypher[onMatchIdx+13 : setEnd])
-			if err := e.applySetToNodeWithContext(ctx, node, varName, setClause, nodeContext, relContext); err != nil {
+			if _, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nodeContext, relContext, result.Stats); err != nil {
 				return nil, err
 			}
 			store.UpdateNode(node)
@@ -2033,6 +2029,7 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 			node.ID = actualID
 			e.notifyNodeMutated(string(node.ID))
 			result.Stats.NodesCreated = 1
+			countCreatedEntity(result.Stats, node.Labels, node.Properties)
 			e.cacheMergeNode(labels, matchProps, node)
 
 			if onCreateIdx > 0 {
@@ -2043,7 +2040,7 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 					}
 				}
 				setClause := strings.TrimSpace(cypher[onCreateIdx+13 : setEnd])
-				if err := e.applySetToNodeWithContext(ctx, node, varName, setClause, nodeContext, relContext); err != nil {
+				if _, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nodeContext, relContext, result.Stats); err != nil {
 					return nil, err
 				}
 			}
@@ -2064,7 +2061,7 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 			}
 		}
 		setClause := strings.TrimSpace(cypher[setIdx+3 : setEnd])
-		if err := e.applySetToNodeWithContext(ctx, node, varName, setClause, nodeContext, relContext); err != nil {
+		if _, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nodeContext, relContext, result.Stats); err != nil {
 			return nil, err
 		}
 	}
@@ -2181,6 +2178,7 @@ func (e *StorageExecutor) executeMergeRelationshipWithContext(ctx context.Contex
 		}
 		if created {
 			result.Stats.NodesCreated++
+			countCreatedEntity(result.Stats, startNode.Labels, startNode.Properties)
 		}
 		if parsedPattern.startVariable != "" {
 			nodeContext[parsedPattern.startVariable] = startNode
@@ -2200,6 +2198,7 @@ func (e *StorageExecutor) executeMergeRelationshipWithContext(ctx context.Contex
 		}
 		if created {
 			result.Stats.NodesCreated++
+			countCreatedEntity(result.Stats, endNode.Labels, endNode.Properties)
 		}
 		if parsedPattern.endVariable != "" {
 			nodeContext[parsedPattern.endVariable] = endNode
@@ -2244,6 +2243,9 @@ func (e *StorageExecutor) executeMergeRelationshipWithContext(ctx context.Contex
 		if created {
 			relationshipCreated = true
 			result.Stats.RelationshipsCreated = 1
+			// Its pattern properties; an ON CREATE SET is counted by
+			// applySetClause below.
+			countCreatedEntity(result.Stats, nil, edge.Properties)
 			e.notifyEdgeMutated(string(edge.ID))
 		}
 	}
@@ -2905,13 +2907,12 @@ func (e *StorageExecutor) executeMergeWithChain(ctx context.Context, cypher stri
 				if strings.HasPrefix(upperInitial, "MERGE") {
 					mergeContent := strings.TrimSpace(initialClause[5:])
 					if strings.Contains(mergeContent, "-[") || strings.Contains(mergeContent, "]-") {
-						if err := e.executeMergeRelSegment(ctx, mergeContent, nodeContext); err != nil {
+						if err := e.executeMergeRelSegment(ctx, mergeContent, nodeContext, result.Stats); err != nil {
 							return nil, localizedError(localization.CypherMergeInitialMergeFailed(err), err)
 						}
-						result.Stats.RelationshipsCreated++
 						continue
 					}
-					mergedNode, varName, err := e.executeMergeNodeSegment(ctx, initialClause)
+					mergedNode, varName, err := e.executeMergeNodeSegment(ctx, initialClause, result.Stats)
 					if err != nil {
 						return nil, localizedError(localization.CypherMergeInitialMergeFailed(err), err)
 					}
@@ -3019,21 +3020,17 @@ func (e *StorageExecutor) executeMergeWithChain(ctx context.Context, cypher stri
 					if mergeIdx > 0 {
 						mergePart := strings.TrimSpace(clause[mergeIdx+5:])
 						if strings.Contains(mergePart, "-[") || strings.Contains(mergePart, "]-") {
-							err := e.executeMergeRelSegment(ctx, mergePart, segmentNodeCtx)
-							if err == nil {
-								result.Stats.RelationshipsCreated++
-							}
+							_ = e.executeMergeRelSegment(ctx, mergePart, segmentNodeCtx, result.Stats)
 						}
 					}
 				case strings.HasPrefix(upperClause, "MERGE"):
 					mergePart := strings.TrimSpace(clause[5:])
 					if strings.Contains(mergePart, "-[") || strings.Contains(mergePart, "]-") {
-						if err := e.executeMergeRelSegment(ctx, mergePart, segmentNodeCtx); err != nil {
+						if err := e.executeMergeRelSegment(ctx, mergePart, segmentNodeCtx, result.Stats); err != nil {
 							return nil, err
 						}
-						result.Stats.RelationshipsCreated++
 					} else {
-						mergedNode, mergeVarName, err := e.executeMergeNodeSegment(ctx, clause)
+						mergedNode, mergeVarName, err := e.executeMergeNodeSegment(ctx, clause, result.Stats)
 						if err != nil {
 							return nil, err
 						}
@@ -3292,8 +3289,11 @@ func (e *StorageExecutor) splitMergeChainSegments(cypher string) []string {
 	return segments
 }
 
-// executeMergeNodeSegment executes the initial MERGE (node) part and returns the node and variable name.
-func (e *StorageExecutor) executeMergeNodeSegment(ctx context.Context, segment string) (*storage.Node, string, error) {
+// executeMergeNodeSegment executes the initial MERGE (node) part and returns
+// the node and variable name. It adds what it writes (a created node and its
+// properties and labels, and its ON CREATE SET / ON MATCH SET / SET) to stats,
+// which may be nil.
+func (e *StorageExecutor) executeMergeNodeSegment(ctx context.Context, segment string, stats *QueryStats) (*storage.Node, string, error) {
 	store := e.getStorage(ctx)
 	// Parse: MERGE (varName:Label {props}) [ON CREATE SET ...] [ON MATCH SET ...]
 	mergeIdx := findKeywordIndex(segment, "MERGE")
@@ -3349,11 +3349,11 @@ func (e *StorageExecutor) executeMergeNodeSegment(ctx context.Context, segment s
 				setEnd = setIdx
 			}
 			setClause := strings.TrimSpace(segment[onMatchIdx+12 : setEnd])
-			beforeProps := cloneNodePropertiesMap(node.Properties)
-			if err := e.applySetToNode(ctx, node, varName, setClause); err != nil {
+			changed, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nil, nil, stats)
+			if err != nil {
 				return nil, "", err
 			}
-			if !reflect.DeepEqual(beforeProps, node.Properties) {
+			if changed {
 				store.UpdateNode(node)
 				e.notifyNodeMutated(string(node.ID))
 			}
@@ -3390,6 +3390,10 @@ func (e *StorageExecutor) executeMergeNodeSegment(ctx context.Context, segment s
 			node.ID = actualID
 			e.notifyNodeMutated(string(node.ID))
 			e.cacheMergeNode(labels, props, node)
+			if stats != nil {
+				stats.NodesCreated++
+			}
+			countCreatedEntity(stats, node.Labels, node.Properties)
 
 			// Apply ON CREATE SET if present
 			if onCreateIdx > 0 {
@@ -3401,11 +3405,11 @@ func (e *StorageExecutor) executeMergeNodeSegment(ctx context.Context, segment s
 					setEnd = setIdx
 				}
 				setClause := strings.TrimSpace(segment[onCreateIdx+13 : setEnd])
-				beforeProps := cloneNodePropertiesMap(node.Properties)
-				if err := e.applySetToNode(ctx, node, varName, setClause); err != nil {
+				changed, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nil, nil, stats)
+				if err != nil {
 					return nil, "", err
 				}
-				if !reflect.DeepEqual(beforeProps, node.Properties) {
+				if changed {
 					store.UpdateNode(node)
 					e.notifyNodeMutated(string(node.ID))
 				}
@@ -3423,11 +3427,11 @@ func (e *StorageExecutor) executeMergeNodeSegment(ctx context.Context, segment s
 			}
 		}
 		setClause := strings.TrimSpace(segment[setIdx+3 : setEnd])
-		beforeProps := cloneNodePropertiesMap(node.Properties)
-		if err := e.applySetToNode(ctx, node, varName, setClause); err != nil {
+		changed, err := e.applyCountedNodeSet(ctx, node, varName, setClause, nil, nil, stats)
+		if err != nil {
 			return nil, "", err
 		}
-		if !reflect.DeepEqual(beforeProps, node.Properties) {
+		if changed {
 			store.UpdateNode(node)
 			e.notifyNodeMutated(string(node.ID))
 			e.cacheMergeNode(labels, props, node)
@@ -3545,7 +3549,7 @@ func (e *StorageExecutor) executeMatchSegment(ctx context.Context, segment strin
 }
 
 // executeMergeRelSegment executes a MERGE relationship segment like (e)-[:REL]->(c)
-func (e *StorageExecutor) executeMergeRelSegment(ctx context.Context, pattern string, nodeContext map[string]*storage.Node) error {
+func (e *StorageExecutor) executeMergeRelSegment(ctx context.Context, pattern string, nodeContext map[string]*storage.Node, stats *QueryStats) error {
 	store := e.getStorage(ctx)
 	// Parse relationship pattern: (startVar)-[:TYPE]->(endVar) or (startVar)-[:TYPE {props}]->(endVar)
 	pattern = strings.TrimSpace(pattern)
@@ -3636,6 +3640,11 @@ func (e *StorageExecutor) executeMergeRelSegment(ctx context.Context, pattern st
 	if !created {
 		return nil
 	}
+	// Only a relationship this MERGE created is a write; a matched one is not.
+	if stats != nil {
+		stats.RelationshipsCreated++
+	}
+	countCreatedEntity(stats, nil, createdEdge.Properties)
 	e.notifyEdgeMutated(string(createdEdge.ID))
 	return nil
 }
@@ -3696,12 +3705,11 @@ func (e *StorageExecutor) executeMultipleMerges(ctx context.Context, cypher stri
 					return nil, localizedError(localization.CypherMergeRelationshipFailed(err), err)
 				}
 				if mergeResult != nil && mergeResult.Stats != nil {
-					result.Stats.RelationshipsCreated += mergeResult.Stats.RelationshipsCreated
-					result.Stats.PropertiesSet += mergeResult.Stats.PropertiesSet
+					addQueryStats(result.Stats, mergeResult.Stats)
 				}
 			} else {
 				// Node MERGE
-				node, varName, err := e.executeMergeNodeSegment(ctx, segment)
+				node, varName, err := e.executeMergeNodeSegment(ctx, segment, result.Stats)
 				if err != nil {
 					return nil, localizedError(localization.CypherMergeNodeFailed(err), err)
 				}

@@ -2720,7 +2720,8 @@ func TestExecuteMatchCreateBlock_AdditionalSetAndDeleteBranches(t *testing.T) {
 	assert.Equal(t, int64(2), res.Rows[0][2])
 	assert.Equal(t, 1, res.Stats.RelationshipsCreated)
 	assert.GreaterOrEqual(t, res.Stats.PropertiesSet, 2)
-	assert.Equal(t, 1, res.Stats.LabelsAdded)
+	// :Person from the CREATE and :User from the SET, as Neo4j counts them (#651).
+	assert.Equal(t, 2, res.Stats.LabelsAdded)
 
 	// Unknown variable in SET must fail deterministically.
 	_, err = exec.executeMatchCreateBlock(

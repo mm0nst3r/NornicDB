@@ -54,27 +54,31 @@ import (
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
-// applySetToNode applies SET clause assignments to a node.
+// applyCountedNodeSet applies the assignments of setClause that target
+// varName to node, and adds what they wrote to stats.
 //
-// This function parses SET clauses like "n.name = 'Alice', n.age = 30"
-// and updates the node's properties accordingly.
+// MERGE's ON CREATE SET, ON MATCH SET and SET use it, so they apply SET with
+// the same per-entity applicator as MATCH ... SET and the pipeline
+// (applySetToNodeWithContext: same null, label and map semantics) and count
+// it by the same rule (changedPropertyCount, addedLabelCount). It reports
+// whether the node changed, so callers persist only a changed node. stats may
+// be nil.
 //
-// # Parameters
-//
-//   - node: The node to update
-//   - varName: The variable name used in the SET clause (e.g., "n")
-//   - setClause: The SET clause string (without "SET" keyword)
-//
-// # Example
-//
-//	applySetToNode(node, "n", "n.name = 'Alice', n.age = 30")
-//	// node.Properties["name"] = "Alice"
-//	// node.Properties["age"] = int64(30)
-func (e *StorageExecutor) applySetToNode(ctx context.Context, node *storage.Node, varName string, setClause string) error {
-	// Plain MERGE ... SET / ON CREATE SET / ON MATCH SET use the same
-	// per-entity SET applicator as MATCH ... SET, MERGE in context and the
-	// pipeline, so every route has the same null, label and map semantics.
-	return e.applySetToNodeWithContext(ctx, node, varName, setClause, nil, nil)
+//	applyCountedNodeSet(ctx, node, "n", "n.name = 'Alice', n.age = 30", nil, nil, stats)
+//	// node.Properties["name"] = "Alice", node.Properties["age"] = int64(30)
+func (e *StorageExecutor) applyCountedNodeSet(ctx context.Context, node *storage.Node, varName string, setClause string, nodeContext map[string]*storage.Node, relContext map[string]*storage.Edge, stats *QueryStats) (bool, error) {
+	beforeProperties := cloneNodePropertiesMap(node.Properties)
+	beforeLabels := append([]string(nil), node.Labels...)
+	if err := e.applySetToNodeWithContext(ctx, node, varName, setClause, nodeContext, relContext); err != nil {
+		return false, err
+	}
+	propertiesSet := changedPropertyCount(beforeProperties, node.Properties)
+	labelsAdded := addedLabelCount(beforeLabels, node.Labels)
+	if stats != nil {
+		stats.PropertiesSet += propertiesSet
+		stats.LabelsAdded += labelsAdded
+	}
+	return propertiesSet > 0 || labelsAdded > 0, nil
 }
 
 // applySetMapMergeToNode applies SET n += <expr>: every key of the map (or of

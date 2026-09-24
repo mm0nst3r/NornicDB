@@ -26,6 +26,13 @@ func isCallSubquery(cypher string) bool {
 	return hasSubqueryPattern(cypher, callSubqueryRe)
 }
 
+// startsWithCallSubquery reports whether cypher begins with a CALL { } or
+// CALL (vars) { } subquery clause (as opposed to a procedure CALL, or a
+// subquery later in the statement).
+func startsWithCallSubquery(cypher string) bool {
+	return callSubqueryAt(strings.TrimSpace(cypher), 0)
+}
+
 // executeMatchWithCallProcedure handles MATCH ... CALL procedure() ... queries
 // This allows procedure calls to use bound variables from the MATCH clause
 // Example: MATCH (n:Node {id: 'n1'}) CALL db.index.vector.queryNodes('idx', 10, n.embedding) YIELD node, score
@@ -604,6 +611,9 @@ func (e *StorageExecutor) executeMatchWithCallSubquery(ctx context.Context, cyph
 
 	// Execute the subquery for each seed node
 	var combinedResult *ExecuteResult
+	// writeStats counts what the subquery wrote for every seed row; the
+	// statement's result summary reports it (#650).
+	var writeStats *QueryStats
 	correlatedImportCache := make(map[string]map[string]interface{}, 32)
 
 	// Use a unique parameter name to avoid collision with user-provided parameters
@@ -745,6 +755,7 @@ func (e *StorageExecutor) executeMatchWithCallSubquery(ctx context.Context, cyph
 				if err != nil {
 					return nil, localizedError(localization.CypherSubqueriesCorrelatedUnionBranchFailed(i+1, seedID, err), err)
 				}
+				writeStats = mergeQueryStats(writeStats, branchResult.Stats)
 				e.normalizeUnionBranchColumns(branch.innerBody, branchResult)
 
 				if perSeed == nil {
@@ -820,6 +831,7 @@ func (e *StorageExecutor) executeMatchWithCallSubquery(ctx context.Context, cyph
 					// Log but continue with other seeds
 					continue
 				}
+				writeStats = mergeQueryStats(writeStats, innerResult.Stats)
 				innerResult = appendCorrelatedBinding(innerResult, nodePattern.variable, seedNode)
 
 				if combinedResult == nil {
@@ -858,6 +870,7 @@ func (e *StorageExecutor) executeMatchWithCallSubquery(ctx context.Context, cyph
 			// Log but continue with other seeds
 			continue
 		}
+		writeStats = mergeQueryStats(writeStats, innerResult.Stats)
 		innerResult = appendCorrelatedBinding(innerResult, nodePattern.variable, seedNode)
 
 		if combinedResult == nil {
@@ -904,11 +917,11 @@ func (e *StorageExecutor) executeMatchWithCallSubquery(ctx context.Context, cyph
 			Rows:    [][]interface{}{},
 		}
 	}
+	combinedResult.Stats = writeStats
 
 	// If there's something after CALL { }, process it (e.g., RETURN)
 	if afterCall != "" {
-		res, err := e.processAfterCallSubquery(ctx, combinedResult, afterCall)
-		return res, err
+		return e.processAfterCallSubquery(ctx, combinedResult, afterCall)
 	}
 
 	return combinedResult, nil
@@ -1631,12 +1644,7 @@ func (e *StorageExecutor) executeVariableScopeCallInTransactions(ctx context.Con
 		}
 		combined.Rows = append(combined.Rows, batchResult.Rows...)
 		if batchResult.Stats != nil {
-			combined.Stats.NodesCreated += batchResult.Stats.NodesCreated
-			combined.Stats.NodesDeleted += batchResult.Stats.NodesDeleted
-			combined.Stats.RelationshipsCreated += batchResult.Stats.RelationshipsCreated
-			combined.Stats.RelationshipsDeleted += batchResult.Stats.RelationshipsDeleted
-			combined.Stats.PropertiesSet += batchResult.Stats.PropertiesSet
-			combined.Stats.LabelsAdded += batchResult.Stats.LabelsAdded
+			addQueryStats(combined.Stats, batchResult.Stats)
 		}
 	}
 
@@ -1774,12 +1782,7 @@ func (e *StorageExecutor) executeCallInTransactions(ctx context.Context, subquer
 			// Accumulate results
 			combinedResult.Rows = append(combinedResult.Rows, batchResult.Rows...)
 			if batchResult.Stats != nil {
-				combinedResult.Stats.NodesCreated += batchResult.Stats.NodesCreated
-				combinedResult.Stats.NodesDeleted += batchResult.Stats.NodesDeleted
-				combinedResult.Stats.RelationshipsCreated += batchResult.Stats.RelationshipsCreated
-				combinedResult.Stats.RelationshipsDeleted += batchResult.Stats.RelationshipsDeleted
-				combinedResult.Stats.PropertiesSet += batchResult.Stats.PropertiesSet
-				combinedResult.Stats.LabelsAdded += batchResult.Stats.LabelsAdded
+				addQueryStats(combinedResult.Stats, batchResult.Stats)
 			}
 
 			// If we got fewer rows than the batch size, we're done
@@ -1818,12 +1821,7 @@ func (e *StorageExecutor) executeCallInTransactions(ctx context.Context, subquer
 			if batchResult != nil {
 				combinedResult.Rows = append(combinedResult.Rows, batchResult.Rows...)
 				if batchResult.Stats != nil {
-					combinedResult.Stats.NodesCreated += batchResult.Stats.NodesCreated
-					combinedResult.Stats.NodesDeleted += batchResult.Stats.NodesDeleted
-					combinedResult.Stats.RelationshipsCreated += batchResult.Stats.RelationshipsCreated
-					combinedResult.Stats.RelationshipsDeleted += batchResult.Stats.RelationshipsDeleted
-					combinedResult.Stats.PropertiesSet += batchResult.Stats.PropertiesSet
-					combinedResult.Stats.LabelsAdded += batchResult.Stats.LabelsAdded
+					addQueryStats(combinedResult.Stats, batchResult.Stats)
 				}
 			}
 		}
@@ -2036,24 +2034,33 @@ func (e *StorageExecutor) executeChainedCallSubquery(ctx context.Context, seedRe
 	}
 	implicitImportVars := detectReferencedCallSubquerySeedColumns(seedResult, subqueryBody)
 
+	// The statement's counters are those of the clauses before the CALL plus
+	// everything the subquery wrote (#650).
+	stats := mergeQueryStats(nil, seedResult.Stats)
 	combined := &ExecuteResult{Columns: []string{}, Rows: make([][]interface{}, 0)}
 	if hasWith {
 		combined, err = targetExec.executeCorrelatedCallWithSeedRows(ctx, seedResult, innerBody, withVars)
 		if err != nil {
 			return nil, err
 		}
+		stats = mergeQueryStats(stats, combined.Stats)
 	} else if len(implicitImportVars) > 0 {
 		combined, err = targetExec.executeCorrelatedCallWithSeedRows(ctx, seedResult, subqueryBody, implicitImportVars)
 		if err != nil {
 			return nil, err
 		}
+		stats = mergeQueryStats(stats, combined.Stats)
 	} else {
 		innerResult, err := targetExec.executeInternal(ctx, subqueryBody, nil)
 		if err != nil {
 			return nil, localizedError(localization.CypherSubqueriesCallError(err), err)
 		}
+		if innerResult != nil {
+			stats = mergeQueryStats(stats, innerResult.Stats)
+		}
 		combined = crossJoinCallResults(seedResult, innerResult)
 	}
+	combined.Stats = stats
 
 	if afterCall != "" {
 		return e.processAfterCallSubquery(ctx, combined, afterCall)
@@ -2383,6 +2390,7 @@ func (e *StorageExecutor) executeCorrelatedCallWithSeedRows(ctx context.Context,
 
 	combinedCols := append([]string{}, seedResult.Columns...)
 	combinedRows := make([][]interface{}, 0)
+	var stats *QueryStats
 
 	for _, seedRow := range seedResult.Rows {
 		params := make(map[string]interface{}, len(importVars))
@@ -2447,6 +2455,7 @@ func (e *StorageExecutor) executeCorrelatedCallWithSeedRows(ctx context.Context,
 		if err != nil {
 			return nil, localizedError(localization.CypherSubqueriesCallError(err), err)
 		}
+		stats = mergeQueryStats(stats, innerRes.Stats)
 
 		if len(innerRes.Rows) == 0 {
 			// Unit subquery semantics: when a correlated subquery performs side effects
@@ -2482,7 +2491,7 @@ func (e *StorageExecutor) executeCorrelatedCallWithSeedRows(ctx context.Context,
 		}
 	}
 
-	return &ExecuteResult{Columns: combinedCols, Rows: combinedRows}, nil
+	return &ExecuteResult{Columns: combinedCols, Rows: combinedRows, Stats: stats}, nil
 }
 
 func (e *StorageExecutor) tryExecuteCorrelatedBatchedLookup(

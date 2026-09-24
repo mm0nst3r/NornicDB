@@ -970,8 +970,7 @@ func (e *StorageExecutor) executeSet(ctx context.Context, cypher string) (*Execu
 			return nil, err
 		}
 		if setStats != nil {
-			result.Stats.PropertiesSet += setStats.PropertiesSet
-			result.Stats.LabelsAdded += setStats.LabelsAdded
+			addQueryStats(result.Stats, setStats)
 		}
 	}
 

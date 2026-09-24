@@ -63,22 +63,22 @@ func TestApplyUnwindMergeChainEdgeSetAssignment_Branches(t *testing.T) {
 
 	changed, err := applyUnwindMergeChainEdgeSetAssignment(edge, unwindSimpleSetAssignment{mergeMap: true, expr: "props"}, rowValues, resolver)
 	require.NoError(t, err)
-	require.True(t, changed)
+	require.Equal(t, 2, changed)
 	require.Equal(t, "v", edge.Properties["k"])
 	require.EqualValues(t, 1, edge.Properties["n"])
 
 	changed, err = applyUnwindMergeChainEdgeSetAssignment(edge, unwindSimpleSetAssignment{mergeMap: true, expr: "props"}, rowValues, resolver)
 	require.NoError(t, err)
-	require.False(t, changed)
+	require.Equal(t, 0, changed)
 
 	changed, err = applyUnwindMergeChainEdgeSetAssignment(edge, unwindSimpleSetAssignment{prop: "name", expr: "name"}, rowValues, resolver)
 	require.NoError(t, err)
-	require.True(t, changed)
+	require.Equal(t, 1, changed)
 	require.Equal(t, "primary", edge.Properties["name"])
 
 	changed, err = applyUnwindMergeChainEdgeSetAssignment(edge, unwindSimpleSetAssignment{mergeMap: true, expr: "bad"}, map[string]interface{}{"bad": int64(5)}, resolver)
 	require.Error(t, err)
-	require.False(t, changed)
+	require.Equal(t, 0, changed)
 }
 
 func TestTopKRowsHeap_Pop(t *testing.T) {

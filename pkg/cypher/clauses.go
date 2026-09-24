@@ -554,6 +554,18 @@ func (e *StorageExecutor) executeUnwind(ctx context.Context, cypher string) (*Ex
 	items := prepared.items
 	params := getParamsFromContext(ctx)
 
+	// UNWIND ... CALL { ... }: the unwound values are the seed rows of the
+	// subquery, run through the same executor as every other CALL subquery
+	// that follows earlier clauses (per-row import, unit-subquery row
+	// preservation, trailing RETURN / chained CALL).
+	if startsWithCallSubquery(restQuery) {
+		seed := &ExecuteResult{Columns: []string{variable}, Rows: make([][]interface{}, len(items))}
+		for i, item := range items {
+			seed.Rows[i] = []interface{}{item}
+		}
+		return e.executeChainedCallSubquery(ctx, seed, restQuery)
+	}
+
 	// Handle UNWIND ... CREATE/MERGE/MATCH ... mutation patterns.
 	if restQuery != "" {
 		trimmedRest := strings.TrimSpace(restQuery)
@@ -1995,27 +2007,32 @@ func requireUnwindMergeChainParameters(ctx context.Context, plan unwindMergeChai
 // same value semantics as every other SET route (setNodeProperty,
 // setPropertyMapValue, validateSetPropertyValue): null removes the key, maps
 // and entities are not property values, += needs a map / node / relationship.
-// It reports whether the node changed so unchanged rows skip the write.
+// It returns how many properties it changed (added, replaced or removed):
+// the statement counts them as set, and a row that changed none skips the
+// write.
 func applyUnwindMergeChainSetAssignment(
 	node *storage.Node,
 	assignment unwindSimpleSetAssignment,
 	rowValues map[string]interface{},
 	resolveValue func(string, map[string]interface{}) interface{},
-) (bool, error) {
+) (int, error) {
 	if node.Properties == nil {
 		node.Properties = make(map[string]interface{})
 	}
 	prop, value, props, err := unwindMergeChainAssignmentValues(assignment, rowValues, resolveValue)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if props == nil {
-		return setNodePropertyIfChanged(node, prop, value), nil
+		if setNodePropertyIfChanged(node, prop, value) {
+			return 1, nil
+		}
+		return 0, nil
 	}
-	changed := false
+	changed := 0
 	for prop, value := range props {
 		if setNodePropertyIfChanged(node, prop, normalizePropValue(value)) {
-			changed = true
+			changed++
 		}
 	}
 	return changed, nil
@@ -2028,21 +2045,24 @@ func applyUnwindMergeChainEdgeSetAssignment(
 	assignment unwindSimpleSetAssignment,
 	rowValues map[string]interface{},
 	resolveValue func(string, map[string]interface{}) interface{},
-) (bool, error) {
+) (int, error) {
 	if edge.Properties == nil {
 		edge.Properties = make(map[string]interface{})
 	}
 	prop, value, props, err := unwindMergeChainAssignmentValues(assignment, rowValues, resolveValue)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if props == nil {
-		return setRelationshipPropertyIfChanged(edge, prop, value), nil
+		if setRelationshipPropertyIfChanged(edge, prop, value) {
+			return 1, nil
+		}
+		return 0, nil
 	}
-	changed := false
+	changed := 0
 	for prop, value := range props {
 		if setRelationshipPropertyIfChanged(edge, prop, normalizePropValue(value)) {
-			changed = true
+			changed++
 		}
 	}
 	return changed, nil
@@ -2194,16 +2214,16 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 		edge *storage.Edge,
 		assignments []unwindSimpleSetAssignment,
 		values map[string]interface{},
-	) (bool, error) {
-		needsUpdate := false
+	) (int, error) {
+		changed := 0
 		for _, assignment := range assignments {
-			changed, err := applyUnwindMergeChainEdgeSetAssignment(edge, assignment, values, resolveBatchValue)
+			n, err := applyUnwindMergeChainEdgeSetAssignment(edge, assignment, values, resolveBatchValue)
 			if err != nil {
-				return false, err
+				return 0, err
 			}
-			needsUpdate = needsUpdate || changed
+			changed += n
 		}
-		return needsUpdate, nil
+		return changed, nil
 	}
 	// findRelationship prefers the batch-local relationship cache and only
 	// falls back to committed storage when both endpoints predate this batch.
@@ -2262,15 +2282,20 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 						Labels:     append([]string(nil), nodePlan.labels...),
 						Properties: cloneNodePropertiesMap(matchProps),
 					}
+					propertiesSet := 0
 					for _, assignment := range nodePlan.setAssignments {
-						if _, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue); err != nil {
+						n, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue)
+						if err != nil {
 							return nil, true, err
 						}
+						propertiesSet += n
 					}
 					for _, assignment := range nodePlan.onCreateAssignments {
-						if _, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue); err != nil {
+						n, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue)
+						if err != nil {
 							return nil, true, err
 						}
+						propertiesSet += n
 					}
 					if err := validatePropertyValues(node.Properties); err != nil {
 						return nil, true, err
@@ -2284,28 +2309,27 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 					lookupCache[lookupKey] = node
 					e.cacheMergeNode(nodePlan.labels, matchProps, node)
 					result.Stats.NodesCreated++
+					countCreatedEntity(result.Stats, nodePlan.labels, matchProps)
+					result.Stats.PropertiesSet += propertiesSet
 					notifyOnce(node.ID)
 				} else {
-					needsUpdate := false
+					propertiesSet := 0
 					for _, assignment := range nodePlan.setAssignments {
-						changed, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue)
+						n, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue)
 						if err != nil {
 							return nil, true, err
 						}
-						if changed {
-							needsUpdate = true
-						}
+						propertiesSet += n
 					}
 					for _, assignment := range nodePlan.onMatchAssignments {
-						changed, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue)
+						n, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue)
 						if err != nil {
 							return nil, true, err
 						}
-						if changed {
-							needsUpdate = true
-						}
+						propertiesSet += n
 					}
-					if needsUpdate {
+					if propertiesSet > 0 {
+						result.Stats.PropertiesSet += propertiesSet
 						if err := store.UpdateNode(node); err != nil {
 							return nil, true, localizedError(localization.CypherMutationsUnwindMergeUpdateFailed(err), err)
 						}
@@ -2345,17 +2369,16 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 				if node == nil {
 					rowValues[lookupPlan.varName] = nil
 				} else {
-					needsUpdate := false
+					propertiesSet := 0
 					for _, assignment := range lookupPlan.setAssignments {
-						changed, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue)
+						n, err := applyUnwindMergeChainSetAssignment(node, assignment, rowValues, resolveBatchValue)
 						if err != nil {
 							return nil, true, err
 						}
-						if changed {
-							needsUpdate = true
-						}
+						propertiesSet += n
 					}
-					if needsUpdate {
+					if propertiesSet > 0 {
+						result.Stats.PropertiesSet += propertiesSet
 						if err := store.UpdateNode(node); err != nil {
 							return nil, true, localizedError(localization.CypherMutationsUnwindMatchUpdateFailed(err), err)
 						}
@@ -2408,7 +2431,8 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 					EndNode:    toNode.ID,
 					Properties: cloneNodePropertiesMap(matchProps),
 				}
-				if _, err := applyRelationshipAssignments(edge, relPlan.setAssignments, rowValues); err != nil {
+				propertiesSet, err := applyRelationshipAssignments(edge, relPlan.setAssignments, rowValues)
+				if err != nil {
 					return nil, true, localizedError(localization.CypherMutationsUnwindRelationshipAssignmentFailed(err), err)
 				}
 				createdEdge, created, err := createRelationshipForMerge(e, store, edge, matchProps)
@@ -2420,10 +2444,13 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 				relationshipKnown[relKey] = true
 				if created {
 					result.Stats.RelationshipsCreated++
+					countCreatedEntity(result.Stats, nil, matchProps)
+					result.Stats.PropertiesSet += propertiesSet
 					relationshipChanged = true
 				} else if changed, assignErr := applyRelationshipAssignments(createdEdge, relPlan.setAssignments, rowValues); assignErr != nil {
 					return nil, true, localizedError(localization.CypherMutationsUnwindRelationshipAssignmentFailed(assignErr), assignErr)
-				} else if changed {
+				} else if changed > 0 {
+					result.Stats.PropertiesSet += changed
 					if err := store.UpdateEdge(createdEdge); err != nil {
 						return nil, true, localizedError(localization.CypherMutationsUnwindRelationshipUpdateFailed(err), err)
 					}
@@ -2432,7 +2459,8 @@ func (e *StorageExecutor) executeUnwindMergeChainBatch(ctx context.Context, unwi
 				}
 			} else if changed, assignErr := applyRelationshipAssignments(edge, relPlan.setAssignments, rowValues); assignErr != nil {
 				return nil, true, localizedError(localization.CypherMutationsUnwindRelationshipAssignmentFailed(assignErr), assignErr)
-			} else if changed {
+			} else if changed > 0 {
+				result.Stats.PropertiesSet += changed
 				if err := store.UpdateEdge(edge); err != nil {
 					return nil, true, localizedError(localization.CypherMutationsUnwindRelationshipUpdateFailed(err), err)
 				}
@@ -5305,9 +5333,7 @@ func (e *StorageExecutor) executeForeachWithContext(ctx context.Context, cypher 
 		}
 
 		if updateResult != nil && updateResult.Stats != nil {
-			result.Stats.NodesCreated += updateResult.Stats.NodesCreated
-			result.Stats.PropertiesSet += updateResult.Stats.PropertiesSet
-			result.Stats.RelationshipsCreated += updateResult.Stats.RelationshipsCreated
+			addQueryStats(result.Stats, updateResult.Stats)
 		}
 	}
 
@@ -5323,9 +5349,7 @@ func (e *StorageExecutor) executeForeachWithContext(ctx context.Context, cypher 
 			if after.Stats == nil {
 				after.Stats = &QueryStats{}
 			}
-			after.Stats.NodesCreated += result.Stats.NodesCreated
-			after.Stats.PropertiesSet += result.Stats.PropertiesSet
-			after.Stats.RelationshipsCreated += result.Stats.RelationshipsCreated
+			addQueryStats(after.Stats, result.Stats)
 			return after, nil
 		}
 	}

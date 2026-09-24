@@ -302,12 +302,18 @@ func (e *StorageExecutor) executeUnwindMultiMatchCreateBatch(
 			return nil, true, localizedError(localization.CypherMergeBulkCreateNodesFailed(err), err)
 		}
 		result.Stats.NodesCreated += len(pendingNodes)
+		for _, node := range pendingNodes {
+			countCreatedEntity(result.Stats, node.Labels, node.Properties)
+		}
 	}
 	if len(pendingEdges) > 0 {
 		if err := store.BulkCreateEdges(pendingEdges); err != nil {
 			return nil, true, localizedError(localization.CypherMergeBulkCreateEdgesFailed(err), err)
 		}
 		result.Stats.RelationshipsCreated += len(pendingEdges)
+		for _, edge := range pendingEdges {
+			countCreatedEntity(result.Stats, nil, edge.Properties)
+		}
 	}
 
 	e.markUnwindMultiMatchCreateBatchUsed()

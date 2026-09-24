@@ -57,5 +57,6 @@ func TestUnwindCreateSetMergeWithAliasPreservesBindingsAndStats(t *testing.T) {
 	require.ElementsMatch(t, [][]interface{}{{int64(0), "zero"}, {int64(1), "one"}}, result.Rows)
 	require.Equal(t, 2, result.Stats.NodesCreated)
 	require.Equal(t, 2, result.Stats.RelationshipsCreated)
-	require.Equal(t, 4, result.Stats.PropertiesSet)
+	// seed from each CREATE plus k and name from each SET, as Neo4j counts them (#651).
+	require.Equal(t, 6, result.Stats.PropertiesSet)
 }
