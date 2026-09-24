@@ -83,6 +83,9 @@ func (e *StorageExecutor) evaluateExpressionWithContextFull(ctx context.Context,
 	if subquery, ok := standaloneCountSubquery(expr); ok {
 		return int64(len(e.evaluateBoundPatternRows(ctx, subquery, nodes, rels)))
 	}
+	if isStandaloneExistsSubquery(expr) {
+		return e.evaluateExistsSubqueryValue(ctx, expr, nodes, rels)
+	}
 	// Direct $param resolution preserves declared types end-to-end.
 	// substituteParams's type-preserving short-circuit leaves "$name" as
 	// a literal here for composite values; without this branch the

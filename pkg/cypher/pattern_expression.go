@@ -69,6 +69,42 @@ func standaloneCountSubquery(expr string) (string, bool) {
 	return strings.TrimSpace(expr[open+1 : close]), true
 }
 
+// isStandaloneExistsSubquery reports whether expr is exactly one
+// EXISTS { ... } subquery expression, with nothing before EXISTS and nothing
+// after its closing brace. Such an expression is a boolean value wherever an
+// expression is allowed (RETURN, WITH, list elements, function arguments), not
+// only in WHERE; compound expressions reach it through their operands.
+func isStandaloneExistsSubquery(expr string) bool {
+	if len(expr) < len("EXISTS{}") || (expr[0] != 'E' && expr[0] != 'e') || !matchKeywordAt(expr, 0, "EXISTS") {
+		return false
+	}
+	open := skipSpaces(expr, len("EXISTS"))
+	if open >= len(expr) || expr[open] != '{' {
+		return false
+	}
+	return findMatchingDelimiter(expr, open, '{', '}') == len(expr)-1
+}
+
+// evaluateExistsSubqueryValue evaluates a standalone EXISTS { ... } expression
+// against the entities bound in the current row. It shares the WHERE
+// predicate's correlated evaluation (evaluateRowExistsPredicate), so an EXISTS
+// value and an EXISTS filter always agree.
+func (e *StorageExecutor) evaluateExistsSubqueryValue(ctx context.Context, expr string, nodes map[string]*storage.Node, rels map[string]*storage.Edge) bool {
+	values := make(map[string]interface{}, len(nodes)+len(rels))
+	for name, node := range nodes {
+		if node != nil {
+			values[name] = node
+		}
+	}
+	for name, relationship := range rels {
+		if relationship != nil {
+			values[name] = relationship
+		}
+	}
+	matched, _ := e.evaluateRowExistsPredicate(ctx, expr, values)
+	return matched
+}
+
 func (e *StorageExecutor) evaluateBoundPatternRows(ctx context.Context, pattern string, nodes map[string]*storage.Node, rels map[string]*storage.Edge) []traversalOptRow {
 	pattern = strings.TrimSpace(pattern)
 	if strings.HasPrefix(strings.ToUpper(pattern), "MATCH ") {
@@ -168,6 +204,10 @@ func (e *StorageExecutor) evaluatePatternComprehensionFromRow(ctx context.Contex
 func (e *StorageExecutor) evaluateRowExpressionWithContext(ctx context.Context, expr string, values pipelineRow) (interface{}, bool) {
 	if pattern, projection, ok := splitPatternComprehension(expr); ok {
 		return e.evaluatePatternComprehensionFromRow(ctx, pattern, projection, values), true
+	}
+	if trimmed := strings.TrimSpace(expr); isStandaloneExistsSubquery(trimmed) {
+		matched, _ := e.evaluateRowExistsPredicate(ctx, trimmed, values)
+		return matched, true
 	}
 	// Pattern comprehensions can be nested in scalar functions. Resolve the
 	// graph-producing argument here, at the shared context-aware expression
