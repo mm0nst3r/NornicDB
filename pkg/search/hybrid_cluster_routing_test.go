@@ -94,10 +94,10 @@ func TestApplyBM25SeedHints_AppliesPreferredSeedsWhenAvailable(t *testing.T) {
 	require.NoError(t, svc.clusterIndex.Add("doc-a", []float32{1, 0}))
 	require.NoError(t, svc.clusterIndex.Add("doc-b", []float32{0, 1}))
 
-	svc.fulltextIndex = &seedOverrideFulltext{
+	svc.setFulltext(&seedOverrideFulltext{
 		FulltextIndex: NewFulltextIndex(),
 		seedIDs:       []string{"doc-b", "missing-id"},
-	}
+	})
 
 	svc.applyBM25SeedHints()
 
@@ -112,10 +112,10 @@ func TestApplyBM25SeedHints_NoSeedsIsNoOp(t *testing.T) {
 	require.NoError(t, svc.clusterIndex.Add("doc-a", []float32{1, 0}))
 	require.NoError(t, svc.clusterIndex.Add("doc-b", []float32{0, 1}))
 
-	svc.fulltextIndex = &seedOverrideFulltext{
+	svc.setFulltext(&seedOverrideFulltext{
 		FulltextIndex: NewFulltextIndex(),
 		seedIDs:       nil,
-	}
+	})
 
 	svc.applyBM25SeedHints()
 

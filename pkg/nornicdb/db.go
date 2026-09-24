@@ -1673,7 +1673,11 @@ func (db *DB) SetDefaultEmbedConfig(defaultConfig *embed.Config) {
 	db.mu.Lock()
 	eq := db.embedQueue
 	db.mu.Unlock()
-	if eq == nil || eq.embedder == nil {
+	if eq == nil {
+		return
+	}
+	defaultEmbedder := eq.currentEmbedder()
+	if defaultEmbedder == nil {
 		return
 	}
 	key := embedConfigKey(defaultConfig)
@@ -1681,7 +1685,7 @@ func (db *DB) SetDefaultEmbedConfig(defaultConfig *embed.Config) {
 	if db.embedderRegistry == nil {
 		db.embedderRegistry = make(map[string]embed.Embedder)
 	}
-	db.embedderRegistry[key] = eq.embedder
+	db.embedderRegistry[key] = defaultEmbedder
 	db.defaultEmbedKey = key
 	db.embedderRegistryMu.Unlock()
 }
@@ -1716,15 +1720,16 @@ func (db *DB) getOrCreateEmbedderForDB(dbName string) (embed.Embedder, error) {
 	embedQueue := db.embedQueue
 	db.mu.RUnlock()
 
-	if fn == nil || embedQueue == nil || embedQueue.embedder == nil {
-		if embedQueue != nil {
-			return embedQueue.embedder, nil
-		}
+	if embedQueue == nil {
 		return nil, nil
+	}
+	fallback := embedQueue.currentEmbedder()
+	if fn == nil || fallback == nil {
+		return fallback, nil
 	}
 	cfg, err := fn(dbName)
 	if err != nil || cfg == nil {
-		return embedQueue.embedder, nil
+		return fallback, nil
 	}
 	key := embedConfigKey(cfg)
 	db.embedderRegistryMu.RLock()
@@ -1779,7 +1784,7 @@ func (db *DB) getOrCreateEmbedderForDB(dbName string) (embed.Embedder, error) {
 		}
 		db.embedderRegistryMu.RUnlock()
 		// Creation completed but no registry entry (likely create failed). Fall back.
-		return embedQueue.embedder, nil
+		return fallback, nil
 	}
 	ch := make(chan struct{})
 	db.embedderCreate[key] = ch
@@ -1803,7 +1808,7 @@ func (db *DB) getOrCreateEmbedderForDB(dbName string) (embed.Embedder, error) {
 	db.embedderCreateMu.Unlock()
 
 	if createErr != nil || newEmbedder == nil {
-		return embedQueue.embedder, nil
+		return fallback, nil
 	}
 	return newEmbedder, nil
 }
@@ -2287,10 +2292,11 @@ func (db *DB) embedQueryChunksForDBWithEmbedder(ctx context.Context, dbName stri
 // EmbedQueryChunks returns embedder-safe query chunks and one embedding per chunk.
 // This is the preferred API for search paths that should compare best-of chunks.
 func (db *DB) EmbedQueryChunks(ctx context.Context, query string) ([]string, [][]float32, error) {
-	if db.embedQueue == nil || db.embedQueue.embedder == nil {
+	emb := db.globalEmbedder()
+	if emb == nil {
 		return nil, nil, nil
 	}
-	return db.embedQueryChunksWithEmbedder(ctx, db.embedQueue.embedder, query)
+	return db.embedQueryChunksWithEmbedder(ctx, emb, query)
 }
 
 // EmbedQueryChunksForDB returns per-chunk query embeddings using the embedder configured for a database.
@@ -2339,18 +2345,30 @@ func (db *DB) chunkQueryWithEmbedder(ctx context.Context, emb embed.Embedder, qu
 // EmbedQuery generates an embedding for a search query.
 // Returns nil if embeddings are not enabled or embedder is not yet set (e.g. still loading).
 func (db *DB) EmbedQuery(ctx context.Context, query string) ([]float32, error) {
-	if db.embedQueue == nil || db.embedQueue.embedder == nil {
+	emb := db.globalEmbedder()
+	if emb == nil {
 		return nil, nil // Not an error - just no embedding available
 	}
-	return db.embedQueryWithEmbedder(ctx, db.embedQueue.embedder, query)
+	return db.embedQueryWithEmbedder(ctx, emb, query)
 }
 
 // ChunkQuery splits a search query using the configured global embedder.
 func (db *DB) ChunkQuery(ctx context.Context, query string) ([]string, error) {
-	if db.embedQueue == nil || db.embedQueue.embedder == nil {
+	emb := db.globalEmbedder()
+	if emb == nil {
 		return []string{query}, nil
 	}
-	return db.chunkQueryWithEmbedder(ctx, db.embedQueue.embedder, query)
+	return db.chunkQueryWithEmbedder(ctx, emb, query)
+}
+
+// globalEmbedder returns the embed queue's current embedder, or nil when
+// embeddings are disabled or the model is still loading. The embedder is
+// read under the queue's lock because SetEmbedder can replace it at any time.
+func (db *DB) globalEmbedder() embed.Embedder {
+	if db.embedQueue == nil {
+		return nil
+	}
+	return db.embedQueue.currentEmbedder()
 }
 
 // EmbedQueryForDB generates an embedding for a search query using the embedder for the given database.

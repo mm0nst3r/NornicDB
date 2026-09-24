@@ -46,7 +46,7 @@ func TestServiceWarmAndIntrospectionHelpers(t *testing.T) {
 		t.Fatal("MarkWarmDone should close warmDone")
 	}
 
-	svc.fulltextIndex = nil
+	svc.setFulltext(nil)
 	require.Equal(t, 0, svc.FulltextDocCount())
 
 	svc.MarkReadyDisabled()

@@ -303,7 +303,7 @@ func TestFullTextSearchOnlyUsesAdaptiveWidening(t *testing.T) {
 		{ID: "nornic:doc-2", Score: 0.8},
 		{ID: "nornic:doc-3", Score: 0.7},
 	}}
-	service.fulltextIndex = index
+	service.setFulltext(index)
 	opts := adaptiveOverfetchTestOptions(2)
 	opts.Types = []string{"Doc"}
 

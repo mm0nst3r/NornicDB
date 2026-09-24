@@ -725,10 +725,13 @@ type Service struct {
 	vectorMetadataBytes    int64
 	logger                 *slog.Logger
 	localizer              *localization.Manager
-	// Primary BM25 implementation used by the live search pipeline.
-	fulltextIndex bm25Index
-	bm25Analyzer  Analyzer
-	bm25Engine    string
+	// Primary BM25 implementation used by the live search pipeline, behind an
+	// atomic reference: MarkReadyDisabled and the index build swap in the
+	// disabled stub while searches, index writes and observability read it
+	// concurrently. Read it with fulltext(), replace it with setFulltext().
+	fulltextRef  atomic.Pointer[bm25IndexRef]
+	bm25Analyzer Analyzer
+	bm25Engine   string
 	// fulltextProperties is an ordered allowlist. Empty preserves all-property indexing.
 	fulltextProperties []string
 	reranker           Reranker
@@ -1096,7 +1099,6 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 		vectorStorageMode:          vectorStorageMode,
 		indexCapacityByNode:        make(map[string]indexCapacityUsage),
 		indexCapacityByEdge:        make(map[string]indexCapacityUsage),
-		fulltextIndex:              fulltextIndex,
 		bm25Analyzer:               analyzer,
 		bm25Engine:                 selectedBM25Engine,
 		minEmbeddingsForClustering: DefaultMinEmbeddingsForClustering,
@@ -1116,6 +1118,7 @@ func NewServiceWithDimensionsAndBM25EngineAndOptions(engine storage.Engine, dime
 		lifecycleCtx:               lifecycleCtx,
 		lifecycleCancel:            lifecycleCancel,
 	}
+	svc.setFulltext(fulltextIndex)
 	svc.completePolicy.Store(defaultCompleteContinuationPolicy())
 	if options != nil {
 		svc.bm25MemoryMaxBytes = options.BM25MemoryMaxBytes
@@ -1296,8 +1299,27 @@ func (s *Service) closeWarmDone() {
 // path are what actually disable behaviour. Replacing fulltextIndex with
 // the no-op stub is safe because the bm25Index interface is small and all
 // call sites go through it.
+// bm25IndexRef holds the live BM25 index for Service.fulltextRef.
+type bm25IndexRef struct {
+	index bm25Index
+}
+
+// fulltext returns the live BM25 index (nil when none is set).
+func (s *Service) fulltext() bm25Index {
+	if ref := s.fulltextRef.Load(); ref != nil {
+		return ref.index
+	}
+	return nil
+}
+
+// setFulltext replaces the live BM25 index; concurrent readers see either the
+// old or the new index, never a torn value.
+func (s *Service) setFulltext(index bm25Index) {
+	s.fulltextRef.Store(&bm25IndexRef{index: index})
+}
+
 func (s *Service) MarkReadyDisabled() {
-	s.fulltextIndex = disabledBM25Index{}
+	s.setFulltext(disabledBM25Index{})
 	s.setBuildPhase("ready")
 	s.ready.Store(true)
 }
@@ -1328,10 +1350,10 @@ func (s *Service) VectorEnabled() bool { return s.vectorEnabled.Load() }
 // index. Used by tests and observability to confirm whether writes are
 // actually landing in BM25 or being short-circuited by the disabled flag.
 func (s *Service) FulltextDocCount() int {
-	if s.fulltextIndex == nil {
+	if s.fulltext() == nil {
 		return 0
 	}
-	return s.fulltextIndex.Count()
+	return s.fulltext().Count()
 }
 
 // IsReady reports whether the search indexes are fully built and ready.
@@ -2057,11 +2079,11 @@ func (s *Service) persistBaseIndexes() error {
 	}
 	var persistErr error
 	if ftPath != "" {
-		if !s.fulltextIndex.IsDirty() {
+		if !s.fulltext().IsDirty() {
 			s.logPrintf("📇 Persist: BM25 skip (unchanged)")
 		} else {
 			s.logPrintf("📇 Persist: saving BM25 to %s...", ftPath)
-			if err := s.fulltextIndex.SaveNoCopy(ftPath); err != nil {
+			if err := s.fulltext().SaveNoCopy(ftPath); err != nil {
 				s.logPrintf("⚠️ Background persist: failed to save BM25 index to %s: %v", ftPath, err)
 				persistErr = errors.Join(persistErr, fmt.Errorf("save BM25 index: %w", err))
 			} else {
@@ -2184,12 +2206,12 @@ func (s *Service) persistBM25Background(fulltextPath string) {
 	if fulltextPath == "" || s.buildInProgress.Load() {
 		return
 	}
-	if !s.fulltextIndex.IsDirty() {
+	if !s.fulltext().IsDirty() {
 		s.logPrintf("📇 Background persist: BM25 skip (unchanged)")
 		return
 	}
 	s.logPrintf("📇 Persist: saving BM25 to %s...", fulltextPath)
-	if err := s.fulltextIndex.Save(fulltextPath); err != nil {
+	if err := s.fulltext().Save(fulltextPath); err != nil {
 		s.logPrintf("⚠️ Background persist: failed to save BM25 index to %s: %v", fulltextPath, err)
 		return
 	}
@@ -2821,8 +2843,8 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 		// we must remove the old vector IDs first, otherwise they become orphaned
 		// in the in-memory index and EmbeddingCount() will drift upward over time.
 		if skipVectorMutation {
-			if s.fulltextIndex != nil {
-				s.fulltextIndex.Remove(nodeIDStr)
+			if s.fulltext() != nil {
+				s.fulltext().Remove(nodeIDStr)
 			}
 		} else {
 			s.removeNodeLocked(nodeIDStr)
@@ -3009,7 +3031,7 @@ func (s *Service) indexNodeLocked(node *storage.Node, skipFulltext bool) error {
 	if !skipFulltext {
 		text := s.extractSearchableText(node)
 		if text != "" {
-			s.fulltextIndex.Index(string(node.ID), text)
+			s.fulltext().Index(string(node.ID), text)
 		}
 	}
 	s.commitNodeIndexCapacityLocked(nodeIDStr, capacityUsage)
@@ -3161,8 +3183,8 @@ func (s *Service) removeNodeLocked(nodeIDStr string) {
 	if s.gpuEmbeddingIndex != nil {
 		_ = s.gpuEmbeddingIndex.Remove(nodeIDStr)
 	}
-	if s.fulltextIndex != nil {
-		s.fulltextIndex.Remove(nodeIDStr)
+	if s.fulltext() != nil {
+		s.fulltext().Remove(nodeIDStr)
 	}
 
 	// Keep the active graph current with the canonical vector store.
@@ -3503,7 +3525,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 	vecOn := s.vectorEnabled.Load()
 	if !bm25On && !vecOn {
 		s.logPrintf("📇 Search: both BM25 and vector disabled — skipping index build")
-		s.fulltextIndex = disabledBM25Index{}
+		s.setFulltext(disabledBM25Index{})
 		s.setBuildPhase("ready")
 		s.ready.Store(true)
 		return nil
@@ -3528,7 +3550,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 	// and the iteration loop's vector-side adds become no-ops in IndexNode.
 	if !bm25On {
 		s.logPrintf("📇 Search: BM25 disabled — skipping fulltext build")
-		s.fulltextIndex = disabledBM25Index{}
+		s.setFulltext(disabledBM25Index{})
 	}
 	if sec := envutil.GetInt("NORNICDB_SEARCH_BUILD_PROGRESS_LOG_SEC", 15); sec > 0 {
 		interval := time.Duration(sec) * time.Second
@@ -3617,8 +3639,8 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 	}
 
 	if fulltextPath != "" {
-		_ = s.fulltextIndex.Load(fulltextPath)
-		if s.fulltextIndex.Count() == 0 {
+		_ = s.fulltext().Load(fulltextPath)
+		if s.fulltext().Count() == 0 {
 			if info, statErr := security.RootedStat(fulltextPath); statErr == nil {
 				s.logPrintf("📇 BuildIndexes: BM25 file present but loaded 0 docs (%s, %d bytes); rebuilding from storage",
 					fulltextPath, info.Size())
@@ -3660,8 +3682,8 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		}
 	}
 
-	if forceFulltextRebuild && s.fulltextIndex.Count() > 0 {
-		s.fulltextIndex.Clear()
+	if forceFulltextRebuild && s.fulltext().Count() > 0 {
+		s.fulltext().Clear()
 	}
 	if forceVectorRebuild {
 		restartVectorStore = true
@@ -3682,7 +3704,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 	// When both paths are set and both indexes have content, skip the full iteration.
 	vectorCount := s.EmbeddingCount()
 	shouldClearStaleDisk := false
-	if storageNodeCount == 0 && (s.fulltextIndex.Count() > 0 || vectorCount > 0) {
+	if storageNodeCount == 0 && (s.fulltext().Count() > 0 || vectorCount > 0) {
 		// Only clear disk-backed indexes when we can prove storage changed after
 		// those artifacts were written (e.g., DB dropped/recreated with same name).
 		// This avoids breaking valid "disk-only bootstrap" test/restore scenarios.
@@ -3696,7 +3718,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 	}
 	if shouldClearStaleDisk {
 		s.logPrintf("📇 BuildIndexes: storage is empty and newer than disk indexes; clearing stale search artifacts")
-		s.fulltextIndex.Clear()
+		s.fulltext().Clear()
 		vectorCount = 0
 		restartVectorStore = true
 		forceHNSWRebuild = true
@@ -3717,17 +3739,17 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		}
 		s.hnswMu.Unlock()
 	}
-	if fulltextPath != "" && vectorPath != "" && s.fulltextIndex.Count() > 0 && vectorCount > 0 {
+	if fulltextPath != "" && vectorPath != "" && s.fulltext().Count() > 0 && vectorCount > 0 {
 		skipIteration = true
 		s.logPrintf("📇 Search indexes loaded from disk (BM25: %d docs, vector: %d); skipping node-iteration rebuild",
-			s.fulltextIndex.Count(), vectorCount)
+			s.fulltext().Count(), vectorCount)
 	}
 	// When only BM25 loaded with content but vector is empty, we still iterate to build vectors
 	// but skip re-indexing fulltext so we don't throw away the on-disk BM25.
-	skipFulltextRebuild := fulltextPath != "" && s.fulltextIndex.Count() > 0 && vectorCount == 0
+	skipFulltextRebuild := fulltextPath != "" && s.fulltext().Count() > 0 && vectorCount == 0
 	if skipFulltextRebuild {
 		s.logPrintf("📇 Search indexes loaded from disk (BM25: %d docs); rebuilding vector index only",
-			s.fulltextIndex.Count())
+			s.fulltext().Count())
 	}
 	// When BM25 is disabled, also skip the fulltext side of the iteration
 	// loop. Otherwise the loop still calls extractSearchableText (which walks
@@ -3794,7 +3816,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 				// Beam factor is query-only tuning and does not affect the persisted
 				// graph, so apply it without paying for an index rebuild.
 				loaded.setSearchBeamFactor(want.SearchBeamFactor)
-				loaded.SetBuildLexicalHints(lexicalHintValues(s.hnswLexicalSeedHints(s.fulltextIndex, want.M)))
+				loaded.SetBuildLexicalHints(lexicalHintValues(s.hnswLexicalSeedHints(s.fulltext(), want.M)))
 				s.hnswMu.Lock()
 				s.hnswIndex = loaded
 				s.hnswMu.Unlock()
@@ -3913,7 +3935,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 					if end > len(entries) {
 						end = len(entries)
 					}
-					s.fulltextIndex.IndexBatch(entries[i:end])
+					s.fulltext().IndexBatch(entries[i:end])
 					// Keep heartbeat progress moving during heavy BM25 batch work.
 					s.buildProcessed.Store(int64(count + end))
 				}
@@ -3979,9 +4001,9 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 			return err
 		}
 		// Drop BM25 from RAM during HNSW/IVF build to keep memory bounded.
-		expectedFulltextCount := s.fulltextIndex.Count()
+		expectedFulltextCount := s.fulltext().Count()
 		if fulltextPath != "" {
-			s.fulltextIndex.Clear()
+			s.fulltext().Clear()
 			s.logPrintf("📇 BuildIndexes: cleared BM25 in-memory state (will reload after warmup)")
 		}
 		s.logPrintf("📇 BuildIndexes: starting vector pipeline warmup (k-means may run)...")
@@ -4036,7 +4058,7 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 				if end > len(entries) {
 					end = len(entries)
 				}
-				s.fulltextIndex.IndexBatch(entries[i:end])
+				s.fulltext().IndexBatch(entries[i:end])
 				// Keep heartbeat progress moving during heavy BM25 batch work.
 				s.buildProcessed.Store(int64(count + end))
 			}
@@ -4096,9 +4118,9 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 		return err
 	}
 	// Drop BM25 from RAM during HNSW/IVF build to keep memory bounded.
-	expectedFulltextCount := s.fulltextIndex.Count()
+	expectedFulltextCount := s.fulltext().Count()
 	if fulltextPath != "" {
-		s.fulltextIndex.Clear()
+		s.fulltext().Clear()
 		s.logPrintf("📇 BuildIndexes: cleared BM25 in-memory state (will reload after warmup)")
 	}
 	s.logPrintf("📇 BuildIndexes: starting vector pipeline warmup (k-means may run)...")
@@ -4115,10 +4137,10 @@ func (s *Service) BuildIndexes(ctx context.Context) error {
 }
 
 func (s *Service) reloadFulltextAfterWarmup(path string, expectedCount int) error {
-	if err := s.fulltextIndex.Load(path); err != nil {
+	if err := s.fulltext().Load(path); err != nil {
 		return fmt.Errorf("reload BM25 index after vector warmup: %w", err)
 	}
-	if actual := s.fulltextIndex.Count(); actual != expectedCount {
+	if actual := s.fulltext().Count(); actual != expectedCount {
 		return fmt.Errorf("reload BM25 index after vector warmup: document count mismatch: got %d, want %d", actual, expectedCount)
 	}
 	return nil
@@ -4420,7 +4442,7 @@ func (s *Service) rrfHybridSearch(ctx context.Context, query string, embedding [
 	// See: maybeAutoSetVectorDimensions(), ClearVectorIndex(), SetGPUManager().
 	s.mu.RLock()
 	reranker := s.reranker
-	fulltextIndex := s.fulltextIndex
+	fulltextIndex := s.fulltext()
 	s.mu.RUnlock()
 
 	ctx = withQueryText(ctx, query)
@@ -5233,7 +5255,7 @@ func (s *Service) switchBruteStrategy(target strategyMode) bool {
 func (s *Service) buildHNSWForTransition(ctx context.Context, dimensions int, vi *VectorIndex, vfs *VectorFileStore) (*HNSWIndex, error) {
 	config := HNSWConfigFromEnv()
 	s.mu.RLock()
-	fulltext := s.fulltextIndex
+	fulltext := s.fulltext()
 	s.mu.RUnlock()
 	seedHints := s.hnswLexicalSeedHints(fulltext, config.M)
 	if vfs != nil && vfs.Count() > 0 {
@@ -5601,7 +5623,7 @@ func (s *Service) getOrCreateHNSWIndex(ctx context.Context, dimensions int) (*HN
 	s.mu.RLock()
 	vfs := s.vectorFileStore
 	vi := s.vectorIndex
-	ft := s.fulltextIndex
+	ft := s.fulltext()
 	s.mu.RUnlock()
 	seedHints := s.hnswLexicalSeedHints(ft, config.M)
 	if len(seedHints) > 0 {
@@ -5786,7 +5808,7 @@ func (s *Service) maybeRebuildHNSW(ctx context.Context, tombstoneRatioThreshold,
 	s.mu.RLock()
 	vfs := s.vectorFileStore
 	vi := s.vectorIndex
-	fulltext := s.fulltextIndex
+	fulltext := s.fulltext()
 	s.mu.RUnlock()
 
 	rebuilt := NewHNSWIndex(old.dimensions, old.config)
@@ -6668,7 +6690,7 @@ func (s *Service) vectorSearchOnly(ctx context.Context, embedding []float32, opt
 func (s *Service) fullTextSearchOnly(ctx context.Context, query string, opts *SearchOptions) (*SearchResponse, error) {
 	totalStart := time.Now()
 	s.mu.RLock()
-	ft := s.fulltextIndex
+	ft := s.fulltext()
 	s.mu.RUnlock()
 	if ft == nil {
 		return &SearchResponse{

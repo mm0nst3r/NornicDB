@@ -42,7 +42,7 @@ func TestBuildIndexes_BothDisabled(t *testing.T) {
 
 	require.NoError(t, svc.BuildIndexes(context.Background()))
 	assert.True(t, svc.IsReady())
-	assert.Equal(t, 0, svc.fulltextIndex.Count(), "no-op stub returns 0")
+	assert.Equal(t, 0, svc.fulltext().Count(), "no-op stub returns 0")
 
 	// vectorIndex stays non-nil so existing GetDimensions/Count calls
 	// don't panic; the flag guards in IndexNode and Search are what
@@ -75,8 +75,8 @@ func TestBuildIndexes_BM25Disabled(t *testing.T) {
 	require.NoError(t, svc.BuildIndexes(context.Background()))
 	assert.True(t, svc.IsReady())
 	// The no-op stub reports zero count and empty searches.
-	assert.Equal(t, 0, svc.fulltextIndex.Count())
-	results := svc.fulltextIndex.Search("anything", 10)
+	assert.Equal(t, 0, svc.fulltext().Count())
+	results := svc.fulltext().Search("anything", 10)
 	assert.Empty(t, results)
 }
 
@@ -91,7 +91,7 @@ func TestIndexNode_BothDisabled(t *testing.T) {
 		Properties: map[string]interface{}{"name": "alice"},
 	}
 	require.NoError(t, svc.IndexNode(node))
-	assert.Equal(t, 0, svc.fulltextIndex.Count())
+	assert.Equal(t, 0, svc.fulltext().Count())
 }
 
 func TestVectorQueryNodes_PassiveWhenLiveIndexEmpty(t *testing.T) {
@@ -240,6 +240,6 @@ func TestMarkReadyDisabled(t *testing.T) {
 	svc.MarkReadyDisabled()
 
 	assert.True(t, svc.IsReady())
-	assert.Equal(t, 0, svc.fulltextIndex.Count(), "no-op stub reports zero")
+	assert.Equal(t, 0, svc.fulltext().Count(), "no-op stub reports zero")
 	assert.Equal(t, 0, svc.EmbeddingCount(), "no embeddings populated")
 }

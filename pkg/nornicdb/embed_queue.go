@@ -249,6 +249,15 @@ func (ew *EmbedWorker) SetEmbedder(embedder embed.Embedder) {
 	ew.TriggerImmediate()
 }
 
+// currentEmbedder returns the embedder under ew.mu. SetEmbedder can replace
+// it at any time (async model loading starts the workers before the model
+// is set), so every read goes through here instead of the bare field.
+func (ew *EmbedWorker) currentEmbedder() embed.Embedder {
+	ew.mu.Lock()
+	defer ew.mu.Unlock()
+	return ew.embedder
+}
+
 // SetEmbedderResolver selects a provider for a fully-qualified node ID. This
 // supports per-database model spaces without coupling the worker to a provider.
 func (ew *EmbedWorker) SetEmbedderResolver(resolver func(storage.NodeID) (embed.Embedder, error)) {
@@ -650,7 +659,7 @@ func (ew *EmbedWorker) worker() {
 	fmt.Println("🧠 Embed worker started")
 
 	// Wait for embedder to be set (async model loading)
-	if ew.embedder == nil {
+	if ew.currentEmbedder() == nil {
 		fmt.Println("⏳ Waiting for embedding model to load...")
 		for {
 			ew.mu.Lock()
@@ -770,16 +779,17 @@ func (ew *EmbedWorker) processUntilEmpty() {
 func (ew *EmbedWorker) processNextBatch() bool {
 	ew.mu.Lock()
 	hasResolver := ew.embedderResolver != nil
+	embedder := ew.embedder
 	ew.mu.Unlock()
 	if hasResolver {
 		return ew.processNextResolvedBatch()
 	}
-	if provider, ok := ew.embedder.(embed.DocumentPropertyChunkEmbedder); ok && provider.UsesDocumentProperties() {
+	if provider, ok := embedder.(embed.DocumentPropertyChunkEmbedder); ok && provider.UsesDocumentProperties() {
 		return ew.processNextNode()
 	}
-	if batcher, ok := ew.embedder.(embed.DocumentBatchChunkEmbedder); ok && ew.config.EmbedBatchSize > 1 {
+	if batcher, ok := embedder.(embed.DocumentBatchChunkEmbedder); ok && ew.config.EmbedBatchSize > 1 {
 		if _, indexed := ew.storage.(EmbeddingIndexManager); indexed {
-			return ew.processNextDocumentBatch(batcher)
+			return ew.processNextDocumentBatch(embedder, batcher)
 		}
 	}
 	return ew.processNextNode()
@@ -997,7 +1007,11 @@ func (ew *EmbedWorker) processClaimedNode(node *storage.Node, provider embed.Emb
 	return ew.persistEmbeddedNode(node, embeddings, providerMeta, provider)
 }
 
-func (ew *EmbedWorker) processNextDocumentBatch(batcher embed.DocumentBatchChunkEmbedder) bool {
+// processNextDocumentBatch embeds a batch of nodes with batcher, the batch
+// interface of provider. The whole batch is attributed to that one provider
+// (retry gate, outcome, persisted metadata), even if SetEmbedder replaces the
+// worker's embedder meanwhile.
+func (ew *EmbedWorker) processNextDocumentBatch(provider embed.Embedder, batcher embed.DocumentBatchChunkEmbedder) bool {
 	select {
 	case <-ew.ctx.Done():
 		return false
@@ -1016,7 +1030,7 @@ func (ew *EmbedWorker) processNextDocumentBatch(batcher embed.DocumentBatchChunk
 	if len(nodes) == 0 {
 		return false
 	}
-	if !ew.waitForProviderRetry(ew.embedder) {
+	if !ew.waitForProviderRetry(provider) {
 		for _, node := range nodes {
 			ew.addNodeToPendingEmbeddings(node.ID)
 			ew.releaseNodeClaim(node.ID)
@@ -1030,7 +1044,7 @@ func (ew *EmbedWorker) processNextDocumentBatch(batcher embed.DocumentBatchChunk
 		texts[i] = embeddingutil.BuildText(node.Properties, node.Labels, opts)
 	}
 	results, resultErrors := ew.embedDocumentBatchIsolated(batcher, texts)
-	ew.recordProviderBatchOutcome(ew.embedder, resultErrors)
+	ew.recordProviderBatchOutcome(provider, resultErrors)
 	for i, node := range nodes {
 		if resultErrors[i] != nil {
 			ew.failed.Add(1)
@@ -1050,7 +1064,7 @@ func (ew *EmbedWorker) processNextDocumentBatch(batcher embed.DocumentBatchChunk
 			ew.releaseNodeClaim(node.ID)
 			continue
 		}
-		ew.persistEmbeddedNode(node, result.Embeddings, documentResultMeta(result), ew.embedder)
+		ew.persistEmbeddedNode(node, result.Embeddings, documentResultMeta(result), provider)
 		ew.releaseNodeClaim(node.ID)
 	}
 	ew.signalTrigger()
@@ -1543,7 +1557,7 @@ func (ew *EmbedWorker) addNodeToPendingEmbeddings(nodeID storage.NodeID) {
 // embedChunksInBatches embeds chunks using bounded request sizes.
 // This avoids sending massive single EmbedBatch requests for large files.
 func (ew *EmbedWorker) embedChunksInBatches(chunks []string, nodeID storage.NodeID) ([][]float32, error) {
-	return ew.embedChunksInBatchesWith(ew.embedder, chunks, nodeID)
+	return ew.embedChunksInBatchesWith(ew.currentEmbedder(), chunks, nodeID)
 }
 
 func (ew *EmbedWorker) embedChunksInBatchesWith(provider embed.Embedder, chunks []string, nodeID storage.NodeID) ([][]float32, error) {
@@ -1613,7 +1627,7 @@ func (ew *EmbedWorker) embedDocumentWith(provider embed.Embedder, text string, n
 
 // embedBatchWithRetry retries a single micro-batch with backoff.
 func (ew *EmbedWorker) embedBatchWithRetry(chunks []string) ([][]float32, error) {
-	return ew.embedBatchWithRetryFor(ew.embedder, chunks)
+	return ew.embedBatchWithRetryFor(ew.currentEmbedder(), chunks)
 }
 
 func (ew *EmbedWorker) embedBatchWithRetryFor(provider embed.Embedder, chunks []string) ([][]float32, error) {

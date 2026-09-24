@@ -392,7 +392,7 @@ func TestServicePersistenceAndTimingHelpers(t *testing.T) {
 	svc.persistMu.Unlock()
 
 	// persistBM25Background saves when BM25 is dirty and not building.
-	svc.fulltextIndex.Index("doc-1", "alpha beta gamma")
+	svc.fulltext().Index("doc-1", "alpha beta gamma")
 	svc.persistBM25Background(bm25Path)
 	_, err := os.Stat(bm25Path)
 	require.NoError(t, err)
@@ -1060,7 +1060,7 @@ func TestSearchService_BuildIndexes(t *testing.T) {
 
 	// Verify indexes were built
 	assert.Equal(t, 2, svc.vectorIndex.Count())
-	assert.Equal(t, 2, svc.fulltextIndex.Count())
+	assert.Equal(t, 2, svc.fulltext().Count())
 }
 
 func TestSearchService_BuildIndexes_ContextCanceled(t *testing.T) {
@@ -1220,7 +1220,7 @@ func TestSearchService_BuildIndexes_IteratorEngineBranches(t *testing.T) {
 		svc := NewServiceWithDimensions(&iteratorEngine{Engine: base}, 3)
 		err := svc.BuildIndexes(context.Background())
 		require.NoError(t, err)
-		require.Equal(t, 2, svc.fulltextIndex.Count())
+		require.Equal(t, 2, svc.fulltext().Count())
 		require.Equal(t, 2, svc.EmbeddingCount())
 	})
 
@@ -1278,7 +1278,7 @@ func TestSearchService_BuildIndexes_SkipIterationFromDisk(t *testing.T) {
 	svc2.SetFulltextIndexPath(bm25Path)
 	svc2.SetVectorIndexPath(vectorPath)
 	require.NoError(t, svc2.BuildIndexes(context.Background()))
-	require.GreaterOrEqual(t, svc2.fulltextIndex.Count(), 1)
+	require.GreaterOrEqual(t, svc2.fulltext().Count(), 1)
 	require.GreaterOrEqual(t, svc2.EmbeddingCount(), 1)
 	hits, err := svc2.VectorQueryNodes(context.Background(), []float32{1, 0, 0}, VectorQuerySpec{
 		Label:    "Doc",
@@ -1350,7 +1350,7 @@ func TestSearchService_BuildIndexes_ForcedRebuildOnSettingsMismatch(t *testing.T
 
 	require.NoError(t, svc2.BuildIndexes(context.Background()))
 	require.True(t, svc2.IsReady())
-	require.GreaterOrEqual(t, svc2.fulltextIndex.Count(), 1)
+	require.GreaterOrEqual(t, svc2.fulltext().Count(), 1)
 	require.GreaterOrEqual(t, svc2.EmbeddingCount(), 1)
 
 	// Build persists settings asynchronously; wait until updated fingerprints are visible.
@@ -1418,7 +1418,7 @@ func TestSearchService_BuildIndexes_DoesNotReuseDiskIndexesWhenStorageEmpty(t *t
 	svc2.SetHNSWIndexPath(hnswPath)
 	require.NoError(t, svc2.BuildIndexes(context.Background()))
 	require.Equal(t, 0, svc2.EmbeddingCount())
-	require.Equal(t, 0, svc2.fulltextIndex.Count())
+	require.Equal(t, 0, svc2.fulltext().Count())
 }
 
 func TestSearchService_BuildIndexes_RestartsVectorStoreWhenStorageIsNewer(t *testing.T) {
@@ -1551,7 +1551,7 @@ func TestSearchService_PersistBaseIndexes_Branches(t *testing.T) {
 	require.True(t, os.IsNotExist(err))
 
 	// Dirty BM25 + valid vector store writes both artifacts.
-	svc.fulltextIndex.Index("doc-1", "alpha beta")
+	svc.fulltext().Index("doc-1", "alpha beta")
 	vfs, err := NewVectorFileStore(vectorPath, 2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = vfs.Close() })
@@ -2847,10 +2847,10 @@ func TestSearchHelpers_HNSWLexicalSeedsAndGetOrCreateBranches(t *testing.T) {
 	svc.mu.Lock()
 	svc.vectorFileStore = vfs
 	svc.vectorIndex = nil
-	svc.fulltextIndex = &seedOverrideFulltext{
+	svc.setFulltext(&seedOverrideFulltext{
 		FulltextIndex: NewFulltextIndex(),
 		seedIDs:       []string{"doc-a"},
-	}
+	})
 	svc.mu.Unlock()
 	svc.hnswMu.Lock()
 	svc.hnswIndex = nil

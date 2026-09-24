@@ -103,8 +103,8 @@ func TestServiceOptionsBM25StemmerSelection(t *testing.T) {
 			},
 		},
 	})
-	service.fulltextIndex.Index("doc", "children")
-	require.Len(t, service.fulltextIndex.Search("child", 10), 1)
+	service.fulltext().Index("doc", "children")
+	require.Len(t, service.fulltext().Search("child", 10), 1)
 	require.Contains(t, service.composeBM25BuildSettings(), "stemmer=test.fold")
 	require.Contains(t, service.composeBM25BuildSettings(), "stemmer_api=1")
 }
@@ -161,7 +161,7 @@ func TestIndexCapacityBudgetsRejectBeforeMutation(t *testing.T) {
 			err := service.IndexNode(test.node)
 			require.Error(t, err)
 			require.True(t, errors.Is(err, ErrIndexMemoryBudgetExceeded))
-			require.Equal(t, 0, service.fulltextIndex.Count())
+			require.Equal(t, 0, service.fulltext().Count())
 			require.Equal(t, 0, service.vectorIndex.Count())
 		})
 	}

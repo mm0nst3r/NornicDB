@@ -29,7 +29,7 @@ func TestHybridRouting_RebuildProfilesGuardBranches(t *testing.T) {
 	require.Empty(t, svc.clusterLexicalProfiles)
 
 	svc = buildClusteredServiceForRouting(t)
-	svc.fulltextIndex = nil
+	svc.setFulltext(nil)
 	svc.clusterLexicalProfiles = map[int]map[string]float64{1: {"x": 1}}
 	svc.rebuildClusterLexicalProfiles()
 	require.Empty(t, svc.clusterLexicalProfiles)
@@ -78,7 +78,7 @@ func TestHybridRouting_ApplyBM25SeedHintsMoreBranches(t *testing.T) {
 		svc.applyBM25SeedHints() // nil cluster/fulltext
 
 		svc.EnableClustering(nil, 2)
-		svc.fulltextIndex = NewFulltextIndex()
+		svc.setFulltext(NewFulltextIndex())
 		svc.applyBM25SeedHints() // !IsClustered && Count==0
 	})
 
@@ -86,7 +86,7 @@ func TestHybridRouting_ApplyBM25SeedHintsMoreBranches(t *testing.T) {
 		svc := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
 		svc.EnableClustering(nil, 2)
 		require.NoError(t, svc.clusterIndex.Add("existing", []float32{1, 0}))
-		svc.fulltextIndex = &seedOverrideFulltext{FulltextIndex: NewFulltextIndex(), seedIDs: []string{"missing"}}
+		svc.setFulltext(&seedOverrideFulltext{FulltextIndex: NewFulltextIndex(), seedIDs: []string{"missing"}})
 		svc.applyBM25SeedHints()
 		require.Empty(t, preferredSeedsForTest(t, svc.clusterIndex))
 	})

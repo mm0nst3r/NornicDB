@@ -183,7 +183,7 @@ func (s *Service) getOrBuildIVFPQIndex(ctx context.Context, profile IVFPQProfile
 	s.mu.RLock()
 	vectorPath := s.vectorIndexPath
 	hnswPath := s.hnswIndexPath
-	fulltext := s.fulltextIndex
+	fulltext := s.fulltext()
 	s.mu.RUnlock()
 	basePath := s.ivfpqPersistenceBasePath(vectorPath, hnswPath)
 

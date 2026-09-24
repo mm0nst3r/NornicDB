@@ -130,7 +130,7 @@ func loadSearchProfileDiskFixture(tb testing.TB) (*Service, []float32) {
 	svc.SetVectorIndexPath(vectorPath)
 	svc.SetHNSWIndexPath(hnswPath)
 
-	_ = svc.fulltextIndex.Load(fulltextPath)
+	_ = svc.fulltext().Load(fulltextPath)
 
 	vfs, err := NewVectorFileStore(vectorPath, dims)
 	require.NoError(tb, err)

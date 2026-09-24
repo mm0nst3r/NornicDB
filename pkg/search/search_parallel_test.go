@@ -97,12 +97,12 @@ func TestRRFHybridSearch_ParallelRetrievalOverlaps(t *testing.T) {
 		}
 	})
 
-	svc.fulltextIndex = &overlapBM25Index{
-		bm25Index:     svc.fulltextIndex,
+	svc.setFulltext(&overlapBM25Index{
+		bm25Index:     svc.fulltext(),
 		started:       bm25Started,
 		vectorStarted: vectorStarted,
 		release:       release,
-	}
+	})
 	svc.vectorPipeline = NewVectorSearchPipeline(
 		&overlapCandidateGenerator{
 			started:     vectorStarted,
@@ -145,13 +145,13 @@ func TestRRFHybridSearch_ParallelRetrievalOverlaps(t *testing.T) {
 func TestRRFHybridSearchUsesRankedBM25ResultsAsVectorEntryPoints(t *testing.T) {
 	svc := NewServiceWithDimensions(storage.NewMemoryEngine(), 2)
 	fulltext := &rankedBM25Index{
-		bm25Index: svc.fulltextIndex,
+		bm25Index: svc.fulltext(),
 		results: []indexResult{
 			{ID: "lexical-first", Score: 2},
 			{ID: "lexical-second", Score: 1},
 		},
 	}
-	svc.fulltextIndex = fulltext
+	svc.setFulltext(fulltext)
 	generator := &lexicalEntryCandidateGenerator{}
 	svc.vectorPipeline = NewVectorSearchPipeline(generator, &IdentityExactScorer{})
 
@@ -203,8 +203,8 @@ func sequentialHybridReference(
 	}
 	seenOrphans := make(map[string]bool)
 	var bm25Results []indexResult
-	if svc.fulltextIndex != nil {
-		bm25Results, _, err = svc.adaptiveBM25Search(ctx, svc.fulltextIndex, query, opts, func(results []indexResult) []indexResult {
+	if svc.fulltext() != nil {
+		bm25Results, _, err = svc.adaptiveBM25Search(ctx, svc.fulltext(), query, opts, func(results []indexResult) []indexResult {
 			results = svc.filterDecayedCandidates(results)
 			if len(opts.Types) > 0 || len(opts.Filters) > 0 {
 				results = svc.filterByTypeAndProperties(ctx, results, opts.Types, opts.Filters, seenOrphans)
@@ -241,11 +241,11 @@ func TestRRFHybridSearch_ParallelRetrievalJoinsBM25BeforeVectorError(t *testing.
 	vectorStarted := make(chan struct{})
 	releaseBM25 := make(chan struct{})
 	svc := NewServiceWithDimensions(storage.NewMemoryEngine(), 4)
-	svc.fulltextIndex = &blockingBM25Index{
-		bm25Index: svc.fulltextIndex,
+	svc.setFulltext(&blockingBM25Index{
+		bm25Index: svc.fulltext(),
 		started:   bm25Started,
 		release:   releaseBM25,
-	}
+	})
 	svc.vectorPipeline = NewVectorSearchPipeline(
 		&immediateErrorCandidateGenerator{started: vectorStarted, err: wantErr},
 		&IdentityExactScorer{},
@@ -272,11 +272,11 @@ func TestRRFHybridSearch_ParallelRetrievalJoinsBM25AfterCancellation(t *testing.
 	vectorStarted := make(chan struct{})
 	releaseBM25 := make(chan struct{})
 	svc := NewServiceWithDimensions(storage.NewMemoryEngine(), 4)
-	svc.fulltextIndex = &blockingBM25Index{
-		bm25Index: svc.fulltextIndex,
+	svc.setFulltext(&blockingBM25Index{
+		bm25Index: svc.fulltext(),
 		started:   bm25Started,
 		release:   releaseBM25,
-	}
+	})
 	svc.vectorPipeline = NewVectorSearchPipeline(
 		&cancelableCandidateGenerator{started: vectorStarted},
 		&IdentityExactScorer{},
