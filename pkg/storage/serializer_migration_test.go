@@ -3,6 +3,8 @@ package storage
 import (
 	"bytes"
 	"encoding/gob"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dgraph-io/badger/v4"
@@ -191,7 +193,11 @@ func TestMigrateBadgerToMsgpack_DryRun(t *testing.T) {
 }
 
 func TestMigrateBadgerToMsgpack_InvalidDir(t *testing.T) {
-	_, err := MigrateBadgerToMsgpack("/nonexistent/badger/dir", SerializerMigrationOptions{})
+	// A directory below a regular file can't be created by any user
+	// (root included), so opening Badger there always fails.
+	file := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(file, nil, 0o600))
+	_, err := MigrateBadgerToMsgpack(filepath.Join(file, "badger"), SerializerMigrationOptions{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "open badger")
 }

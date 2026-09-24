@@ -125,6 +125,7 @@ func TestBadgerDeindexEnqueue_NodeEdgeBranchCoverage(t *testing.T) {
 
 func TestWALRepair_ErrorBranches(t *testing.T) {
 	t.Run("repair handles open and header-read failures", func(t *testing.T) {
+		skipIfPermissionsBypassed(t)
 		walPath := filepath.Join(t.TempDir(), "wal.log")
 		require.NoError(t, os.WriteFile(walPath, []byte{0x57, 0x41, 0x4c, 0x31}, 0o600))
 		require.NoError(t, os.Chmod(walPath, 0o000))
