@@ -170,7 +170,9 @@ ORDER BY s.uid, rel.evidence_source, t.uid`, nil)
 
 	summary = executeMutation("UNWIND $uids AS uid CREATE (n:UnwindCreated {uid: uid}) SET n.marked = true")
 	require.Equal(t, 2, summary.Counters().NodesCreated(), "UNWIND CREATE must aggregate per-row node counters")
-	require.Equal(t, 2, summary.Counters().PropertiesSet(), "UNWIND CREATE SET must aggregate per-row property counters")
+	// uid from each CREATE and marked from each SET, as Neo4j counts them (#651).
+	require.Equal(t, 4, summary.Counters().PropertiesSet(), "UNWIND CREATE SET must aggregate per-row property counters")
+	require.Equal(t, 2, summary.Counters().LabelsAdded(), "UNWIND CREATE must count the labels it adds")
 
 	summary = executeMutation("UNWIND $uids AS uid MATCH (n:MutationNode {uid: uid}) WITH n SET n.marked = true")
 	require.Equal(t, 2, summary.Counters().PropertiesSet(), "UNWIND MATCH WITH SET must aggregate per-row counters")
