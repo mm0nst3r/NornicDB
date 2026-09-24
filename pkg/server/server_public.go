@@ -45,7 +45,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	// browser bundle picks the WebSocket transport internally; the
 	// driver itself rejects ws:// / wss:// schemes via its allowlist.
 	response := map[string]interface{}{
-		"transaction":   fmt.Sprintf("http://%s:%d/db/{databaseName}/tx", host, s.config.Port),
+		"transaction":   s.getBaseURL(r) + "/db/{databaseName}/tx",
 		"neo4j_version": "5.0.0",
 		"neo4j_edition": "community",
 		"bolt_enabled":  s.config.BoltEnabled,

@@ -246,9 +246,13 @@ func (s *Server) getBaseURL(r *http.Request) string {
 		scheme = "https"
 	}
 
-	host := r.Host
+	host := requestHost(r)
 	if host == "" {
-		host = fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
+		address := s.config.Address
+		if address == "" || address == "0.0.0.0" || address == "::" {
+			address = "localhost"
+		}
+		host = fmt.Sprintf("%s:%d", address, s.config.Port)
 	}
 
 	basePath := s.config.BasePath

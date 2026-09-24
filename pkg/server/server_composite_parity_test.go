@@ -33,7 +33,8 @@ func TestHTTPCompositeSchemaFlows_E2E(t *testing.T) {
 	rootPayload := decodeTxPayload(t, rootShow)
 	rootErrors := txErrors(rootPayload)
 	require.NotEmpty(t, rootErrors)
-	require.Contains(t, rootErrors[0].Code, "Neo.ClientError.Statement.SyntaxError")
+	// The engine raises NotAllowed; HTTP reports the engine's code (#575).
+	require.Equal(t, "Neo.ClientError.Statement.NotAllowed", rootErrors[0].Code)
 	require.Contains(t, rootErrors[0].Message, "requires a constituent target")
 
 	// Constituent-scoped schema create should succeed over HTTP transaction endpoint.
@@ -74,7 +75,7 @@ func TestHTTPCompositeSchemaFlows_E2E(t *testing.T) {
 	require.Equal(t, http.StatusOK, rootShowConstraints.Code)
 	rootConstraintErrors := txErrors(decodeTxPayload(t, rootShowConstraints))
 	require.NotEmpty(t, rootConstraintErrors)
-	require.Contains(t, rootConstraintErrors[0].Code, "Neo.ClientError.Statement.SyntaxError")
+	require.Equal(t, "Neo.ClientError.Statement.NotAllowed", rootConstraintErrors[0].Code)
 	require.Contains(t, rootConstraintErrors[0].Message, "requires a constituent target")
 
 	createConstraintResp := makeRequest(t, server, http.MethodPost, "/db/cmp_schema/tx/commit", map[string]any{

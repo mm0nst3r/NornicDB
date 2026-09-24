@@ -54,14 +54,23 @@ func getCookie(r *http.Request, name string) string {
 // Forwarded headers (X-Forwarded-Host) take precedence so deployments
 // behind a reverse proxy advertise the externally-visible hostname.
 func hostnameFromRequest(r *http.Request) string {
+	raw := requestHost(r)
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return host
+	}
+	return raw
+}
+
+// requestHost is the host (with port, if any) the client used to reach the
+// server: the first X-Forwarded-Host when present, else the Host header.
+// Forwarded headers only survive from trusted proxies (trustedProxyMiddleware
+// strips them otherwise). URLs handed back to clients (discovery, OAuth,
+// transaction URLs) are built from it so they work from the client's side.
+func requestHost(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	candidates := []string{
-		r.Header.Get("X-Forwarded-Host"),
-		r.Host,
-	}
-	for _, raw := range candidates {
+	for _, raw := range []string{r.Header.Get("X-Forwarded-Host"), r.Host} {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue
@@ -69,9 +78,6 @@ func hostnameFromRequest(r *http.Request) string {
 		// X-Forwarded-Host may contain multiple comma-separated names; take the first.
 		if idx := strings.Index(raw, ","); idx >= 0 {
 			raw = strings.TrimSpace(raw[:idx])
-		}
-		if host, _, err := net.SplitHostPort(raw); err == nil {
-			return host
 		}
 		return raw
 	}

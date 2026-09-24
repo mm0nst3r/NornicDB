@@ -4309,9 +4309,14 @@ func TestNeo4jConversionAndTxHelpers_AdditionalBranches(t *testing.T) {
 	require.Equal(t, "", labels[1])
 	require.Equal(t, "B", labels[2])
 
+	// The commit URL follows the host the client used; without a Host header
+	// it falls back to the listen address, with 0.0.0.0 shown as localhost.
+	txReq := httptest.NewRequest(http.MethodPost, "/db/nornic/tx", nil)
+	txReq.Host = "db.example:7474"
+	require.Equal(t, "http://db.example:7474/db/nornic/tx/tx-1/commit", server.transactionCommitURL(txReq, "nornic", "tx-1"))
 	server.config.Address = "0.0.0.0"
-	commitURL := server.transactionCommitURL("nornic", "tx-1")
-	require.Contains(t, commitURL, "http://localhost:")
+	txReq.Host = ""
+	require.Contains(t, server.transactionCommitURL(txReq, "nornic", "tx-1"), "http://localhost:")
 
 	resp := &TransactionResponse{Results: make([]QueryResult, 0)}
 	server.appendStatementResult(resp, &cypher.ExecuteResult{
@@ -4321,7 +4326,7 @@ func TestNeo4jConversionAndTxHelpers_AdditionalBranches(t *testing.T) {
 			"receipt":    map[string]interface{}{"writes": 1},
 			"optimistic": map[string]interface{}{"createdNodeIds": []string{"nornic:1"}},
 		},
-	})
+	}, false)
 	require.Len(t, resp.Results, 1)
 	require.NotNil(t, resp.Receipt)
 	require.NotNil(t, resp.Optimistic)
@@ -4331,7 +4336,7 @@ func TestNeo4jConversionAndTxHelpers_AdditionalBranches(t *testing.T) {
 	server.appendStatementResult(resp, &cypher.ExecuteResult{
 		Columns: nil,
 		Rows:    [][]interface{}{},
-	})
+	}, false)
 	require.Len(t, resp.Results, 1)
 	require.NotNil(t, resp.Results[0].Columns)
 	require.Len(t, resp.Results[0].Columns, 0)

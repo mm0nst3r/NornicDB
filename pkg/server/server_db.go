@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -931,6 +933,65 @@ type StatementRequest struct {
 	IncludeStats       bool                   `json:"includeStats,omitempty"`
 }
 
+// decodeTransactionRequest decodes a transaction request body like Neo4j's
+// HTTP API: a JSON number in the statement parameters without a fraction or
+// exponent is a Cypher INTEGER (int64), any other number is a FLOAT, at any
+// depth of lists and maps. A plain decode into interface{} makes every number
+// a float64, so large IDs lose precision, SKIP $n / range(1, $n) reject the
+// value, and $a / 2 is fractional. The body is decoded once with UseNumber
+// (parameters are the request's only numbers) and the parameter numbers are
+// converted in place.
+func decodeTransactionRequest(body io.Reader, req *TransactionRequest) error {
+	decoder := json.NewDecoder(body)
+	decoder.UseNumber()
+	if err := decoder.Decode(req); err != nil {
+		return err
+	}
+	for i := range req.Statements {
+		for key, value := range req.Statements[i].Parameters {
+			req.Statements[i].Parameters[key] = cypherParameterNumbers(value)
+		}
+	}
+	return nil
+}
+
+// readTransactionRequest reads a transaction request body (size-limited like
+// readJSON) through decodeTransactionRequest. Every transaction endpoint
+// reads its statements through here.
+func (s *Server) readTransactionRequest(r *http.Request, req *TransactionRequest) error {
+	return decodeTransactionRequest(io.LimitReader(r.Body, s.config.MaxRequestSize), req)
+}
+
+// cypherParameterNumbers converts the json.Number values of a decoded
+// parameter value: integers (no '.', 'e' or 'E') that fit int64 become int64,
+// everything else float64. Lists and maps are converted in place.
+func cypherParameterNumbers(value interface{}) interface{} {
+	switch v := value.(type) {
+	case json.Number:
+		if !strings.ContainsAny(string(v), ".eE") {
+			if i, err := v.Int64(); err == nil {
+				return i
+			}
+		}
+		if f, err := v.Float64(); err == nil {
+			return f
+		}
+		return string(v)
+	case []interface{}:
+		for i, item := range v {
+			v[i] = cypherParameterNumbers(item)
+		}
+		return v
+	case map[string]interface{}:
+		for key, item := range v {
+			v[key] = cypherParameterNumbers(item)
+		}
+		return v
+	default:
+		return value
+	}
+}
+
 // TransactionResponse follows Neo4j HTTP API format exactly.
 type TransactionResponse struct {
 	Results       []QueryResult        `json:"results"`
@@ -987,19 +1048,56 @@ type GraphRelationship struct {
 }
 
 // QueryStats holds query execution statistics.
+//
+// The field set and names follow Neo4j's HTTP API exactly (including the
+// singular "relationship_deleted"), and every counter is always present, as
+// Neo4j sends them.
 type QueryStats struct {
-	NodesCreated         int  `json:"nodes_created,omitempty"`
-	NodesDeleted         int  `json:"nodes_deleted,omitempty"`
-	RelationshipsCreated int  `json:"relationships_created,omitempty"`
-	RelationshipsDeleted int  `json:"relationships_deleted,omitempty"`
-	PropertiesSet        int  `json:"properties_set,omitempty"`
-	LabelsAdded          int  `json:"labels_added,omitempty"`
-	LabelsRemoved        int  `json:"labels_removed,omitempty"`
-	IndexesAdded         int  `json:"indexes_added,omitempty"`
-	IndexesRemoved       int  `json:"indexes_removed,omitempty"`
-	ConstraintsAdded     int  `json:"constraints_added,omitempty"`
-	ConstraintsRemoved   int  `json:"constraints_removed,omitempty"`
-	ContainsUpdates      bool `json:"contains_updates,omitempty"`
+	ContainsUpdates       bool `json:"contains_updates"`
+	NodesCreated          int  `json:"nodes_created"`
+	NodesDeleted          int  `json:"nodes_deleted"`
+	PropertiesSet         int  `json:"properties_set"`
+	RelationshipsCreated  int  `json:"relationships_created"`
+	RelationshipsDeleted  int  `json:"relationship_deleted"`
+	LabelsAdded           int  `json:"labels_added"`
+	LabelsRemoved         int  `json:"labels_removed"`
+	IndexesAdded          int  `json:"indexes_added"`
+	IndexesRemoved        int  `json:"indexes_removed"`
+	ConstraintsAdded      int  `json:"constraints_added"`
+	ConstraintsRemoved    int  `json:"constraints_removed"`
+	ContainsSystemUpdates bool `json:"contains_system_updates"`
+	SystemUpdates         int  `json:"system_updates"`
+}
+
+// queryStatsFromResult is the includeStats object of one statement, built
+// from the counters the executor reported (the same counters Bolt sends).
+// contains_updates is true when any counter is non-zero.
+func queryStatsFromResult(result *cypher.ExecuteResult) *QueryStats {
+	stats := &QueryStats{}
+	if result != nil && result.Stats != nil {
+		stats.NodesCreated = result.Stats.NodesCreated
+		stats.NodesDeleted = result.Stats.NodesDeleted
+		stats.PropertiesSet = result.Stats.PropertiesSet
+		stats.RelationshipsCreated = result.Stats.RelationshipsCreated
+		stats.RelationshipsDeleted = result.Stats.RelationshipsDeleted
+		stats.LabelsAdded = result.Stats.LabelsAdded
+	}
+	stats.ContainsUpdates = stats.NodesCreated > 0 || stats.NodesDeleted > 0 ||
+		stats.PropertiesSet > 0 || stats.RelationshipsCreated > 0 ||
+		stats.RelationshipsDeleted > 0 || stats.LabelsAdded > 0 ||
+		stats.LabelsRemoved > 0 || stats.IndexesAdded > 0 ||
+		stats.IndexesRemoved > 0 || stats.ConstraintsAdded > 0 ||
+		stats.ConstraintsRemoved > 0
+	return stats
+}
+
+// statementError is the error entry for a statement that failed: the
+// Neo4j code the engine raised (or a transient transaction code), with the
+// message without that code prefix. Every transaction endpoint reports
+// statement errors through here.
+func statementError(err error) QueryError {
+	code, message := mapSessionExecError(err)
+	return QueryError{Code: code, Message: message}
 }
 
 // QueryError is an error from a query (Neo4j format).
@@ -1124,7 +1222,7 @@ func stripCypherComments(query string) string {
 // This is the main query endpoint: POST /db/{dbName}/tx/commit
 func (s *Server) handleImplicitTransaction(w http.ResponseWriter, r *http.Request, dbName string) {
 	var req TransactionRequest
-	if err := s.readJSON(r, &req); err != nil {
+	if err := s.readTransactionRequest(r, &req); err != nil {
 		s.writeNeo4jInvalidRequestBody(w, r, "Neo.ClientError.Request.InvalidFormat")
 		return
 	}
@@ -1163,10 +1261,7 @@ func (s *Server) handleImplicitTransaction(w http.ResponseWriter, r *http.Reques
 
 		effectiveDbName, queryStatement, resolveErr := normalizeStatementForExecution(defaultDbName, stmt.Statement)
 		if resolveErr != nil {
-			response.Errors = append(response.Errors, QueryError{
-				Code:    "Neo.ClientError.Statement.SyntaxError",
-				Message: resolveErr.Error(),
-			})
+			response.Errors = append(response.Errors, statementError(resolveErr))
 			hasError = true
 			continue
 		}
@@ -1252,14 +1347,7 @@ func (s *Server) handleImplicitTransaction(w http.ResponseWriter, r *http.Reques
 		s.logSlowQuery(stmt.Statement, stmt.Parameters, queryDuration, err)
 
 		if err != nil {
-			code := "Neo.ClientError.Statement.SyntaxError"
-			if transientCode, ok := mapTransientTransactionError(err); ok {
-				code = transientCode
-			}
-			response.Errors = append(response.Errors, QueryError{
-				Code:    code,
-				Message: err.Error(),
-			})
+			response.Errors = append(response.Errors, statementError(err))
 			hasError = true
 			continue
 		}
@@ -1317,7 +1405,7 @@ func (s *Server) handleImplicitTransaction(w http.ResponseWriter, r *http.Reques
 		}
 
 		if stmt.IncludeStats {
-			qr.Stats = &QueryStats{ContainsUpdates: isMutationQuery(stmt.Statement)}
+			qr.Stats = queryStatsFromResult(result)
 		}
 
 		response.Results = append(response.Results, qr)
@@ -1459,16 +1547,9 @@ func (s *Server) handleSingleStatementFastPath(w http.ResponseWriter, r *http.Re
 	s.logSlowQuery(stmt.Statement, stmt.Parameters, queryDuration, execErr)
 
 	if execErr != nil {
-		code := "Neo.ClientError.Statement.SyntaxError"
-		if transientCode, ok := mapTransientTransactionError(execErr); ok {
-			code = transientCode
-		}
 		resp := TransactionResponse{
-			Results: []QueryResult{},
-			Errors: []QueryError{{
-				Code:    code,
-				Message: execErr.Error(),
-			}},
+			Results:       []QueryResult{},
+			Errors:        []QueryError{statementError(execErr)},
 			LastBookmarks: []string{s.generateBookmark()},
 		}
 		s.writeJSON(w, http.StatusOK, resp)
@@ -1510,7 +1591,7 @@ func (s *Server) handleSingleStatementFastPath(w http.ResponseWriter, r *http.Re
 		}
 	}
 	if stmt.IncludeStats {
-		qr.Stats = &QueryStats{ContainsUpdates: isMutationQuery(stmt.Statement)}
+		qr.Stats = queryStatsFromResult(result)
 	}
 
 	resp := TransactionResponse{
@@ -1799,15 +1880,19 @@ func (s *Server) generateBookmark() string {
 // This ensures rollback semantics are real (writes are not persisted on rollback)
 // and keeps implicit transaction behavior unchanged.
 
-func (s *Server) transactionCommitURL(dbName, txID string) string {
-	host := s.config.Address
-	if host == "0.0.0.0" {
-		host = "localhost"
-	}
-	return fmt.Sprintf("http://%s:%d/db/%s/tx/%s/commit", host, s.config.Port, dbName, txID)
+// transactionURL is the URL of an open explicit transaction, built from the
+// request the client sent (scheme, host, base path via getBaseURL) as Neo4j
+// does, so the client can follow it from wherever it reached the server.
+func (s *Server) transactionURL(r *http.Request, dbName, txID string) string {
+	return fmt.Sprintf("%s/db/%s/tx/%s", s.getBaseURL(r), dbName, txID)
 }
 
-func (s *Server) appendStatementResult(response *TransactionResponse, result *cypher.ExecuteResult) {
+// transactionCommitURL is the commit URL of an open explicit transaction.
+func (s *Server) transactionCommitURL(r *http.Request, dbName, txID string) string {
+	return s.transactionURL(r, dbName, txID) + "/commit"
+}
+
+func (s *Server) appendStatementResult(response *TransactionResponse, result *cypher.ExecuteResult, includeStats bool) {
 	columns := result.Columns
 	if columns == nil {
 		columns = []string{}
@@ -1819,6 +1904,9 @@ func (s *Server) appendStatementResult(response *TransactionResponse, result *cy
 	for i, row := range result.Rows {
 		convertedRow := s.convertRowToNeo4jFormat(row)
 		qr.Data[i] = ResultRow{Row: convertedRow, Meta: s.generateRowMeta(convertedRow)}
+	}
+	if includeStats {
+		qr.Stats = queryStatsFromResult(result)
 	}
 	response.Results = append(response.Results, qr)
 	if result.Metadata != nil {
@@ -1855,10 +1943,7 @@ func (s *Server) executeTxStatements(
 	for _, stmt := range statements {
 		effectiveDB, queryStatement, resolveErr := normalizeStatementForExecution(dbName, stmt.Statement)
 		if resolveErr != nil {
-			response.Errors = append(response.Errors, QueryError{
-				Code:    "Neo.ClientError.Statement.SyntaxError",
-				Message: resolveErr.Error(),
-			})
+			response.Errors = append(response.Errors, statementError(resolveErr))
 			continue
 		}
 		if !s.getDatabaseAccessMode(claims).CanAccessDatabase(effectiveDB) {
@@ -1886,15 +1971,17 @@ func (s *Server) executeTxStatements(
 		execCtx := s.withDatabasePermissionChecker(ctx, claims, effectiveDB)
 		result, err := s.txSessions.ExecuteInSession(execCtx, session, queryStatement, stmt.Parameters)
 		if err != nil {
-			code, message := mapSessionExecError(err)
-			response.Errors = append(response.Errors, QueryError{
-				Code:    code,
-				Message: message,
-			})
+			response.Errors = append(response.Errors, statementError(err))
 			continue
 		}
-		s.appendStatementResult(response, result)
+		s.appendStatementResult(response, result, stmt.IncludeStats)
 	}
+}
+
+// transactionExpires formats an explicit transaction's expiry as an HTTP
+// date (RFC 1123 in GMT), as Neo4j sends it.
+func transactionExpires(expires time.Time) string {
+	return expires.UTC().Format(http.TimeFormat)
 }
 
 func mapSessionExecError(err error) (code, message string) {
@@ -1942,7 +2029,7 @@ func (s *Server) handleOpenTransaction(w http.ResponseWriter, r *http.Request, d
 	}
 
 	var req TransactionRequest
-	_ = s.readJSON(r, &req) // Optional body
+	_ = s.readTransactionRequest(r, &req) // Optional body
 
 	var txSession *txsession.Session
 	var err error
@@ -1991,18 +2078,19 @@ func (s *Server) handleOpenTransaction(w http.ResponseWriter, r *http.Request, d
 	response := TransactionResponse{
 		Results: make([]QueryResult, 0),
 		Errors:  make([]QueryError, 0),
-		Commit:  s.transactionCommitURL(dbName, txSession.ID),
+		Commit:  s.transactionCommitURL(r, dbName, txSession.ID),
 		Transaction: &TransactionInfo{
-			Expires: txSession.Expires.Format(time.RFC1123),
+			Expires: transactionExpires(txSession.Expires),
 		},
 	}
 
 	if len(req.Statements) > 0 {
 		s.executeTxStatements(r.Context(), r.Header.Get("Authorization"), claims, dbName, txSession, req.Statements, &response)
-		response.Transaction.Expires = txSession.Expires.Format(time.RFC1123)
+		response.Transaction.Expires = transactionExpires(txSession.Expires)
 	}
 
 	s.applyMVCCPressureWarnings(w, dbName, &response)
+	w.Header().Set("Location", s.transactionURL(r, dbName, txSession.ID))
 	s.writeJSON(w, http.StatusCreated, response)
 }
 
@@ -2020,19 +2108,19 @@ func (s *Server) handleExecuteInTransaction(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req TransactionRequest
-	_ = s.readJSON(r, &req)
+	_ = s.readTransactionRequest(r, &req)
 
 	response := TransactionResponse{
 		Results: make([]QueryResult, 0),
 		Errors:  make([]QueryError, 0),
-		Commit:  s.transactionCommitURL(dbName, txID),
+		Commit:  s.transactionCommitURL(r, dbName, txID),
 		Transaction: &TransactionInfo{
-			Expires: tx.Expires.Format(time.RFC1123),
+			Expires: transactionExpires(tx.Expires),
 		},
 	}
 
 	s.executeTxStatements(r.Context(), r.Header.Get("Authorization"), claims, dbName, tx, req.Statements, &response)
-	response.Transaction.Expires = tx.Expires.Format(time.RFC1123)
+	response.Transaction.Expires = transactionExpires(tx.Expires)
 
 	s.applyMVCCPressureWarnings(w, dbName, &response)
 	s.writeJSON(w, http.StatusOK, response)
@@ -2048,7 +2136,7 @@ func (s *Server) handleCommitTransaction(w http.ResponseWriter, r *http.Request,
 	}
 
 	var req TransactionRequest
-	_ = s.readJSON(r, &req) // Optional final statements
+	_ = s.readTransactionRequest(r, &req) // Optional final statements
 
 	response := TransactionResponse{
 		Results:       make([]QueryResult, 0),
