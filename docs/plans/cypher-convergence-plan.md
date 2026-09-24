@@ -24,12 +24,12 @@ Baseline revision: `a427a46815c607d0801331f4975e26cc941d125a` on
 
 Technical sources:
 
-- [Divergence report](../divergence_report/DIVERGENCE_REPORT.md) and
-  [machine-readable evidence](../divergence_report/data.json).
-- [Hard convergence](../divergence_report/HARD_CONVERGENCE.md).
-- Concepts for [routing](../divergence_report/CONCEPT_single_router.md),
-  [execution](../divergence_report/CONCEPT_2_execution_entry_points.md), and
-  [expressions](../divergence_report/CONCEPT_3_expression_evaluation.md).
+- [Divergence report](reports/DIVERGENCE_REPORT.md) and
+  machine-readable evidence (`divergence_report/data.json`).
+- [Hard convergence](reports/HARD_CONVERGENCE.md).
+- Concepts for routing (`CONCEPT_single_router.md`),
+  execution (`CONCEPT_2_execution_entry_points.md`), and
+  expressions (`CONCEPT_3_expression_evaluation.md`).
 - [Architecture discussion #23](https://github.com/orneryd/NornicDB/discussions/23)
   and [conformance proposal #482](https://github.com/orneryd/NornicDB/issues/482).
 
@@ -366,9 +366,9 @@ requires every Cypher-relevant entry to be resolved and every deferral explained
 ## OpenSpec adoption
 
 The proposed change is checked in under
-[`openspec/changes/converge-cypher-execution/`](../../openspec/changes/converge-cypher-execution/proposal.md),
+[`openspec/changes/converge-cypher-execution/`](https://github.com/orneryd/NornicDB/blob/main/openspec/changes/converge-cypher-execution/proposal.md),
 with proposal, design, tasks and five capability delta specs. Project context
-and review rules live in [`openspec/config.yaml`](../../openspec/config.yaml).
+and review rules live in [`openspec/config.yaml`](https://github.com/orneryd/NornicDB/blob/main/openspec/config.yaml).
 These are proposed contracts, not a claim that they are implemented. Canonical
 `openspec/specs/` is populated through verified change archival.
 

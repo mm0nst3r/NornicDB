@@ -70,7 +70,7 @@ type Relationship {
 
 ### Custom Scalars
 
-- `JSON` - Arbitrary JSON objects for properties
+- `JSON` - A JSON object of properties. Each value follows the Cypher property rule (see [Property values](#property-values))
 - `DateTime` - RFC3339 timestamps
 - `FloatArray` - Float32 arrays for embeddings
 
@@ -184,6 +184,21 @@ query ShortestPath {
 ```
 
 ## Mutations
+
+### Property values
+
+The `properties`, `matchProperties` and `setProperties` inputs are written as Cypher properties, so each value must be a property value: a string, a number, a boolean, null, or a list of those. A nested JSON object, or a list that contains lists or objects, is rejected with `Neo.ClientError.Statement.TypeError` and nothing is written (see [Maps are not property values](property-data-types.md#maps-are-not-property-values)):
+
+```graphql
+mutation {
+  createNode(input: { labels: ["Person"], properties: { name: "Alice", address: { city: "San Francisco" } } }) {
+    id
+  }
+}
+# -> Neo.ClientError.Statement.TypeError
+```
+
+To store structured data, flatten it into properties (`address_city`), model it as a related node, or store it as a JSON string and parse it in the application.
 
 ### Creating Data
 
