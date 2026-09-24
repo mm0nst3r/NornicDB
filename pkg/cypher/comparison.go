@@ -172,19 +172,8 @@ func (e *StorageExecutor) compareLess(actual, expected interface{}) bool {
 //
 //   - true if actual matches the pattern
 func (e *StorageExecutor) compareRegex(actual, expected interface{}) bool {
-	pattern, ok := expected.(string)
-	if !ok {
-		return false
-	}
-
-	actualStr := fmt.Sprintf("%v", actual)
-
-	// Use cached regex compilation
-	re, err := GetCachedRegex(pattern)
-	if err != nil {
-		return false
-	}
-	return re.MatchString(actualStr)
+	matched, err := cypherRegexMatch(actual, expected)
+	return err == nil && matched == true
 }
 
 // evaluateStringOp handles CONTAINS, STARTS WITH, ENDS WITH.

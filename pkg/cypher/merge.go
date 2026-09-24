@@ -1922,12 +1922,23 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 	// Handle second MERGE in compound query (handle any whitespace before MERGE)
 	// Use quote-aware search since text content may contain "MERGE" keyword
 	secondMergeIdx := findKeywordIndexInContext(cypher[mergeIdx+5:], "MERGE")
+	// segmentEnd is where this MERGE's clauses end: at the next MERGE, whose
+	// ON CREATE SET / ON MATCH SET / SET belong to it. Without this bound
+	// "ON CREATE SET t.x = true MERGE (s)-[:R]->(t) ..." took the following
+	// MERGE text as part of the SET value.
+	segmentEnd := len(cypher)
 	if secondMergeIdx > 0 {
 		// There's a second MERGE clause - this is for relationships
 		// Handle the first MERGE, then process second
 		firstMergeEnd := mergeIdx + 5 + secondMergeIdx
 		if firstMergeEnd < patternEnd {
 			patternEnd = firstMergeEnd
+		}
+		segmentEnd = firstMergeEnd
+		for _, clauseIdx := range []*int{&onCreateIdx, &onMatchIdx, &setIdx} {
+			if *clauseIdx >= segmentEnd {
+				*clauseIdx = -1
+			}
 		}
 	}
 
@@ -1989,7 +2000,7 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 		node = existingNode
 		e.cacheMergeNode(labels, matchProps, node)
 		if onMatchIdx > 0 {
-			setEnd := len(cypher)
+			setEnd := segmentEnd
 			for _, idx := range []int{onCreateIdx, returnIdx, withIdx, setIdx} {
 				if idx > onMatchIdx && idx < setEnd {
 					setEnd = idx
@@ -2036,7 +2047,7 @@ func (e *StorageExecutor) executeMergeWithContext(ctx context.Context, cypher st
 			e.cacheMergeNode(labels, matchProps, node)
 
 			if onCreateIdx > 0 {
-				setEnd := len(cypher)
+				setEnd := segmentEnd
 				for _, idx := range []int{setIdx, onMatchIdx, withIdx, returnIdx} {
 					if idx > onCreateIdx && idx < setEnd {
 						setEnd = idx

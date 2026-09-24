@@ -219,6 +219,11 @@ func (e *StorageExecutor) evaluateRowExpressionWithContext(ctx context.Context, 
 		}
 	}
 	value, resolved := e.evaluateRowExpression(expr, values)
+	// A =~ with a non-string operand or an invalid pattern evaluates to null
+	// in the row evaluator; report it as the statement error.
+	if strings.Contains(expr, "=~") {
+		e.recordRowRegexFailure(ctx, expr, values)
+	}
 	if !resolved {
 		if e.recordRowSizeArgumentFailure(ctx, expr, values) {
 			return nil, false
@@ -231,12 +236,25 @@ func (e *StorageExecutor) evaluateRowExpressionWithContext(ctx context.Context, 
 			}
 			arithmeticExpr = inner
 		}
-		if left, right, operator, arithmetic := splitRowArithmeticTier(arithmeticExpr, "*/%"); arithmetic && (operator == '/' || operator == '%') {
+		// The row evaluator reports an arithmetic error (division by zero,
+		// INTEGER overflow, a non-arithmetic operand) as "unresolved"; record
+		// the statement error for the top-level operator.
+		for _, tier := range []string{"+-", "*/%"} {
+			left, right, operator, arithmetic := splitRowArithmeticTier(arithmeticExpr, tier)
+			if !arithmetic {
+				continue
+			}
 			leftValue, leftOK := e.evaluateRowExpression(left, values)
 			rightValue, rightOK := e.evaluateRowExpression(right, values)
-			if divisor, numeric := toFloat64(rightValue); leftOK && leftValue != nil && rightOK && numeric && divisor == 0 {
-				recordExpressionFailure(ctx, newSemanticError("Neo.ClientError.Statement.ArithmeticError", "DivisionByZero", "/ by zero"))
+			if !leftOK || !rightOK {
+				break
 			}
+			if divisor, numeric := toFloat64(rightValue); (operator == '/' || operator == '%') && leftValue != nil && numeric && divisor == 0 {
+				recordExpressionFailure(ctx, newSemanticError("Neo.ClientError.Statement.ArithmeticError", "DivisionByZero", "/ by zero"))
+			} else if err := arithmeticError(operator, leftValue, rightValue); err != nil {
+				recordExpressionFailure(ctx, err)
+			}
+			break
 		}
 	}
 	if function, arguments, functionCall := parseFunctionCallWS(strings.TrimSpace(expr)); functionCall && strings.EqualFold(function, "substring") {
@@ -252,4 +270,29 @@ func (e *StorageExecutor) evaluateRowExpressionWithContext(ctx context.Context, 
 		}
 	}
 	return value, resolved
+}
+
+// recordRowRegexFailure records the error of a top-level text =~ pattern
+// whose operands are not strings or whose pattern is invalid.
+func (e *StorageExecutor) recordRowRegexFailure(ctx context.Context, expr string, values pipelineRow) {
+	expression := strings.TrimSpace(expr)
+	for {
+		inner, enclosed := stripEnclosingExpressionParentheses(expression)
+		if !enclosed {
+			break
+		}
+		expression = inner
+	}
+	left, right, regex := splitByOperatorWithOptions(expression, "=~", false, true)
+	if !regex {
+		return
+	}
+	leftValue, leftOK := e.evaluateRowExpression(left, values)
+	rightValue, rightOK := e.evaluateRowExpression(right, values)
+	if !leftOK || !rightOK {
+		return
+	}
+	if _, err := cypherRegexMatch(leftValue, rightValue); err != nil {
+		recordExpressionFailure(ctx, err)
+	}
 }

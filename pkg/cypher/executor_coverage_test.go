@@ -233,10 +233,11 @@ func TestCompareRegexInvalidPattern(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, err)
 
-	// Invalid regex pattern - should not match
-	result, err := exec.Execute(ctx, "MATCH (n:RegexTest) WHERE n.pattern =~ '[invalid' RETURN n", nil)
-	require.NoError(t, err)
-	assert.Len(t, result.Rows, 0)
+	// An invalid regex pattern is an error, as in Neo4j ("Invalid Regex").
+	_, err = exec.Execute(ctx, "MATCH (n:RegexTest) WHERE n.pattern =~ '[invalid' RETURN n", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Neo.ClientError.Statement.SemanticError")
+	assert.Contains(t, err.Error(), "Invalid Regex")
 }
 
 func TestCompareRegexNonStringExpected(t *testing.T) {
@@ -255,10 +256,11 @@ func TestCompareRegexNonStringExpected(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, err)
 
-	// Regex with number - pattern isn't string type (will return false)
-	result, err := exec.Execute(ctx, "MATCH (n:RegexNum) WHERE n.val =~ 123 RETURN n", nil)
-	require.NoError(t, err)
-	assert.Len(t, result.Rows, 0)
+	// =~ takes strings: a number is a type error, as in Neo4j.
+	_, err = exec.Execute(ctx, "MATCH (n:RegexNum) WHERE n.val =~ 123 RETURN n", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Neo.ClientError.Statement.SyntaxError")
+	assert.Contains(t, err.Error(), "Type mismatch: expected String")
 }
 
 func TestEvaluateStringOpMissingProperty(t *testing.T) {

@@ -153,20 +153,10 @@ func (e *StorageExecutor) evaluateExpressionWithContextFullOperators(
 		return result
 	}
 
-	// Arithmetic operators (*, /, %, -, +)
-	// NOTE: Arithmetic is checked BEFORE string concatenation to support date/duration arithmetic
-	if result := e.evaluateArithmeticExpr(ctx, expr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength); result != nil {
+	// Arithmetic operators (*, /, %, -, +), including string and list +.
+	// A null result (null + 1, [1] + null) is the expression's value.
+	if result, handled := e.evaluateArithmeticExpr(ctx, expr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength); handled {
 		return result
-		// If arithmetic returned nil, fall through to string concatenation for + operator
-	}
-
-	// ========================================
-	// String Concatenation (+ operator)
-	// ========================================
-	// Only check for concatenation if + is outside of string literals
-	// This is a fallback when arithmetic didn't apply (e.g., string + string)
-	if e.hasConcatOperator(expr) {
-		return e.evaluateStringConcatWithContext(ctx, expr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
 	}
 
 	// Unary minus

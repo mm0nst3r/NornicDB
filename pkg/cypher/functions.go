@@ -184,7 +184,14 @@ func splitPostfixPropertyAccess(expr string) (string, string, bool) {
 	if !isValidIdentifier(property) {
 		return "", "", false
 	}
-	return strings.TrimSpace(expr[:lastDot]), property, true
+	base := strings.TrimSpace(expr[:lastDot])
+	// Property access binds tighter than any operator: in 'x' + o.missing the
+	// access is o.missing, not ('x' + o).missing. A base with a top-level
+	// operator is not a postfix access.
+	if !isSimpleIdentifierOrProperty(base) && hasTopLevelExpressionOperator(base) {
+		return "", "", false
+	}
+	return base, property, true
 }
 
 func isSimpleIdentifierOrProperty(expr string) bool {

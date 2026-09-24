@@ -448,6 +448,13 @@ func (e *StorageExecutor) evaluateComparisonExpr(ctx context.Context, expr strin
 			if left == nil || right == nil {
 				return nil, true
 			}
+			if op.op == "=~" {
+				matched, err := cypherRegexMatch(left, right)
+				if err != nil {
+					recordExpressionFailure(ctx, err)
+				}
+				return matched, true
+			}
 			if op.op == "=" || op.op == "<>" || op.op == "!=" {
 				equal := cypherEquality(left, right)
 				if equal == nil {
@@ -524,73 +531,85 @@ func (e *StorageExecutor) hasArithmeticOperator(expr string) bool {
 //	evaluateArithmeticExpr("5 + 3", nodes, rels)             // int64(8)
 //	evaluateArithmeticExpr("10 / 3", nodes, rels)            // float64(3.333...)
 //	evaluateArithmeticExpr("date('2025-01-01') + duration('P5D')", ...) // "2025-01-06..."
-func (e *StorageExecutor) evaluateArithmeticExpr(ctx context.Context, expr string, nodes map[string]*storage.Node, rels map[string]*storage.Edge, paths map[string]*PathResult, allPathEdges []*storage.Edge, allPathNodes []*storage.Node, pathLength int) interface{} {
-	// Cypher exponentiation always yields a floating-point value.
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "^", true, false); ok {
-		left, leftOK := toFloat64(e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength))
-		right, rightOK := toFloat64(e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength))
-		if leftOK && rightOK {
-			return math.Pow(left, right)
+func (e *StorageExecutor) evaluateArithmeticExpr(ctx context.Context, expr string, nodes map[string]*storage.Node, rels map[string]*storage.Edge, paths map[string]*PathResult, allPathEdges []*storage.Edge, allPathNodes []*storage.Node, pathLength int) (interface{}, bool) {
+	operands := func(leftExpr, rightExpr string) (interface{}, interface{}) {
+		left := e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+		right := e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+		return left, right
+	}
+	// result reports an operator's statement error (overflow, operand type)
+	// and returns its value; a null result is a result, not "not arithmetic".
+	result := func(op byte, left, right, value interface{}) (interface{}, bool) {
+		if err := arithmeticError(op, left, right); err != nil {
+			recordExpressionFailure(ctx, err)
+			return nil, true
 		}
-		return nil
+		return value, true
 	}
-	// Handle + operator (date + duration, or numeric addition)
+	// Cypher exponentiation always yields a floating-point value.
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "^", true, false); ok && binaryOperands(leftExpr, rightExpr) {
+		leftValue, rightValue := operands(leftExpr, rightExpr)
+		left, leftOK := toFloat64(leftValue)
+		right, rightOK := toFloat64(rightValue)
+		if leftOK && rightOK {
+			return result('^', leftValue, rightValue, math.Pow(left, right))
+		}
+		return result('^', leftValue, rightValue, nil)
+	}
+	// Handle + operator (date + duration, lists, strings, numbers).
 	// Try with spaces first, then without
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " + ", true, false); ok {
-		left := e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		right := e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		return e.add(left, right)
-	}
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "+", true, false); ok {
-		left := e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		right := e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		return e.add(left, right)
+	for _, plus := range []string{" + ", "+"} {
+		if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, plus, true, false); ok && binaryOperands(leftExpr, rightExpr) {
+			left, right := operands(leftExpr, rightExpr)
+			return result('+', left, right, e.add(left, right))
+		}
 	}
 
 	// Handle * operator
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "*", true, false); ok {
-		left := e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		right := e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		return e.multiply(left, right)
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "*", true, false); ok && binaryOperands(leftExpr, rightExpr) {
+		left, right := operands(leftExpr, rightExpr)
+		return result('*', left, right, e.multiply(left, right))
 	}
 
 	// Handle / operator
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "/", true, false); ok {
-		left := e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		right := e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "/", true, false); ok && binaryOperands(leftExpr, rightExpr) {
+		left, right := operands(leftExpr, rightExpr)
 		if divisor, numeric := toFloat64(right); numeric && divisor == 0 && left != nil {
 			recordExpressionFailure(ctx, newSemanticError("Neo.ClientError.Statement.ArithmeticError", "DivisionByZero", "/ by zero"))
 		}
-		return e.divide(left, right)
+		return result('/', left, right, e.divide(left, right))
 	}
 
 	// Handle % operator
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "%", true, false); ok {
-		left := e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		right := e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "%", true, false); ok && binaryOperands(leftExpr, rightExpr) {
+		left, right := operands(leftExpr, rightExpr)
 		if divisor, numeric := toFloat64(right); numeric && divisor == 0 && left != nil {
 			recordExpressionFailure(ctx, newSemanticError("Neo.ClientError.Statement.ArithmeticError", "DivisionByZero", "/ by zero"))
 		}
-		return e.modulo(left, right)
+		return result('%', left, right, e.modulo(left, right))
 	}
 
 	// Handle - operator (binary subtraction, not unary minus)
 	// Try with spaces first, then without (but be careful with unary minus)
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " - ", true, false); ok {
-		left := e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		right := e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		return e.subtract(left, right)
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, " - ", true, false); ok && binaryOperands(leftExpr, rightExpr) {
+		left, right := operands(leftExpr, rightExpr)
+		return result('-', left, right, e.subtract(left, right))
 	}
 	// For - without spaces, only split if both sides would be valid expressions
-	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "-", true, false); ok && leftExpr != "" {
-		left := e.evaluateExpressionWithContextFull(ctx, leftExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		right := e.evaluateExpressionWithContextFull(ctx, rightExpr, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
+	if leftExpr, rightExpr, ok := splitByOperatorWithOptions(expr, "-", true, false); ok && binaryOperands(leftExpr, rightExpr) {
+		left, right := operands(leftExpr, rightExpr)
 		if left != nil && right != nil {
-			return e.subtract(left, right)
+			return result('-', left, right, e.subtract(left, right))
 		}
 	}
 
-	return nil
+	return nil, false
+}
+
+// binaryOperands reports whether both sides of a binary operator are present;
+// a bare "*" (RETURN *) or a leading sign is not an arithmetic expression.
+func binaryOperands(left, right string) bool {
+	return strings.TrimSpace(left) != "" && strings.TrimSpace(right) != ""
 }
 
 // splitByOperator splits expression by operator respecting quotes and parentheses.
@@ -651,6 +670,10 @@ func (e *StorageExecutor) splitByOperator(expr, op string) []string {
 //	add(5.0, 3)                                  // float64(8.0)
 //	add("2025-01-01", &CypherDuration{Days: 5})  // "2025-01-06T00:00:00Z"
 func (e *StorageExecutor) add(left, right interface{}) interface{} {
+	// A null operand makes the sum null, for lists and strings too.
+	if left == nil || right == nil {
+		return nil
+	}
 	if result, handled := addTemporalValues(left, right); handled {
 		return result
 	}
@@ -694,20 +717,38 @@ func (e *StorageExecutor) add(left, right interface{}) interface{} {
 		}
 	}
 
-	// Standard numeric addition
-	l, okL := toFloat64(left)
-	r, okR := toFloat64(right)
-	if !okL || !okR {
+	// String concatenation: string + string, string + number, number + string.
+	if text, isText := left.(string); isText {
+		if other, ok := concatOperandText(right); ok {
+			return text + other
+		}
 		return nil
 	}
-	result := l + r
-	// Return integer if both were integers
-	if _, isInt := left.(int64); isInt {
-		if _, isInt := right.(int64); isInt {
-			return int64(result)
+	if text, isText := right.(string); isText {
+		if other, ok := concatOperandText(left); ok {
+			return other + text
 		}
+		return nil
 	}
-	return result
+
+	value, _, _ := numericArithmetic('+', left, right)
+	return value
+}
+
+// concatOperandText is the text a value contributes to string + value:
+// strings as they are, numbers as toString() formats them. Other values are
+// not concatenated.
+func concatOperandText(value interface{}) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case bool:
+		return "", false
+	}
+	if _, isNumber := toFloat64(value); isNumber {
+		return formatCypherValueString(value), true
+	}
+	return "", false
 }
 
 // multiply performs numeric multiplication.
@@ -738,19 +779,8 @@ func (e *StorageExecutor) multiply(left, right interface{}) interface{} {
 			return result
 		}
 	}
-	l, okL := toFloat64(left)
-	r, okR := toFloat64(right)
-	if !okL || !okR {
-		return nil
-	}
-	result := l * r
-	// Return integer if both were integers
-	if _, isInt := left.(int64); isInt {
-		if _, isInt := right.(int64); isInt {
-			return int64(result)
-		}
-	}
-	return result
+	value, _, _ := numericArithmetic('*', left, right)
+	return value
 }
 
 // divide performs numeric division.
@@ -779,28 +809,11 @@ func (e *StorageExecutor) divide(left, right interface{}) interface{} {
 			return result
 		}
 	}
-	l, okL := toFloat64(left)
-	r, okR := toFloat64(right)
-	if !okL || !okR {
-		return nil
-	}
-	// Cypher integer division truncates toward zero whenever both operands are
-	// integers; a floating operand selects floating-point division.
-	_, leftIsInt64 := left.(int64)
-	_, rightIsInt64 := right.(int64)
-	_, leftIsInt := left.(int)
-	_, rightIsInt := right.(int)
-	leftIsInteger := leftIsInt64 || leftIsInt
-	rightIsInteger := rightIsInt64 || rightIsInt
-	if leftIsInteger && rightIsInteger {
-		if r == 0 {
-			return nil
-		}
-		return int64(l) / int64(r)
-	}
-	// Floating-point division follows IEEE 754 as required by Cypher. In
-	// particular, 0.0 / 0.0 produces NaN, whose equality is non-reflexive.
-	return l / r
+	// Integer division is exact and truncates toward zero; a floating operand
+	// selects IEEE 754 division (0.0 / 0.0 is NaN). Integer division by zero
+	// is null here; the context-aware evaluators report "/ by zero".
+	value, _, _ := numericArithmetic('/', left, right)
+	return value
 }
 
 // modulo performs modulo operation (remainder after division).
@@ -822,19 +835,8 @@ func (e *StorageExecutor) divide(left, right interface{}) interface{} {
 //	modulo(10, 3)  // int64(1)
 //	modulo(10, 0)  // nil (division by zero)
 func (e *StorageExecutor) modulo(left, right interface{}) interface{} {
-	l, okL := toFloat64(left)
-	r, okR := toFloat64(right)
-	if !okL || !okR || r == 0 {
-		return nil
-	}
-	_, leftIsInt64 := left.(int64)
-	_, rightIsInt64 := right.(int64)
-	_, leftIsInt := left.(int)
-	_, rightIsInt := right.(int)
-	if (leftIsInt64 || leftIsInt) && (rightIsInt64 || rightIsInt) {
-		return int64(l) % int64(r)
-	}
-	return math.Mod(l, r)
+	value, _, _ := numericArithmetic('%', left, right)
+	return value
 }
 
 // subtract handles subtraction including date arithmetic.
@@ -881,20 +883,8 @@ func (e *StorageExecutor) subtract(left, right interface{}) interface{} {
 		return durationBetween(left, right)
 	}
 
-	// Standard numeric subtraction
-	l, okL := toFloat64(left)
-	r, okR := toFloat64(right)
-	if !okL || !okR {
-		return nil
-	}
-	result := l - r
-	// Return integer if both were integers
-	if _, isInt := left.(int64); isInt {
-		if _, isInt := right.(int64); isInt {
-			return int64(result)
-		}
-	}
-	return result
+	value, _, _ := numericArithmetic('-', left, right)
+	return value
 }
 
 // ========================================

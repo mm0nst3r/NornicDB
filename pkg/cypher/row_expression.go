@@ -4,7 +4,6 @@ import (
 	"context"
 	"math"
 	"reflect"
-	"regexp"
 	"strings"
 
 	cypherfn "github.com/orneryd/nornicdb/pkg/cypher/fn"
@@ -767,6 +766,12 @@ func compareCypherPredicateValue(left, right interface{}, operator string) inter
 	if left == nil || right == nil {
 		return nil
 	}
+	if operator == "=~" {
+		// A type or pattern error is null here; the context-aware callers
+		// report it (recordRowRegexFailure).
+		matched, _ := cypherRegexMatch(left, right)
+		return matched
+	}
 	if leftNode, ok := left.(*storage.Node); ok {
 		rightNode, rightIsNode := right.(*storage.Node)
 		if !rightIsNode || rightNode == nil {
@@ -1430,13 +1435,15 @@ func (e *StorageExecutor) evaluateRowPredicate(ctx context.Context, expression s
 	if left, right, ok := splitByOperatorWithOptions(expression, "=~", false, true); ok {
 		leftValue, leftOK := e.evaluateRowExpression(left, values)
 		rightValue, rightOK := e.evaluateRowExpression(right, values)
-		text, textOK := leftValue.(string)
-		pattern, patternOK := rightValue.(string)
-		if !leftOK || !rightOK || !textOK || !patternOK {
+		if !leftOK || !rightOK {
 			return false
 		}
-		matched, err := regexp.MatchString(pattern, text)
-		return err == nil && matched
+		matched, err := cypherRegexMatch(leftValue, rightValue)
+		if err != nil {
+			recordExpressionFailure(ctx, err)
+			return false
+		}
+		return matched == true
 	}
 	if left, right, ok := splitByOperatorWithOptions(expression, " NOT IN ", true, true); ok {
 		// x NOT IN list holds only when the membership is known false; a null

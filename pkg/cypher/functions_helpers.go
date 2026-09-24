@@ -8,21 +8,6 @@ import (
 	"github.com/orneryd/nornicdb/pkg/storage"
 )
 
-// evaluateStringConcatWithContext handles string concatenation with + operator.
-func (e *StorageExecutor) evaluateStringConcatWithContext(ctx context.Context, expr string, nodes map[string]*storage.Node, rels map[string]*storage.Edge, paths map[string]*PathResult, allPathEdges []*storage.Edge, allPathNodes []*storage.Node, pathLength int) string {
-	var result strings.Builder
-
-	// Split by + but respect quotes and parentheses
-	parts := e.splitByPlus(expr)
-
-	for _, part := range parts {
-		val := e.evaluateExpressionWithContextFull(ctx, part, nodes, rels, paths, allPathEdges, allPathNodes, pathLength)
-		result.WriteString(fmt.Sprintf("%v", val))
-	}
-
-	return result.String()
-}
-
 // tryCallPluginFunction attempts to call a function from the plugin system.
 // Returns the result and true if the function was handled, or nil and false if not found.
 // This is GENERIC - works for any plugin function (not specific to any plugin).
