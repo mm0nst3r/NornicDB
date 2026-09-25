@@ -118,21 +118,9 @@ func compareForSort(a, b interface{}) bool {
 }
 
 func storageHasDecayFiltering(engine storage.Engine) bool {
-	visited := make(map[storage.Engine]bool)
-	for engine != nil && !visited[engine] {
-		visited[engine] = true
-		if decay, ok := engine.(interface{ IsDecayEnabled() bool }); ok && decay.IsDecayEnabled() {
+	for layer := range storage.EngineChain(engine) {
+		if decay, ok := layer.(interface{ IsDecayEnabled() bool }); ok && decay.IsDecayEnabled() {
 			return true
-		}
-		switch wrapper := engine.(type) {
-		case interface{ GetUnderlying() storage.Engine }:
-			engine = wrapper.GetUnderlying()
-		case interface{ GetEngine() storage.Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() storage.Engine }:
-			engine = wrapper.GetInnerEngine()
-		default:
-			engine = nil
 		}
 	}
 	return false

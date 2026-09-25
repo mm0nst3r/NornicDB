@@ -58,32 +58,14 @@ func (e *StorageExecutor) handleBegin() (*ExecuteResult, error) {
 	// cache and were invisible until the background flush fired.
 	engines := e.resolveImplicitTxEngines()
 
-	// Unwrap engine wrappers (Async/WAL/Namespaced) recursively.
-	engine := e.storage
+	// Unwrap engine wrappers (Async/WAL/Namespaced) down to the base engine.
+	var engine storage.Engine
 	namespaceHint := ""
-	visited := map[storage.Engine]bool{}
-	for engine != nil && !visited[engine] {
-		visited[engine] = true
-		if asyncEngine, ok := engine.(*storage.AsyncEngine); ok {
-			engine = asyncEngine.GetEngine()
-			continue
+	for layer := range storage.EngineChain(e.storage) {
+		if namespacedEngine, ok := layer.(*storage.NamespacedEngine); ok && namespaceHint == "" {
+			namespaceHint = namespacedEngine.Namespace()
 		}
-		if walEngine, ok := engine.(*storage.WALEngine); ok {
-			engine = walEngine.GetEngine()
-			continue
-		}
-		if namespacedEngine, ok := engine.(*storage.NamespacedEngine); ok {
-			if namespaceHint == "" {
-				namespaceHint = namespacedEngine.Namespace()
-			}
-			engine = namespacedEngine.GetInnerEngine()
-			continue
-		}
-		if wrapper, ok := engine.(interface{ GetInnerEngine() storage.Engine }); ok {
-			engine = wrapper.GetInnerEngine()
-			continue
-		}
-		break
+		engine = layer
 	}
 
 	// Composite engines use FabricTransaction coordinator semantics.

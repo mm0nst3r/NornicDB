@@ -52,23 +52,11 @@ func EnsureNodeIDDatabasePrefixForEngine(engine Engine, id NodeID) NodeID {
 }
 
 func namespaceForEngine(engine Engine) string {
-	visited := make(map[Engine]bool)
-	for engine != nil && !visited[engine] {
-		visited[engine] = true
-
-		if provider, ok := engine.(interface{ Namespace() string }); ok {
+	for layer := range EngineChain(engine) {
+		if provider, ok := layer.(interface{ Namespace() string }); ok {
 			if namespace := provider.Namespace(); namespace != "" {
 				return namespace
 			}
-		}
-
-		switch wrapper := engine.(type) {
-		case interface{ GetEngine() Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() Engine }:
-			engine = wrapper.GetInnerEngine()
-		default:
-			engine = nil
 		}
 	}
 	return ""

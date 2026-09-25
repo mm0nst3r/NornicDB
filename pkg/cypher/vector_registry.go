@@ -53,22 +53,11 @@ func (e *StorageExecutor) unregisterVectorSpace(indexName string) {
 }
 
 func (e *StorageExecutor) databaseName() string {
-	engine := e.storage
-	for engine != nil {
+	for engine := range storage.EngineChain(e.storage) {
 		if namespaceProvider, ok := engine.(interface{ Namespace() string }); ok {
 			if namespace := strings.TrimSpace(namespaceProvider.Namespace()); namespace != "" {
 				return namespace
 			}
-		}
-		switch wrapper := engine.(type) {
-		case interface{ GetUnderlying() storage.Engine }:
-			engine = wrapper.GetUnderlying()
-		case interface{ GetEngine() storage.Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() storage.Engine }:
-			engine = wrapper.GetInnerEngine()
-		default:
-			engine = nil
 		}
 	}
 

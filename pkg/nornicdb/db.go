@@ -2506,18 +2506,12 @@ func (db *DB) Cypher(ctx context.Context, query string, params map[string]any) (
 
 // unwrapToBadgerEngine walks the engine wrapper chain to find the underlying BadgerEngine.
 func unwrapToBadgerEngine(eng storage.Engine) *storage.BadgerEngine {
-	for {
-		switch e := eng.(type) {
-		case *storage.BadgerEngine:
-			return e
-		case interface{ GetInnerEngine() storage.Engine }:
-			eng = e.GetInnerEngine()
-		case interface{ UnwrapEngine() storage.Engine }:
-			eng = e.UnwrapEngine()
-		default:
-			return nil
+	for layer := range storage.EngineChain(eng) {
+		if badger, ok := layer.(*storage.BadgerEngine); ok {
+			return badger
 		}
 	}
+	return nil
 }
 
 // SetEmbeddingLabelPolicy configures managed-embedding admission for one database.

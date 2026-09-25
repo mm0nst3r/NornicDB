@@ -1942,13 +1942,9 @@ type implicitTxEngines struct {
 }
 
 func (e *StorageExecutor) resolveImplicitTxEngines() implicitTxEngines {
-	engine := e.storage
-	visited := make(map[storage.Engine]bool)
 	out := implicitTxEngines{}
 
-	for engine != nil && !visited[engine] {
-		visited[engine] = true
-
+	for engine := range storage.EngineChain(e.storage) {
 		if out.namespace == "" {
 			if ns, ok := engine.(interface{ Namespace() string }); ok {
 				out.namespace = ns.Namespace()
@@ -1963,17 +1959,6 @@ func (e *StorageExecutor) resolveImplicitTxEngines() implicitTxEngines {
 			if tc, ok := engine.(TransactionCapableEngine); ok {
 				out.txEngine = tc
 			}
-		}
-
-		switch wrapper := engine.(type) {
-		case interface{ GetUnderlying() storage.Engine }:
-			engine = wrapper.GetUnderlying()
-		case interface{ GetEngine() storage.Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() storage.Engine }:
-			engine = wrapper.GetInnerEngine()
-		default:
-			engine = nil
 		}
 	}
 
@@ -2515,27 +2500,14 @@ func (e *StorageExecutor) getStorage(ctx context.Context) storage.Engine {
 // resolveWALAndDatabase attempts to find a WAL instance and database name
 // by unwrapping common storage wrappers (namespaced, async, WAL engines).
 func (e *StorageExecutor) resolveWALAndDatabase() (*storage.WAL, string) {
-	engine := e.storage
 	var dbName string
-
-	for engine != nil {
+	for engine := range storage.EngineChain(e.storage) {
 		if ns, ok := engine.(interface{ Namespace() string }); ok && dbName == "" {
 			dbName = ns.Namespace()
 		}
 		if walProvider, ok := engine.(interface{ GetWAL() *storage.WAL }); ok {
 			return walProvider.GetWAL(), dbName
 		}
-		switch wrapper := engine.(type) {
-		case interface{ GetUnderlying() storage.Engine }:
-			engine = wrapper.GetUnderlying()
-		case interface{ GetEngine() storage.Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() storage.Engine }:
-			engine = wrapper.GetInnerEngine()
-		default:
-			return nil, dbName
-		}
 	}
-
 	return nil, dbName
 }

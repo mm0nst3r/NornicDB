@@ -51,16 +51,10 @@ func setRevealOnEngine(ctx context.Context, eng storage.Engine, reveal bool) (co
 // unwrapBadgerEngine walks the engine wrapper chain to find the underlying
 // BadgerEngine. Returns nil if the chain does not contain one.
 func unwrapBadgerEngine(eng storage.Engine) *storage.BadgerEngine {
-	for {
-		switch e := eng.(type) {
-		case *storage.BadgerEngine:
-			return e
-		case interface{ GetInnerEngine() storage.Engine }:
-			eng = e.GetInnerEngine()
-		case interface{ UnwrapEngine() storage.Engine }:
-			eng = e.UnwrapEngine()
-		default:
-			return nil
+	for layer := range storage.EngineChain(eng) {
+		if badger, ok := layer.(*storage.BadgerEngine); ok {
+			return badger
 		}
 	}
+	return nil
 }

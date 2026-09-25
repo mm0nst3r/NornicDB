@@ -100,11 +100,8 @@ func (e *StorageExecutor) executeSchemaCommand(ctx context.Context, cypher strin
 }
 
 func flushPendingAsyncWritesBeforeSchemaDDL(engine storage.Engine) error {
-	visited := make(map[storage.Engine]bool)
-	for engine != nil && !visited[engine] {
-		visited[engine] = true
-
-		if async, ok := engine.(interface {
+	for layer := range storage.EngineChain(engine) {
+		if async, ok := layer.(interface {
 			HasPendingWrites() bool
 			Flush() error
 		}); ok {
@@ -113,15 +110,6 @@ func flushPendingAsyncWritesBeforeSchemaDDL(engine storage.Engine) error {
 					return localizedError(localization.CypherSchemaFlushPendingWritesFailed(err), err)
 				}
 			}
-		}
-
-		switch wrapper := engine.(type) {
-		case interface{ GetEngine() storage.Engine }:
-			engine = wrapper.GetEngine()
-		case interface{ GetInnerEngine() storage.Engine }:
-			engine = wrapper.GetInnerEngine()
-		default:
-			engine = nil
 		}
 	}
 	return nil
