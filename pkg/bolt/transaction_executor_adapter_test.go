@@ -62,7 +62,10 @@ func TestTransactionalAdapterRollbackAfterRunError(t *testing.T) {
 		query             string
 		transactionActive bool
 	}{
-		{"RETURN 1 + {a: 1} AS x", false},
+		// Rejected when compiled (a SyntaxError, as in Neo4j #657): the
+		// statement never runs, so the transaction stays open.
+		{"RETURN 1 + {a: 1} AS x", true},
+		{"UNWIND [{a: 1}] AS m RETURN 1 + m AS x", false},
 		{"RETURN date('x') AS x", false},
 		{"RETURN toInteger([1]) AS x", true},
 		{"RETURN range(1, 10, 0) AS x", true},
