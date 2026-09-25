@@ -1045,7 +1045,7 @@ func (e *StorageExecutor) pipelineApplyRemove(ctx context.Context, rows []pipeli
 // SET target = row retain their original Go/Cypher types.
 func (e *StorageExecutor) pipelineApplySet(ctx context.Context, rows []pipelineRow, clause string) (*QueryStats, bool, error) {
 	body := strings.TrimSpace(clause[len("SET"):])
-	assignments := e.splitSetAssignments(body)
+	assignments := splitSetAssignments(body)
 	if body == "" || len(assignments) == 0 {
 		return nil, false, nil
 	}

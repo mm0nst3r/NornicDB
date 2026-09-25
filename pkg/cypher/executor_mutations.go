@@ -926,7 +926,7 @@ func (e *StorageExecutor) executeSet(ctx context.Context, cypher string) (*Execu
 	// MATCH ... SET n += $props SET n.foo = 1
 	// Collapse additional SET keywords into a single assignment list.
 	setPart = collapseChainedSetClauses(setPart)
-	assignments := e.splitSetAssignments(setPart)
+	assignments := splitSetAssignments(setPart)
 	if len(assignments) == 0 || (len(assignments) == 1 && strings.TrimSpace(assignments[0]) == "") {
 		return nil, localizedError(localization.CypherMutationsSetAssignmentRequired(), nil)
 	}

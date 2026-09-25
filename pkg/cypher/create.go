@@ -1767,7 +1767,7 @@ func (e *StorageExecutor) executeMatchCreateBlock(ctx context.Context, block str
 			for name, edge := range edgeVars {
 				row[name] = edge
 			}
-			for _, variable := range pipelineSetTargetVariables(e.splitSetAssignments(setPart)) {
+			for _, variable := range pipelineSetTargetVariables(splitSetAssignments(setPart)) {
 				if row[variable] == nil {
 					return nil, localizedError(localization.CypherMutationsUnknownSetVariable(variable), nil)
 				}
@@ -2101,7 +2101,7 @@ func (e *StorageExecutor) executeCreateSet(ctx context.Context, cypher string) (
 	for name, edge := range createdEdges {
 		row[name] = edge
 	}
-	for _, variable := range pipelineSetTargetVariables(e.splitSetAssignments(setPart)) {
+	for _, variable := range pipelineSetTargetVariables(splitSetAssignments(setPart)) {
 		if row[variable] == nil {
 			return nil, localizedError(localization.CypherMutationsUnknownSetVariable(variable), nil)
 		}

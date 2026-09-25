@@ -2410,7 +2410,7 @@ func (e *StorageExecutor) applySetToRelationshipWithContext(ctx context.Context,
 
 	propertiesSet := 0
 	setClause = collapseChainedSetClauses(setClause)
-	assignments := e.splitSetAssignments(setClause)
+	assignments := splitSetAssignments(setClause)
 	for _, assignment := range assignments {
 		assignment = strings.TrimSpace(assignment)
 		if assignment == "" {
@@ -2472,7 +2472,7 @@ func (e *StorageExecutor) applySetToNodeWithContext(ctx context.Context, node *s
 	setClause = collapseChainedSetClauses(setClause)
 
 	// Split SET clause into individual assignments
-	assignments := e.splitSetAssignments(setClause)
+	assignments := splitSetAssignments(setClause)
 
 	for _, assignment := range assignments {
 		assignment = strings.TrimSpace(assignment)
