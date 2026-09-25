@@ -149,7 +149,7 @@ func (e *StorageExecutor) planCreatePatterns(ctx context.Context, pattern string
 		}
 		// Use string-literal-aware checks to avoid matching arrows inside content strings
 		// e.g., 'Data -> Output' should NOT be treated as a relationship
-		if containsOutsideStrings(p, "->") || containsOutsideStrings(p, "<-") || containsOutsideStrings(p, "-[") {
+		if patternHasRelationship(p) {
 			relPatterns = append(relPatterns, p)
 		} else {
 			nodePatterns = append(nodePatterns, p)
@@ -2876,7 +2876,7 @@ func (e *StorageExecutor) tryResolveMatchNodesByIDFromWhere(
 				continue
 			}
 			// Skip relationship patterns — they contain arrows.
-			if containsOutsideStrings(p, "->") || containsOutsideStrings(p, "<-") || containsOutsideStrings(p, "-[") {
+			if patternHasRelationship(p) {
 				return nil, false
 			}
 			info := e.parseNodePattern(ctx, p)
