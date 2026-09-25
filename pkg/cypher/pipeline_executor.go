@@ -2710,7 +2710,7 @@ func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipeline
 			out = append(out, projected)
 		}
 		out = e.filterPipelineRows(ctx, out, postWithWhere)
-		if !e.orderPipelineRows(out, orderTerms) {
+		if !e.orderPipelineRows(ctx, out, orderTerms) {
 			return nil, false
 		}
 		return applyPipelineWindow(out, withSkip, withLimit), true
@@ -2853,12 +2853,15 @@ func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipeline
 		if withDistinct {
 			out, orderScopes = deduplicatePipelineRowsWithScopes(out, orderScopes, projectionAliases)
 		}
-		if !e.orderPipelineRowsWithScopes(out, orderScopes, orderTerms) {
+		if !e.orderPipelineRowsWithScopes(ctx, out, orderScopes, orderTerms) {
 			return nil, false
 		}
 		return applyPipelineWindow(out, withSkip, withLimit), true
 	}
 
+	orderedExpressions := orderedProjectionExpressions(orderTerms, len(projections), func(index int) (string, string) {
+		return projections[index].expr, projections[index].alias
+	})
 	out := make([]pipelineRow, 0, len(rows))
 	orderScopes := make([]pipelineRow, 0, len(rows))
 	for _, row := range rows {
@@ -2914,9 +2917,12 @@ func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipeline
 			}
 		}
 		out = append(out, newRow)
-		orderScope := make(pipelineRow, len(row)+len(newRow))
+		orderScope := make(pipelineRow, len(row)+len(newRow)+len(orderedExpressions))
 		for name, value := range row {
 			orderScope[name] = value
+		}
+		for _, ordered := range orderedExpressions {
+			orderScope[ordered.expression] = newRow[ordered.alias]
 		}
 		for name, value := range newRow {
 			orderScope[name] = value
@@ -2926,7 +2932,7 @@ func (e *StorageExecutor) pipelineApplyWith(ctx context.Context, rows []pipeline
 	if withDistinct {
 		out, orderScopes = deduplicatePipelineRowsWithScopes(out, orderScopes, projectionAliases)
 	}
-	if !e.orderPipelineRowsWithScopes(out, orderScopes, orderTerms) {
+	if !e.orderPipelineRowsWithScopes(ctx, out, orderScopes, orderTerms) {
 		return nil, false
 	}
 	return applyPipelineWindow(out, withSkip, withLimit), true
@@ -2966,11 +2972,43 @@ func (e *StorageExecutor) evaluatePipelinePagination(ctx context.Context, expres
 // orderPipelineRows applies every ORDER BY term lexicographically. WITH has
 // already materialized its projection at this point, so aliases and retained
 // entity properties resolve from the same scope exposed to the next clause.
-func (e *StorageExecutor) orderPipelineRows(rows []pipelineRow, terms []orderByTerm) bool {
-	return e.orderPipelineRowsWithScopes(rows, rows, terms)
+func (e *StorageExecutor) orderPipelineRows(ctx context.Context, rows []pipelineRow, terms []orderByTerm) bool {
+	return e.orderPipelineRowsWithScopes(ctx, rows, rows, terms)
 }
 
-func (e *StorageExecutor) orderPipelineRowsWithScopes(rows, scopes []pipelineRow, terms []orderByTerm) bool {
+// orderedProjection is a projection expression an ORDER BY term repeats, with
+// the alias of the projected column.
+type orderedProjection struct {
+	expression string
+	alias      string
+}
+
+// orderedProjectionExpressions returns the projection items (count of them,
+// read by item) whose expression an ORDER BY term repeats, as in
+// RETURN size(n.s) AS n ORDER BY size(n.s). Neo4j orders such a term by the
+// projected column even when an alias shadows a variable of the expression,
+// so the order scope maps the expression text to the projected value, as the
+// aggregating WITH does. Nil when no term repeats one.
+func orderedProjectionExpressions(terms []orderByTerm, count int, item func(index int) (expression, alias string)) []orderedProjection {
+	var ordered []orderedProjection
+	for _, term := range terms {
+		column := strings.TrimSpace(term.column)
+		for index := 0; index < count; index++ {
+			expression, alias := item(index)
+			if expression != alias && strings.TrimSpace(expression) == column {
+				ordered = append(ordered, orderedProjection{expression: column, alias: alias})
+				break
+			}
+		}
+	}
+	return ordered
+}
+
+// orderPipelineRowsWithScopes is orderPipelineRows with each row's terms
+// evaluated in scopes[i]. A term the row evaluator can't resolve returns
+// false; when an operator of it failed (1/0, a runtime TypeError) that failure
+// is recorded as the statement's error, as for a projection item.
+func (e *StorageExecutor) orderPipelineRowsWithScopes(ctx context.Context, rows, scopes []pipelineRow, terms []orderByTerm) bool {
 	if len(terms) == 0 || len(rows) < 2 {
 		return true
 	}
@@ -2987,6 +3025,7 @@ func (e *StorageExecutor) orderPipelineRowsWithScopes(rows, scopes []pipelineRow
 		for termIndex, term := range terms {
 			value, ok := e.evaluateRowExpression(term.column, scopes[index])
 			if !ok {
+				e.recordRowOperatorFailure(ctx, term.column, scopes[index])
 				return false
 			}
 			values[termIndex] = value
@@ -3566,6 +3605,10 @@ func (e *StorageExecutor) pipelineApplyReturn(ctx context.Context, rows []pipeli
 		return result, err == nil
 	}
 
+	orderTerms := parseOrderByTerms(modifiers)
+	orderedExpressions := orderedProjectionExpressions(orderTerms, len(projs), func(index int) (string, string) {
+		return projs[index].expr, projs[index].alias
+	})
 	projectedRows := make([]pipelineRow, 0, len(rows))
 	orderScopes := make([]pipelineRow, 0, len(rows))
 	for _, row := range rows {
@@ -3577,9 +3620,12 @@ func (e *StorageExecutor) pipelineApplyReturn(ctx context.Context, rows []pipeli
 			}
 			projected[p.alias] = val
 		}
-		scope := make(pipelineRow, len(row)+len(projected))
+		scope := make(pipelineRow, len(row)+len(projected)+len(orderedExpressions))
 		for name, value := range row {
 			scope[name] = value
+		}
+		for _, ordered := range orderedExpressions {
+			scope[ordered.expression] = projected[ordered.alias]
 		}
 		for name, value := range projected {
 			scope[name] = value
@@ -3590,7 +3636,7 @@ func (e *StorageExecutor) pipelineApplyReturn(ctx context.Context, rows []pipeli
 	if returnDistinct {
 		projectedRows, orderScopes = deduplicatePipelineRowsWithScopes(projectedRows, orderScopes, result.Columns)
 	}
-	if !e.orderPipelineRowsWithScopes(projectedRows, orderScopes, parseOrderByTerms(modifiers)) {
+	if !e.orderPipelineRowsWithScopes(ctx, projectedRows, orderScopes, orderTerms) {
 		return nil, false
 	}
 	skip := 0
